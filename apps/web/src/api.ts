@@ -109,7 +109,7 @@ export interface Span {
 
 export interface AlertRule {
   name: string;
-  kind: "run_failed" | "failure_rate" | "slow_run";
+  kind: "run_failed" | "failure_rate" | "slow_run" | "eval_below";
   agent?: string;
   severity: "warning" | "critical";
   threshold?: number;
@@ -125,6 +125,7 @@ export interface Alert {
   severity: AlertRule["severity"];
   agent?: string;
   run_id?: string;
+  suite?: string;
   title: string;
   body?: string;
   at: string;
@@ -160,6 +161,103 @@ export interface Hit {
   score: number;
 }
 
+export interface ThreadSummary {
+  id: string;
+  title: string;
+  origin: string;
+  project?: string;
+  agents: string[];
+  turns: number;
+  branches: number;
+  active: number;
+  failed: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Choice {
+  agent: string;
+  reason: string;
+  matched?: string[];
+}
+
+export interface Project {
+  name: string;
+  description?: string;
+}
+
+export interface Settings {
+  baseline: string;
+  history: "recent" | "none";
+  history_limit: number;
+  projects: Project[];
+}
+
+export interface Preferences {
+  display_name: string;
+  theme: "system" | "light" | "dark";
+  accent: string;
+  has_photo: boolean;
+  photo_version: number;
+}
+
+export interface Check {
+  kind: "contains" | "not_contains" | "matches" | "equals" | "within_ms";
+  value: string;
+}
+
+export interface EvalCase {
+  id: string;
+  input: string;
+  checks?: Check[];
+  expect?: string[];
+}
+
+export interface EvalResult {
+  case_id: string;
+  input: string;
+  passed: boolean;
+  output?: string;
+  verdicts?: { check: string; passed: boolean; reason?: string }[];
+  hits?: { title: string; score: number; expected: boolean }[];
+  rank?: number;
+  run_id?: string;
+  duration_ms: number;
+  error?: string;
+}
+
+export interface EvalRun {
+  id: string;
+  suite: string;
+  target: "agent" | "knowledge";
+  subject: string;
+  rev?: number;
+  status: "running" | "passed" | "failed" | "errored";
+  passed: number;
+  total: number;
+  pass_rate: number;
+  threshold: number;
+  metrics?: Record<string, number>;
+  results: EvalResult[];
+  started_by?: string;
+  started_at: string;
+  ended_at?: string;
+}
+
+export interface Suite {
+  name: string;
+  description?: string;
+  target: "agent" | "knowledge";
+  subject: string;
+  cases: EvalCase[];
+  k?: number;
+  pass_rate?: number;
+}
+
+export interface SuiteView extends Suite {
+  runs: EvalRun[];
+}
+
 // Same-origin only. The session is an HttpOnly cookie the page cannot read,
 // so there is no token here to leak.
 async function call<T>(method: string, path: string, json?: unknown): Promise<T> {
@@ -187,7 +285,34 @@ export const api = {
   runs: () => call<{ runs: Run[] }>("GET", "/api/runs").then((r) => r.runs),
   tree: (id: string) =>
     call<{ runs: Run[] }>("GET", `/api/runs/${encodeURIComponent(id)}/tree`).then((r) => r.runs),
-  createRun: (agent: string, text: string) => call<Run>("POST", "/api/runs", { agent, text }),
+  createRun: (agent: string, text: string, opts: { after?: string; project?: string } = {}) =>
+    call<Run>("POST", "/api/runs", { agent, text, ...opts }),
+  threads: () => call<{ threads: ThreadSummary[] }>("GET", "/api/threads").then((r) => r.threads),
+  thread: (id: string) =>
+    call<{ turns: Run[] }>("GET", `/api/threads/${encodeURIComponent(id)}`).then((r) => r.turns),
+  pick: (q: string) => call<Choice>("GET", `/api/pick?${new URLSearchParams({ q })}`),
+  settings: () => call<Settings>("GET", "/api/settings"),
+  saveSettings: (s: Settings) => call<Settings>("PUT", "/api/settings", s),
+  history: (name: string) =>
+    call<{ revisions: Revision[] }>("GET", `/api/agents/${encodeURIComponent(name)}/history`).then((r) => r.revisions),
+
+  preferences: () => call<Preferences>("GET", "/api/preferences"),
+  savePreferences: (p: Pick<Preferences, "display_name" | "theme" | "accent">) =>
+    call<Preferences>("PUT", "/api/preferences", p),
+  removePhoto: () => call<Preferences>("DELETE", "/api/preferences/photo"),
+  // The picture is sent as its own bytes. The server decides what it is.
+  uploadPhoto: async (file: Blob) => {
+    const res = await fetch("/api/preferences/photo", { method: "PUT", credentials: "same-origin", body: file });
+    const data = (await res.json().catch(() => ({}))) as Preferences & { error?: string };
+    if (!res.ok) throw new ApiError(res.status, data.error ?? "The picture could not be uploaded.");
+    return data as Preferences;
+  },
+
+  suites: () => call<{ suites: SuiteView[] }>("GET", "/api/evals").then((r) => r.suites),
+  createSuite: (s: Suite) => call<Suite>("POST", "/api/evals", s),
+  saveSuite: (s: Suite) => call<Suite>("PUT", `/api/evals/${encodeURIComponent(s.name)}`, s),
+  deleteSuite: (name: string) => call<void>("DELETE", `/api/evals/${encodeURIComponent(name)}`),
+  runSuite: (name: string) => call<EvalRun>("POST", `/api/evals/${encodeURIComponent(name)}/run`),
   schedules: () => call<{ schedules: ScheduleView[] }>("GET", "/api/schedules").then((r) => r.schedules),
   createSchedule: (s: Schedule) => call<ScheduleView>("POST", "/api/schedules", s),
   deleteSchedule: (name: string) => call<void>("DELETE", `/api/schedules/${encodeURIComponent(name)}`),

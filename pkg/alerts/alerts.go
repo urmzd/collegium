@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
 
@@ -40,6 +41,8 @@ const (
 	FailureRate Kind = "failure_rate"
 	// SlowRun fires when a run took longer than a threshold to end.
 	SlowRun Kind = "slow_run"
+	// EvalBelow fires when an eval run's pass rate ends under a threshold.
+	EvalBelow Kind = "eval_below"
 )
 
 // Severity ranks an alert.
@@ -57,7 +60,8 @@ type Rule struct {
 	// Agent limits the rule to one agent. Empty means every agent.
 	Agent    string   `json:"agent,omitempty"`
 	Severity Severity `json:"severity"`
-	// Threshold is a percentage for FailureRate and seconds for SlowRun.
+	// Threshold is a percentage for FailureRate and EvalBelow, and seconds
+	// for SlowRun.
 	Threshold float64 `json:"threshold,omitempty"`
 	// WindowSeconds is how far back FailureRate looks.
 	WindowSeconds int `json:"window_seconds,omitempty"`
@@ -90,6 +94,10 @@ func (r Rule) validate() error {
 		if r.Threshold <= 0 {
 			return fmt.Errorf("%w: a slow run threshold is a number of seconds above zero", ErrInvalid)
 		}
+	case EvalBelow:
+		if r.Threshold <= 0 || r.Threshold > 100 {
+			return fmt.Errorf("%w: an eval threshold is a pass rate from 1 to 100", ErrInvalid)
+		}
 	default:
 		return fmt.Errorf("%w: unknown rule kind %q", ErrInvalid, r.Kind)
 	}
@@ -98,15 +106,17 @@ func (r Rule) validate() error {
 
 // Alert is one firing of a rule.
 type Alert struct {
-	ID       string    `json:"id"`
-	Rule     string    `json:"rule"`
-	Kind     Kind      `json:"kind"`
-	Severity Severity  `json:"severity"`
-	Agent    string    `json:"agent,omitempty"`
-	RunID    string    `json:"run_id,omitempty"`
-	Title    string    `json:"title"`
-	Body     string    `json:"body,omitempty"`
-	At       time.Time `json:"at"`
+	ID       string   `json:"id"`
+	Rule     string   `json:"rule"`
+	Kind     Kind     `json:"kind"`
+	Severity Severity `json:"severity"`
+	Agent    string   `json:"agent,omitempty"`
+	RunID    string   `json:"run_id,omitempty"`
+	// Suite names the eval suite behind an EvalBelow alert.
+	Suite string    `json:"suite,omitempty"`
+	Title string    `json:"title"`
+	Body  string    `json:"body,omitempty"`
+	At    time.Time `json:"at"`
 	// AckedBy and AckedAt are set once a person has seen it.
 	AckedBy string    `json:"acked_by,omitempty"`
 	AckedAt time.Time `json:"acked_at,omitzero"`
@@ -264,6 +274,49 @@ func (e *Engine) Evaluate(run runs.Run, recent Recent) []Alert {
 						(time.Duration(r.WindowSeconds)*time.Second).String()))
 			}
 		}
+	}
+	return raised
+}
+
+// EvaluateEval checks a finished eval run against its tenant's rules. A rule
+// scoped to an agent applies to suites that test that agent, and a rule with no
+// agent applies to every suite.
+func (e *Engine) EvaluateEval(tenantName string, run evals.Run) []Alert {
+	if run.Status == evals.Running {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	t := e.of(tenantName)
+	var raised []Alert
+	for _, r := range t.rules {
+		if r.Kind != EvalBelow {
+			continue
+		}
+		agent := ""
+		if run.Target == evals.Agent {
+			agent = run.Subject
+		}
+		if r.Agent != "" && r.Agent != agent {
+			continue
+		}
+		// A run that could not be carried out scored nothing, which is
+		// under any threshold.
+		if run.Status != evals.Errored && run.PassRate >= r.Threshold {
+			continue
+		}
+		t.next++
+		a := Alert{
+			ID: "al-" + strconv.Itoa(t.next), Rule: r.Name, Kind: r.Kind, Severity: r.Severity,
+			Agent: agent, Suite: run.Suite, At: run.EndedAt,
+			Title: fmt.Sprintf("Eval %s passed %.0f%% of its cases", run.Suite, run.PassRate),
+			Body:  fmt.Sprintf("%d of %d cases passed. The rule expects at least %.0f%%.", run.Passed, run.Total, r.Threshold),
+		}
+		t.alerts = append(t.alerts, a)
+		if len(t.alerts) > maxAlerts {
+			t.alerts = t.alerts[len(t.alerts)-maxAlerts:]
+		}
+		raised = append(raised, a)
 	}
 	return raised
 }

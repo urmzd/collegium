@@ -18,10 +18,138 @@ body,
   height: 100%;
 }
 
+/*
+ * The console's own surfaces. agent-ui owns the tokens for what it renders;
+ * these add the frosted layer the shell sits on: a soft two-color glow behind
+ * everything, and panels that let it through.
+ */
+:root {
+  /* agent-ui names Figtree. The console ships it, so it is never a fallback. */
+  --font-aui-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
+  --oap-warm: oklch(0.6 0.23 29);
+  --oap-glass: oklch(1 0 0 / 68%);
+  --oap-glass-strong: oklch(1 0 0 / 86%);
+  --oap-glass-border: oklch(0.2 0.02 250 / 12%);
+  --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 60%);
+  --oap-shadow: 0 8px 28px oklch(0.2 0.02 250 / 0.08);
+  --oap-glow: 7%;
+}
+html[data-theme="dark"] {
+  --oap-glass: oklch(0.17 0 0 / 52%);
+  --oap-glass-strong: oklch(0.14 0 0 / 82%);
+  --oap-glass-border: oklch(1 0 0 / 9%);
+  --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 7%);
+  --oap-shadow: 0 8px 32px oklch(0 0 0 / 0.3);
+  --oap-glow: 12%;
+}
+
 body {
   margin: 0;
-  background: var(--aui-bg);
+  background-color: var(--aui-bg);
+  background-image:
+    radial-gradient(1100px 600px at 6% -12%, oklch(from var(--aui-accent) l c h / var(--oap-glow)), transparent 60%),
+    radial-gradient(1000px 560px at 100% -8%, oklch(from var(--oap-warm) l c h / calc(var(--oap-glow) * 0.75)), transparent 62%);
+  background-attachment: fixed;
   color: var(--aui-fg);
   font-family: var(--font-aui-sans);
   -webkit-font-smoothing: antialiased;
+}
+
+.oap-glass {
+  background: var(--oap-glass);
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+  border: 1px solid var(--oap-glass-border);
+  box-shadow: var(--oap-shadow), var(--oap-bevel);
+}
+
+/* Chrome that content scrolls under: no outer shadow, one hairline edge. */
+.oap-glass-bar {
+  background: var(--oap-glass-strong);
+  -webkit-backdrop-filter: blur(16px) saturate(170%);
+  backdrop-filter: blur(16px) saturate(170%);
+  box-shadow: var(--oap-bevel);
+}
+
+.oap-glass-pop {
+  background: var(--oap-glass-strong);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 1px solid var(--oap-glass-border);
+  box-shadow: 0 18px 50px oklch(0 0 0 / 0.22), var(--oap-bevel);
+}
+
+/* Without backdrop blur, glass is unreadable. Fall back to a solid surface. */
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  .oap-glass,
+  .oap-glass-bar,
+  .oap-glass-pop {
+    background: var(--aui-surface);
+  }
+}
+@media (prefers-reduced-transparency: reduce) {
+  .oap-glass,
+  .oap-glass-bar,
+  .oap-glass-pop {
+    background: var(--aui-surface);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+.oap-wordmark {
+  background-image: linear-gradient(120deg, var(--oap-warm), var(--aui-accent));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+@media (forced-colors: active) {
+  .oap-wordmark {
+    background: none;
+    color: CanvasText;
+  }
+}
+
+/* A switch is a checkbox drawn as a track and a thumb. */
+.oap-switch {
+  appearance: none;
+  position: relative;
+  width: 2rem;
+  height: 1.125rem;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  background: var(--aui-neutral);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.oap-switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: calc(1.125rem - 4px);
+  height: calc(1.125rem - 4px);
+  border-radius: 9999px;
+  background: white;
+  transition: transform 0.15s ease;
+}
+.oap-switch:checked {
+  background: var(--aui-accent);
+}
+.oap-switch:checked::after {
+  transform: translateX(0.875rem);
+}
+.oap-switch:focus-visible {
+  outline: 2px solid var(--aui-accent);
+  outline-offset: 2px;
+}
+.oap-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+@media (prefers-reduced-motion: reduce) {
+  .oap-switch,
+  .oap-switch::after {
+    transition: none;
+  }
 }

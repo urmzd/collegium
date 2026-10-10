@@ -2,6 +2,7 @@ import { ActionId, type InboxItem, sortInbox, type UiAction } from "@agent-ui/co
 import { WebSurface } from "@agent-ui/render-web";
 import { Inbox } from "@agent-ui/web";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AgentDetail } from "./AgentDetail.tsx";
 import { Agents } from "./Agents.tsx";
 import { Alerts } from "./Alerts.tsx";
 import { Analytics } from "./Analytics.tsx";
@@ -12,17 +13,23 @@ import {
   ApiError,
   api,
   type Me,
+  type Preferences,
   type Revision,
   type ScheduleView,
+  type Settings as Workspace,
   type Source,
+  type SuiteView,
   type Summary,
   subscribe,
+  type ThreadSummary,
 } from "./api.ts";
+import { Chat } from "./Chat.tsx";
 import { Knowledge } from "./Knowledge.tsx";
-import { RunList, RunView } from "./Runs.tsx";
+import { RunList } from "./Runs.tsx";
 import { Schedules } from "./Schedules.tsx";
-import { Sidebar, type View } from "./Sidebar.tsx";
-import { cause, primary } from "./ui.tsx";
+import { Settings } from "./Settings.tsx";
+import { PanelLeftIcon, Sidebar, type View } from "./Sidebar.tsx";
+import { AgentMark, cause, Popover, primary, Status } from "./ui.tsx";
 
 type Session = { state: "loading" } | { state: "signed-out" } | { state: "error"; message: string } | { state: "ready"; me: Me };
 
@@ -87,7 +94,7 @@ function inboxOf(runs: Run[], alerts: Alert[], dismissed: Set<string>): InboxIte
   // A failed run that already raised an alert appears once, as the alert.
   const alerted = new Set(alerts.map((a) => a.run_id));
   const failures: InboxItem[] = runs
-    .filter((r) => r.status === "failed" && !alerted.has(r.id))
+    .filter((r) => r.status === "failed" && !alerted.has(r.id) && r.origin !== "eval")
     .map((r) => ({
       id: r.id,
       kind: "failure",
@@ -115,22 +122,65 @@ function inboxOf(runs: Run[], alerts: Alert[], dismissed: Set<string>): InboxIte
   return sortInbox([...failures, ...raised]);
 }
 
+const titles: Record<View, string> = {
+  chat: "New chat",
+  inbox: "Inbox",
+  runs: "Runs",
+  agents: "Agents",
+  agent: "Agent",
+  knowledge: "Knowledge",
+  schedules: "Schedules",
+  analytics: "Analytics",
+  alerts: "Alerts",
+  settings: "Settings",
+};
+
+function greeting(name: string): string {
+  const h = new Date().getHours();
+  const part = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+  return name ? `${part}, ${name.split(" ")[0]}` : part;
+}
+
+/** Apply a person's theme and accent to the page. System follows the device. */
+function useAppearance(prefs: Preferences | null) {
+  useEffect(() => {
+    const root = document.documentElement;
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => {
+      const theme = prefs?.theme ?? "system";
+      root.dataset.theme = theme === "system" ? (media.matches ? "dark" : "light") : theme;
+      root.dataset.accent = prefs?.accent ?? "purple";
+    };
+    apply();
+    media.addEventListener("change", apply);
+    return () => media.removeEventListener("change", apply);
+  }, [prefs?.theme, prefs?.accent]);
+}
+
 function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const can = useCallback((p: string) => me.permissions.includes(p), [me]);
-  const [view, setView] = useState<View>(can("runs:write") ? "new" : can("runs:read") ? "runs" : "agents");
-  const [selected, setSelected] = useState<string | null>(null);
+  const [view, setView] = useState<View>(can("runs:read") ? "chat" : "agents");
+  const [thread, setThread] = useState<string | null>(null);
+  const [agentName, setAgentName] = useState<string | null>(null);
   const [open, setOpen] = useState(() => stored(SIDEBAR_KEY, window.innerWidth >= 768));
+  const [project, setProject] = useState("");
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [runs, setRuns] = useState<Run[]>([]);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [agents, setAgents] = useState<Revision[]>([]);
   const [schedules, setSchedules] = useState<ScheduleView[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
+  const [suites, setSuites] = useState<SuiteView[]>([]);
+  const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [prefs, setPrefs] = useState<Preferences | null>(null);
   const [day, setDay] = useState<Summary | null>(null);
   const [live, setLive] = useState(false);
   // Bumped whenever a run starts or ends, so pages that aggregate refetch.
   const [tick, setTick] = useState(0);
+
+  useAppearance(prefs);
 
   const toggle = () =>
     setOpen((was) => {
@@ -143,10 +193,15 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     });
 
   const loadAgents = useCallback(() => {
-    if (can("agents:read")) api.agents().then(setAgents).catch(() => {});
+    if (!can("agents:read")) return;
+    api.agents().then(setAgents).catch(() => {});
+    api.settings().then(setWorkspace).catch(() => {});
   }, [can]);
   const loadSources = useCallback(() => {
     if (can("knowledge:read")) api.sources().then(setSources).catch(() => {});
+  }, [can]);
+  const loadSuites = useCallback(() => {
+    if (can("evals:read")) api.suites().then(setSuites).catch(() => {});
   }, [can]);
   const loadAlerts = useCallback(() => {
     if (!can("alerts:read")) return;
@@ -160,16 +215,19 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const loadRuns = useCallback(() => {
     if (!can("runs:read")) return;
     api.runs().then(setRuns).catch(() => {});
+    api.threads().then(setThreads).catch(() => {});
     api.analytics("24h").then(setDay).catch(() => {});
     loadAlerts();
     loadSchedules();
+    loadSuites();
     setTick((t) => t + 1);
-  }, [can, loadAlerts, loadSchedules]);
+  }, [can, loadAlerts, loadSchedules, loadSuites]);
 
   useEffect(() => {
     loadRuns();
     loadAgents();
     loadSources();
+    api.preferences().then(setPrefs).catch(() => {});
   }, [loadRuns, loadAgents, loadSources]);
 
   // One stream for the whole tenant keeps every list current. Lifecycle and
@@ -194,15 +252,40 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     };
   }, [can, loadRuns, loadAgents]);
 
-  const select = (id: string) => {
-    setSelected(id);
-    setView("run");
+  // An eval in flight reports progress on its own record, not on the bus.
+  const evalRunning = suites.some((s) => s.runs[0]?.status === "running");
+  useEffect(() => {
+    if (!evalRunning) return;
+    const timer = window.setInterval(loadSuites, 700);
+    return () => window.clearInterval(timer);
+  }, [evalRunning, loadSuites]);
+
+  const openThread = (id: string) => {
+    setThread(id);
+    setView("chat");
+  };
+  // Opening a run opens the conversation it belongs to.
+  const openRun = (id: string) => {
+    const run = runs.find((r) => r.id === id);
+    openThread(run?.thread ?? id);
+  };
+  const newChat = () => {
+    setThread(null);
+    setView("chat");
+  };
+  const openAgent = (name: string | null) => {
+    setAgentName(name);
+    setView("agent");
   };
 
   const inbox = useMemo(() => inboxOf(runs, alerts, dismissed), [runs, alerts, dismissed]);
   const waiting = inbox.filter((i) => i.state === "open").length;
   const openAlerts = alerts.filter((a) => !a.acked_by).length;
   const stats = useMemo(() => new Map((day?.by_agent ?? []).map((g) => [g.name, g])), [day]);
+  const active = runs.filter((r) => r.status !== "completed" && r.status !== "failed");
+  const current = threads.find((t) => t.id === thread);
+  const editing = agents.find((a) => a.spec.name === agentName) ?? null;
+  const shownName = prefs?.display_name || me.principal.name || "";
 
   const onInbox = (a: UiAction) => {
     const item = inbox.find((i) => i.id === a.payload.target || i.source.turnId === a.payload.turnId);
@@ -212,86 +295,247 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
       if (item?.kind === "alert" && can("alerts:write")) api.ackAlert(item.id).then(loadAlerts).catch(() => {});
       else setDismissed((d) => new Set(d).add(a.payload.target));
     } else if (a.id === ActionId.open && run) {
-      select(run.id);
+      openRun(run.id);
     } else if (a.id === ActionId.retry && run && can("runs:write")) {
       api
-        .createRun(run.agent, run.text)
+        .createRun(run.agent, run.text, run.prev ? { after: run.prev } : {})
         .then((next) => {
           loadRuns();
-          select(next.id);
+          openThread(next.thread);
         })
         .catch(() => {});
     }
   };
 
+  const setBaseline = (name: string) => {
+    if (!workspace) return;
+    api.saveSettings({ ...workspace, baseline: name }).then(setWorkspace).catch(() => {});
+  };
+
+  const title =
+    view === "chat" ? (current?.title ?? "New chat") : view === "agent" ? (editing?.spec.name ?? "New agent") : titles[view];
+  const dark = (prefs?.theme ?? "system") === "dark" || document.documentElement.dataset.theme === "dark";
+
   return (
-    <div className="flex h-full bg-aui-bg text-aui-fg">
+    <div className="flex h-full text-aui-fg">
       <Sidebar
         open={open}
         onToggle={toggle}
         view={view}
         onView={setView}
+        onNewChat={newChat}
         me={me}
+        prefs={prefs}
         can={can}
-        runs={runs}
-        selected={selected}
-        onSelect={select}
+        threads={threads}
+        selected={view === "chat" ? thread : null}
+        onSelect={openThread}
+        projects={(workspace?.projects ?? []).map((p) => p.name)}
+        project={project}
+        onProject={setProject}
         inboxCount={waiting}
         alertCount={openAlerts}
-        live={live}
         onSignOut={() => api.logout().then(onSignedOut).catch(onSignedOut)}
       />
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {(view === "new" || view === "run") && (
-          <RunView
-            run={view === "run" ? runs.find((r) => r.id === selected) : undefined}
-            agents={agents}
-            canRun={can("runs:write")}
-            onSelect={select}
-            onStarted={loadRuns}
-          />
-        )}
-        {view === "inbox" && (
-          <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
-            <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-6">
-              <WebSurface onAction={onInbox}>
-                <Inbox items={inbox} onAction={onInbox} viewer={me.principal.name} />
-              </WebSurface>
-              <p className="text-aui-xs text-aui-muted">
-                Open alerts and failed runs appear here. Approvals and budget requests will too, once a run can wait on
-                a person.
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+        <header className="oap-glass-bar flex h-12 shrink-0 items-center gap-3 border-aui-border border-b px-3">
+          {!open && (
+            <button
+              type="button"
+              onClick={toggle}
+              aria-label="Open sidebar"
+              className="inline-flex size-8 items-center justify-center rounded-aui text-aui-muted hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent md:hidden"
+            >
+              <PanelLeftIcon />
+            </button>
+          )}
+          <div className="flex min-w-0 flex-1 items-baseline gap-3">
+            <h1 className="truncate text-aui-sm font-medium text-aui-fg">{title}</h1>
+            {view === "chat" && current && (
+              <p className="hidden shrink-0 text-aui-xs text-aui-muted sm:block">
+                {current.turns} {current.turns === 1 ? "turn" : "turns"}
+                {current.branches > 0 ? `, ${current.branches} branched` : ""}
+                {current.project ? `, in ${current.project}` : ""}
               </p>
-            </div>
+            )}
           </div>
-        )}
-        {view === "runs" && <RunList runs={runs} onSelect={select} />}
-        {view === "agents" && (
-          <Agents agents={agents} sources={sources} stats={stats} canWrite={can("agents:write")} onChanged={loadAgents} />
-        )}
-        {view === "knowledge" && (
-          <Knowledge sources={sources} agents={agents} canWrite={can("knowledge:write")} onChanged={loadSources} />
-        )}
-        {view === "schedules" && (
-          <Schedules
-            schedules={schedules}
-            agents={agents}
-            canWrite={can("schedules:write")}
-            onChanged={loadSchedules}
-            onOpenRun={select}
+
+          {can("runs:read") && (
+            <Popover
+              label={`${active.length} running`}
+              align="right"
+              className="inline-flex h-8 items-center gap-2 rounded-aui border border-aui-border px-2.5 text-aui-xs text-aui-fg transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+              button={
+                <>
+                  <span aria-hidden className={`size-1.5 rounded-full ${active.length > 0 ? "bg-aui-info" : "bg-aui-neutral"}`} />
+                  <span className="tabular-nums">{active.length}</span> running
+                </>
+              }
+            >
+              {(close) =>
+                active.length === 0 ? (
+                  <p className="px-2.5 py-2 text-aui-sm text-aui-muted">Nothing is running right now.</p>
+                ) : (
+                  <ul className="aui-scroll max-h-80 overflow-y-auto" aria-label="Runs in flight">
+                    {active.map((r) => (
+                      <li key={r.id}>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            openRun(r.id);
+                            close();
+                          }}
+                          className="flex w-full items-center gap-2.5 rounded-aui px-2.5 py-2 text-left hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+                        >
+                          <AgentMark name={r.agent} size={22} />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate text-aui-sm text-aui-fg">{r.text || r.agent}</span>
+                            <span className="block text-aui-2xs text-aui-muted">
+                              {r.agent}, from {r.origin}
+                              {r.depth > 0 ? ", called by another agent" : ""}
+                            </span>
+                          </span>
+                          <Status status={r.status} />
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )
+              }
+            </Popover>
+          )}
+
+          <label className="hidden items-center gap-1.5 text-aui-xs text-aui-muted sm:inline-flex">
+            Dark
+            <input
+              type="checkbox"
+              className="oap-switch"
+              checked={dark}
+              disabled={!prefs}
+              onChange={(e) => {
+                if (!prefs) return;
+                api
+                  .savePreferences({ display_name: prefs.display_name, accent: prefs.accent, theme: e.target.checked ? "dark" : "light" })
+                  .then(setPrefs)
+                  .catch(() => {});
+              }}
+            />
+          </label>
+          <span
+            role="img"
+            aria-label={live ? "Live" : "Reconnecting"}
+            title={live ? "Live: updates arrive as they happen" : "Reconnecting"}
+            className={`size-1.5 shrink-0 rounded-full ${live ? "bg-aui-ok" : "bg-aui-warn"}`}
           />
-        )}
-        {view === "analytics" && <Analytics agents={agents} openAlerts={openAlerts} tick={tick} onOpenRun={select} />}
-        {view === "alerts" && (
-          <Alerts
-            alerts={alerts}
-            rules={rules}
-            agents={agents}
-            canWrite={can("alerts:write")}
-            onChanged={loadAlerts}
-            onOpenRun={select}
-          />
-        )}
-      </main>
+        </header>
+
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {view === "chat" && (
+            <Chat
+              key={thread ?? "new"}
+              threadId={thread}
+              tick={tick}
+              agents={agents}
+              settings={workspace}
+              canRun={can("runs:write")}
+              greeting={greeting(shownName)}
+              onThread={setThread}
+              onChanged={loadRuns}
+            />
+          )}
+          {view === "inbox" && (
+            <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
+              <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-6">
+                <WebSurface onAction={onInbox}>
+                  <Inbox items={inbox} onAction={onInbox} viewer={shownName} />
+                </WebSurface>
+                <p className="text-aui-xs text-aui-muted">
+                  Open alerts and failed runs appear here. Approvals and budget requests will too, once a run can wait
+                  on a person.
+                </p>
+              </div>
+            </div>
+          )}
+          {view === "runs" && <RunList runs={runs} onSelect={openRun} />}
+          {view === "agents" && (
+            <Agents
+              agents={agents}
+              stats={stats}
+              baseline={workspace?.baseline ?? ""}
+              canWrite={can("agents:write")}
+              onOpen={openAgent}
+              onNew={() => openAgent(null)}
+            />
+          )}
+          {view === "agent" && (
+            <AgentDetail
+              key={agentName ?? "new"}
+              revision={editing}
+              agents={agents}
+              sources={sources}
+              suites={suites}
+              rules={rules}
+              alerts={alerts}
+              stats={agentName ? stats.get(agentName) : undefined}
+              baseline={workspace?.baseline ?? ""}
+              canWrite={can("agents:write")}
+              canEval={can("evals:write")}
+              canAlert={can("alerts:write")}
+              onBack={() => setView("agents")}
+              onChanged={(name) => {
+                loadAgents();
+                setAgentName(name);
+              }}
+              onRulesChanged={loadAlerts}
+              onSuitesChanged={loadSuites}
+              onOpenRun={openRun}
+              onBaseline={setBaseline}
+            />
+          )}
+          {view === "knowledge" && (
+            <Knowledge
+              sources={sources}
+              agents={agents}
+              suites={suites}
+              canWrite={can("knowledge:write")}
+              canEval={can("evals:write")}
+              onChanged={loadSources}
+              onSuitesChanged={loadSuites}
+            />
+          )}
+          {view === "schedules" && (
+            <Schedules
+              schedules={schedules}
+              agents={agents}
+              canWrite={can("schedules:write")}
+              onChanged={loadSchedules}
+              onOpenRun={openRun}
+            />
+          )}
+          {view === "analytics" && <Analytics agents={agents} openAlerts={openAlerts} tick={tick} onOpenRun={openRun} />}
+          {view === "alerts" && (
+            <Alerts
+              alerts={alerts}
+              rules={rules}
+              agents={agents}
+              canWrite={can("alerts:write")}
+              onChanged={loadAlerts}
+              onOpenRun={openRun}
+            />
+          )}
+          {view === "settings" && prefs && (
+            <Settings
+              me={me}
+              prefs={prefs}
+              workspace={workspace}
+              agents={agents}
+              canAdmin={can("agents:write")}
+              onPrefs={setPrefs}
+              onWorkspace={setWorkspace}
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
 	"github.com/urmzd/open-agent-platform/pkg/auth"
+	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/journal"
 )
 
@@ -24,6 +25,13 @@ func (s *Server) observeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/alert-rules", s.authed(auth.AlertsRead, s.listRules))
 	mux.HandleFunc("POST /api/alert-rules", s.authed(auth.AlertsWrite, s.createRule))
 	mux.HandleFunc("DELETE /api/alert-rules/{name}", s.authed(auth.AlertsWrite, s.deleteRule))
+
+	mux.HandleFunc("GET /api/evals", s.authed(auth.EvalsRead, s.listSuites))
+	mux.HandleFunc("POST /api/evals", s.authed(auth.EvalsWrite, s.putSuite(false)))
+	mux.HandleFunc("PUT /api/evals/{name}", s.authed(auth.EvalsWrite, s.putSuite(true)))
+	mux.HandleFunc("DELETE /api/evals/{name}", s.authed(auth.EvalsWrite, s.deleteSuite))
+	mux.HandleFunc("POST /api/evals/{name}/run", s.authed(auth.EvalsWrite, s.runSuite))
+	mux.HandleFunc("GET /api/evals/{name}/runs", s.authed(auth.EvalsRead, s.suiteRuns))
 
 	mux.HandleFunc("GET /api/knowledge", s.authed(auth.KnowledgeRead, s.listSources))
 	mux.HandleFunc("POST /api/knowledge", s.authed(auth.KnowledgeWrite, s.createSource))
@@ -216,4 +224,89 @@ func (s *Server) searchKnowledge(w http.ResponseWriter, r *http.Request, who aut
 		return
 	}
 	ok(w, http.StatusOK, map[string]any{"hits": hits})
+}
+
+// suiteView is a suite with its most recent runs, newest first. Results are
+// left off all but the latest, so listing suites stays small.
+type suiteView struct {
+	evals.Suite
+	Runs []evals.Run `json:"runs"`
+}
+
+func (s *Server) listSuites(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
+	out := []suiteView{}
+	for _, suite := range s.P.Evals.List(who.Tenant) {
+		runs, _ := s.P.Evals.Runs(who.Tenant, suite.Name)
+		if len(runs) > 20 {
+			runs = runs[:20]
+		}
+		for i := range runs {
+			if i > 0 {
+				runs[i].Results = []evals.Result{}
+			}
+		}
+		out = append(out, suiteView{Suite: suite, Runs: orEmpty(runs)})
+	}
+	ok(w, http.StatusOK, map[string]any{"suites": out})
+}
+
+func (s *Server) putSuite(replace bool) handler {
+	return func(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+		var suite evals.Suite
+		if !decode(w, r, &suite) {
+			return
+		}
+		if replace && suite.Name != r.PathValue("name") {
+			fail(w, http.StatusBadRequest, "the suite's name must match the suite being changed")
+			return
+		}
+		// What a suite tests must exist in the caller's tenant now.
+		var err error
+		switch suite.Target {
+		case evals.Agent:
+			_, err = s.P.Agents.Get(r.Context(), who.Tenant, suite.Subject, 0)
+		case evals.Knowledge:
+			_, err = s.P.Knowledge.Documents(who.Tenant, suite.Subject)
+		}
+		if err != nil {
+			s.problem(w, err)
+			return
+		}
+		suite.CreatedBy, suite.UpdatedAt = who.Subject, time.Now()
+		if err := s.P.Evals.Put(who.Tenant, suite, replace); err != nil {
+			s.problem(w, err)
+			return
+		}
+		status := http.StatusCreated
+		if replace {
+			status = http.StatusOK
+		}
+		ok(w, status, suite)
+	}
+}
+
+func (s *Server) deleteSuite(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	if err := s.P.Evals.Delete(who.Tenant, r.PathValue("name")); err != nil {
+		s.problem(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) runSuite(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	run, err := s.P.StartEval(r.Context(), who.Tenant, r.PathValue("name"), who.Subject)
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusAccepted, run)
+}
+
+func (s *Server) suiteRuns(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	runs, err := s.P.Evals.Runs(who.Tenant, r.PathValue("name"))
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, map[string]any{"runs": orEmpty(runs)})
 }

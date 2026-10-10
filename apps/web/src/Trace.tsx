@@ -51,7 +51,7 @@ export function Trace({ run, stamp }: { run: Run; stamp: string }) {
   return (
     <div className="border-aui-border border-b px-4 py-3">
       <div className="flex items-baseline justify-between pb-1.5">
-        <p className="text-aui-2xs font-medium uppercase tracking-wide text-aui-muted">Trace</p>
+        <p className="text-aui-xs text-aui-muted">Trace</p>
         <p className="text-aui-2xs tabular-nums text-aui-muted">{took(total)} end to end</p>
       </div>
       <ul className="aui-scroll flex max-h-64 flex-col gap-px overflow-y-auto">

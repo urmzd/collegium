@@ -30,6 +30,20 @@ var ErrNotFound = errors.New("runs: not found")
 // OriginManual marks a schedule fired by a person rather than by the clock.
 const OriginManual = "manual"
 
+// OriginAPI marks a run a caller asked for through the platform's API. It is
+// the only origin whose conversation keys are believed.
+const OriginAPI = "api"
+
+// Keys the platform's API writes into a tag's Meta to place a run in a
+// conversation. A tag from any other origin carrying them is ignored.
+const (
+	MetaThread  = "oap.thread"
+	MetaPrev    = "oap.prev"
+	MetaAsk     = "oap.ask"
+	MetaPicked  = "oap.picked"
+	MetaProject = "oap.project"
+)
+
 // Status is where a run is in its life.
 type Status string
 
@@ -61,6 +75,18 @@ type Run struct {
 	Mode   call.Mode `json:"mode,omitempty"`
 	// Schedule names the schedule that raised the run, if one did.
 	Schedule string `json:"schedule,omitempty"`
+
+	// Thread is the conversation the run belongs to. A run that starts a
+	// conversation is its own thread.
+	Thread string `json:"thread"`
+	// Prev is the turn this one follows. Two runs with the same Prev are
+	// branches: different answers to the same point in the conversation.
+	Prev string `json:"prev,omitempty"`
+	// Picked says why the agent was chosen, when the caller left it to the
+	// platform.
+	Picked string `json:"picked,omitempty"`
+	// Project is the project the conversation is filed under, if any.
+	Project string `json:"project,omitempty"`
 
 	// Lease is the run's budget in micro-USD. Zero means unmetered.
 	Lease int64 `json:"lease"`
@@ -125,9 +151,27 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 	if tag.Origin == "cron" || tag.Origin == OriginManual {
 		schedule = tag.Meta["cron_schedule"]
 	}
+	// A run is its own conversation unless the API placed it in one. A run
+	// called by an agent belongs to its root's conversation.
+	thread, prev, picked, text, project := runID, "", "", tag.Text, ""
+	if tag.Origin == OriginAPI {
+		project = tag.Meta[MetaProject]
+		if v := tag.Meta[MetaThread]; v != "" {
+			thread = v
+		}
+		prev, picked = tag.Meta[MetaPrev], tag.Meta[MetaPicked]
+		// The agent is sent the conversation so far. What the person
+		// actually typed is kept apart, and is what the record shows.
+		if v := tag.Meta[MetaAsk]; v != "" {
+			text = v
+		}
+	}
+	if root, ok := x.runs[runtime.RunID(edge.Root)]; ok && parent != "" {
+		thread, project = root.Thread, root.Project
+	}
 	x.runs[runID] = &Run{
 		ID: runID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
-		Text: tag.Text, Actor: tag.Actor,
+		Text: text, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project,
 		Root: runtime.RunID(edge.Root), Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lease: edge.Lease, Schedule: schedule,
 		Status: Accepted, CreatedAt: tag.At, UpdatedAt: tag.At,
 		tag: tag,
@@ -280,4 +324,115 @@ func (x *Index) Tree(tenant, runID string) ([]Run, error) {
 		}
 	}
 	return out, nil
+}
+
+// ThreadSummary is one conversation at a glance.
+type ThreadSummary struct {
+	ID string `json:"id"`
+	// Title is the first thing that was asked.
+	Title   string `json:"title"`
+	Origin  string `json:"origin"`
+	Project string `json:"project,omitempty"`
+	// Agents is every agent that has answered in it, in order of first reply.
+	Agents []string `json:"agents"`
+	Turns  int      `json:"turns"`
+	// Branches is how many turns have more than one answer.
+	Branches int `json:"branches"`
+	// Active is how many of its runs have not ended.
+	Active    int       `json:"active"`
+	Failed    int       `json:"failed"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// Conversation returns the turns of a thread, oldest first. Runs an agent
+// called along the way are not turns and are left out: they hang off a turn's
+// call tree.
+func (x *Index) Conversation(tenant, thread string) ([]Run, error) {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	var out []Run
+	for _, id := range x.order {
+		if r := x.runs[id]; r.Tenant == tenant && r.Thread == thread && r.Parent == "" {
+			out = append(out, *r)
+		}
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	return out, nil
+}
+
+// Path returns the turns from the start of a conversation down to a run,
+// oldest first: the one branch that run sits on.
+func (x *Index) Path(tenant, runID string) ([]Run, error) {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	var out []Run
+	seen := map[string]bool{}
+	for id := runID; id != "" && !seen[id]; {
+		r, ok := x.runs[id]
+		if !ok || r.Tenant != tenant {
+			break
+		}
+		seen[id] = true
+		out = append(out, *r)
+		id = r.Prev
+	}
+	if len(out) == 0 {
+		return nil, ErrNotFound
+	}
+	slices.Reverse(out)
+	return out, nil
+}
+
+// Threads returns a tenant's conversations, most recently active first.
+func (x *Index) Threads(tenant string, limit int) []ThreadSummary {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	byID := map[string]*ThreadSummary{}
+	answers := map[string]int{}
+	var order []string
+	for _, id := range x.order {
+		r := x.runs[id]
+		if r.Tenant != tenant {
+			continue
+		}
+		s, ok := byID[r.Thread]
+		if !ok {
+			s = &ThreadSummary{ID: r.Thread, Title: r.Text, Origin: r.Origin, Project: r.Project, CreatedAt: r.CreatedAt}
+			byID[r.Thread] = s
+			order = append(order, r.Thread)
+		}
+		if !r.Status.Terminal() {
+			s.Active++
+		}
+		if r.Status == Failed {
+			s.Failed++
+		}
+		if r.UpdatedAt.After(s.UpdatedAt) {
+			s.UpdatedAt = r.UpdatedAt
+		}
+		if r.Parent != "" {
+			continue
+		}
+		s.Turns++
+		if !slices.Contains(s.Agents, r.Agent) {
+			s.Agents = append(s.Agents, r.Agent)
+		}
+		// A second answer at the same point makes that point a branch.
+		key := r.Thread + "\x00" + r.Prev
+		if answers[key]++; answers[key] == 2 {
+			s.Branches++
+		}
+	}
+	out := make([]ThreadSummary, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	slices.SortStableFunc(out, func(a, b ThreadSummary) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
 }

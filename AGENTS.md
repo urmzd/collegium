@@ -20,6 +20,8 @@ platform. agent-ui supplies the components. The design is in
 - **Every route checks one permission.** Add it in `Server.Handler`, next to the route.
 - **The ledger decides whether a run is over.** Events report attempts. Do not infer an ending from silence.
 - **Bound every query.** A window, a row cap and a bucket cap, enforced on the server.
+- **Evals are deterministic.** A check is a pure function of the output. Do not add a model as a judge without saying so in the suite.
+- **One title per screen.** The top bar carries it. Pages do not repeat it.
 - **Keep the status table honest.** When a piece lands, update
   `docs/architecture.md#status` in the same change.
 
@@ -27,6 +29,7 @@ platform. agent-ui supplies the components. The design is in
 
 - `pkg/call`: the call primitive. `pkg/runs`: the run index and statistics. `pkg/auth`: principals, roles, OIDC.
 - `pkg/journal`: the event log, queries and traces. `pkg/alerts`: rules and alerts. `pkg/knowledge`: sources and search.
+- `pkg/evals`: suites and runs, scored by saige. `pkg/pick`: who answers a message. `pkg/prefs`: a person's own settings.
 - `internal/platform`: the composition root. `internal/httpapi`: routes, sessions, event stream.
 - `cmd/open-agent-platform`: the binary. `apps/web`: the console, built on agent-ui.
 

@@ -6,6 +6,7 @@ const kindLabel: Record<AlertRule["kind"], string> = {
   run_failed: "A run fails",
   failure_rate: "Failure rate passes a threshold",
   slow_run: "A run takes too long",
+  eval_below: "An eval's pass rate falls short",
 };
 
 function describe(r: AlertRule): string {
@@ -15,6 +16,8 @@ function describe(r: AlertRule): string {
       return `When a run of ${scope} fails.`;
     case "slow_run":
       return `When a run of ${scope} takes longer than ${r.threshold}s.`;
+    case "eval_below":
+      return `When an eval of ${scope} passes fewer than ${r.threshold}% of its cases.`;
     case "failure_rate":
       return `When ${r.threshold}% or more of ${scope}'s runs fail over ${Math.round((r.window_seconds ?? 0) / 60)} minutes, with at least ${r.min_runs} runs.`;
   }
@@ -123,11 +126,11 @@ export function Alerts({
         {rules.length === 0 ? (
           <p className="text-aui-sm text-aui-muted">No rules. Without one, nothing raises an alert.</p>
         ) : (
-          <ul className="overflow-hidden rounded-aui-lg border border-aui-border">
+          <ul className="oap-glass overflow-hidden rounded-aui-lg">
             {rules.map((r) => (
               <li
                 key={r.name}
-                className="flex items-center justify-between gap-3 border-aui-border border-b bg-aui-surface px-4 py-2.5 last:border-b-0"
+                className="flex items-center justify-between gap-3 border-aui-border border-b px-4 py-2.5 last:border-b-0"
               >
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-x-3">
@@ -154,11 +157,11 @@ export function Alerts({
       {seen.length > 0 && (
         <section className="flex flex-col gap-2">
           <h2 className="text-aui-sm font-medium text-aui-fg">Acknowledged ({seen.length})</h2>
-          <ul className="overflow-hidden rounded-aui-lg border border-aui-border">
+          <ul className="oap-glass overflow-hidden rounded-aui-lg">
             {seen.slice(0, 50).map((a) => (
               <li
                 key={a.id}
-                className="flex items-center gap-3 border-aui-border border-b bg-aui-surface px-4 py-2 text-aui-sm last:border-b-0"
+                className="flex items-center gap-3 border-aui-border border-b px-4 py-2 text-aui-sm last:border-b-0"
               >
                 <span className="min-w-0 flex-1 truncate text-aui-muted">{a.title}</span>
                 <Chip>{a.rule}</Chip>
@@ -213,7 +216,7 @@ function RuleForm({ agents, onClose, onSaved }: { agents: Revision[]; onClose: (
               const kind = e.target.value as AlertRule["kind"];
               set({
                 kind,
-                threshold: kind === "failure_rate" ? 50 : kind === "slow_run" ? 60 : undefined,
+                threshold: kind === "failure_rate" ? 50 : kind === "slow_run" ? 60 : kind === "eval_below" ? 80 : undefined,
                 min_runs: kind === "failure_rate" ? 5 : undefined,
               });
             }}
@@ -250,6 +253,18 @@ function RuleForm({ agents, onClose, onSaved }: { agents: Revision[]; onClose: (
               type="number"
               min={1}
               value={rule.threshold ?? 60}
+              onChange={(e) => set({ threshold: Number(e.target.value) })}
+            />
+          </Label>
+        )}
+        {rule.kind === "eval_below" && (
+          <Label text="Pass rate under (%)">
+            <input
+              className={field}
+              type="number"
+              min={1}
+              max={100}
+              value={rule.threshold ?? 80}
               onChange={(e) => set({ threshold: Number(e.target.value) })}
             />
           </Label>

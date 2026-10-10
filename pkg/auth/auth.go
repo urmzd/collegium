@@ -48,13 +48,15 @@ const (
 	AlertsWrite    Permission = "alerts:write"
 	KnowledgeRead  Permission = "knowledge:read"
 	KnowledgeWrite Permission = "knowledge:write"
+	EvalsRead      Permission = "evals:read"
+	EvalsWrite     Permission = "evals:write"
 )
 
 // Permissions lists every permission, for validating configured scopes.
 func Permissions() []Permission {
 	return []Permission{
 		AgentsRead, AgentsWrite, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
-		AlertsRead, AlertsWrite, KnowledgeRead, KnowledgeWrite,
+		AlertsRead, AlertsWrite, KnowledgeRead, KnowledgeWrite, EvalsRead, EvalsWrite,
 	}
 }
 
@@ -73,9 +75,12 @@ const (
 )
 
 var rolePermissions = map[Role][]Permission{
-	Viewer:   {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead},
-	Operator: {AgentsRead, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite, AlertsRead, AlertsWrite, KnowledgeRead},
-	Admin:    Permissions(),
+	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead},
+	Operator: {
+		AgentsRead, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
+		AlertsRead, AlertsWrite, KnowledgeRead, EvalsRead, EvalsWrite,
+	},
+	Admin: Permissions(),
 }
 
 // ParseRole reports whether s names a role.

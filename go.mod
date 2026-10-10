@@ -8,6 +8,7 @@ require (
 	github.com/urmzd/dispatch v0.1.0
 	github.com/urmzd/duraturo v0.1.1
 	github.com/urmzd/opentag v0.1.0
+	github.com/urmzd/saige v0.22.0
 	golang.org/x/oauth2 v0.37.0
 )
 
@@ -21,7 +22,6 @@ require (
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
-	github.com/urmzd/saige v0.22.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

@@ -1,17 +1,24 @@
 import { type FormEvent, useEffect, useState } from "react";
-import { ApiError, api, type Doc, type Hit, type Revision, type Source } from "./api.ts";
+import { ApiError, api, type Doc, type Hit, type Revision, type Source, type SuiteView } from "./api.ts";
+import { Evals } from "./Evals.tsx";
 import { ago, button, card, Chip, Empty, field, Label, Page, Problem, primary } from "./ui.tsx";
 
 export function Knowledge({
   sources,
   agents,
+  suites,
   canWrite,
+  canEval,
   onChanged,
+  onSuitesChanged,
 }: {
   sources: Source[];
   agents: Revision[];
+  suites: SuiteView[];
   canWrite: boolean;
+  canEval: boolean;
   onChanged: () => void;
+  onSuitesChanged: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
@@ -104,8 +111,11 @@ export function Knowledge({
               key={current.name}
               source={current}
               usedBy={agents.filter((a) => (a.spec.sources ?? []).some((x) => x.name === current.name)).map((a) => a.spec.name)}
+              suites={suites}
               canWrite={canWrite}
+              canEval={canEval}
               onChanged={onChanged}
+              onSuitesChanged={onSuitesChanged}
             />
           )}
         </div>
@@ -117,13 +127,19 @@ export function Knowledge({
 function SourceDetail({
   source,
   usedBy,
+  suites,
   canWrite,
+  canEval,
   onChanged,
+  onSuitesChanged,
 }: {
   source: Source;
   usedBy: string[];
+  suites: SuiteView[];
   canWrite: boolean;
+  canEval: boolean;
   onChanged: () => void;
+  onSuitesChanged: () => void;
 }) {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [draft, setDraft] = useState({ title: "", uri: "", text: "" });
@@ -279,6 +295,11 @@ function SourceDetail({
             </div>
           </form>
         )}
+      </section>
+
+      <section className="flex flex-col gap-2">
+        <h3 className="text-aui-sm font-medium text-aui-fg">Retrieval evals</h3>
+        <Evals target="knowledge" subject={source.name} suites={suites} canWrite={canEval} onChanged={onSuitesChanged} />
       </section>
     </div>
   );

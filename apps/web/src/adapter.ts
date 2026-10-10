@@ -35,6 +35,13 @@ export interface Run {
   mode?: "subagent" | "handoff" | "delegate";
   /** The schedule that raised the run, if one did. */
   schedule?: string;
+  /** The conversation the run belongs to. */
+  thread: string;
+  /** The turn this one follows. Runs sharing a prev are branches. */
+  prev?: string;
+  /** Why the agent was chosen, when the platform picked it. */
+  picked?: string;
+  project?: string;
   lease: number;
   granted: number;
   calls: number;

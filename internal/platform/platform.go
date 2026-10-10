@@ -40,8 +40,10 @@ import (
 
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
 	"github.com/urmzd/open-agent-platform/pkg/call"
+	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/journal"
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
+	"github.com/urmzd/open-agent-platform/pkg/prefs"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
 
@@ -75,6 +77,8 @@ type Platform struct {
 	Journal   *journal.Journal
 	Alerts    *alerts.Engine
 	Knowledge *knowledge.Store
+	Evals     *evals.Store
+	Prefs     *prefs.Store
 
 	broker  bus.Bus
 	sinks   *connector.Registry
@@ -82,6 +86,8 @@ type Platform struct {
 	rt      *runtime.Runtime
 	ledger  *ledger.Memory
 	queue   *dqueue.Memory
+
+	settings settings
 
 	// calls serializes Call, so two calls from one run cannot both pass a
 	// fan-out or budget check that only one of them fits under.
@@ -106,6 +112,8 @@ func New(cfg Config) (*Platform, error) {
 		Journal:   journal.New(0),
 		Alerts:    alerts.NewEngine(),
 		Knowledge: knowledge.NewStore(),
+		Evals:     evals.NewStore(),
+		Prefs:     prefs.NewStore(),
 		broker:    bus.NewMemory(),
 		sinks:     connector.NewRegistry(),
 		ledger:    ledger.NewMemory(),

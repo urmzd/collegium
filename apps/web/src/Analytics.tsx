@@ -165,7 +165,7 @@ function Breakdown({ title, groups, onPick }: { title: string; groups: Group[]; 
       ) : (
         <table className="w-full text-aui-sm">
           <thead>
-            <tr className="text-left text-aui-2xs uppercase tracking-wide text-aui-muted">
+            <tr className="text-left text-aui-2xs text-aui-muted">
               <th className="pb-1 font-medium">Name</th>
               <th className="w-2/5 pb-1 font-medium">Runs</th>
               <th className="pb-1 text-right font-medium">Success</th>
@@ -290,7 +290,7 @@ function Journal({
         <div className="aui-scroll max-h-96 overflow-y-auto">
           <table className="w-full text-aui-xs">
             <thead className="sticky top-0 bg-aui-surface">
-              <tr className="text-left text-aui-2xs uppercase tracking-wide text-aui-muted">
+              <tr className="text-left text-aui-2xs text-aui-muted">
                 <th className="pb-1 font-medium">When</th>
                 <th className="pb-1 font-medium">Agent</th>
                 <th className="pb-1 font-medium">Event</th>
@@ -406,7 +406,7 @@ export function Analytics({
             ) : table ? (
               <div className="aui-scroll max-h-64 overflow-y-auto">
                 <table className="w-full text-aui-xs tabular-nums">
-                  <thead className="sticky top-0 bg-aui-surface text-left text-aui-2xs uppercase tracking-wide text-aui-muted">
+                  <thead className="sticky top-0 bg-aui-surface text-left text-aui-2xs text-aui-muted">
                     <tr>
                       <th className="pb-1 font-medium">Interval</th>
                       <th className="pb-1 text-right font-medium">Completed</th>

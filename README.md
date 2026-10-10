@@ -7,10 +7,11 @@
 
 > ## Status
 >
-> **Early.** One process runs agents through opentag, with sign-in, schedules,
-> alerts, analytics, traces, knowledge search and a web console. Every store is
-> in memory. Connections (MCP, OAuth), approvals, evals and the remaining
-> connectors are not built. See the
+> **Early.** One process runs agents through opentag, with sign-in,
+> conversations that branch across agents, an agent editor with revisions,
+> evals, schedules, alerts, analytics, traces, knowledge search and a web
+> console. Every store is in memory. Connections (MCP, OAuth), approvals, local
+> accounts and the remaining connectors are not built. See the
 > [status table](docs/architecture.md#status).
 
 ## What it is
@@ -45,13 +46,27 @@ The console links agent-ui from a sibling checkout at `../agent-ui`.
 For real sign-in, roles and machine tokens, see
 [docs/security.md](docs/security.md).
 
+## Conversations
+
+`POST /api/runs` takes `agent`, `text`, and optionally `after` and `project`.
+
+- Leave `agent` empty or `auto` and the platform picks: the agent whose name,
+  description or prompt best matches the message, or the workspace's baseline.
+- `after` names the turn the message follows. Naming a turn that already has a
+  reply starts a branch. Any agent can answer any turn, and is sent the branch
+  so far.
+
 ## API
 
 | Route | Permission |
 |-------|------------|
 | `GET /api/me` | Signed in |
-| `GET`, `POST /api/agents`, `PUT /api/agents/{name}` | `agents:read`, `agents:write` |
+| `GET`, `POST /api/agents`, `PUT /api/agents/{name}`, `GET /api/agents/{name}/history` | `agents:read`, `agents:write` |
 | `GET`, `POST /api/runs`, `GET /api/runs/{id}`, `/tree`, `/trace` | `runs:read`, `runs:write` |
+| `GET /api/threads`, `GET /api/threads/{id}` | `runs:read` |
+| `GET /api/pick?q=`, `GET`, `PUT /api/settings` | `agents:read`, `agents:write` |
+| `GET`, `POST /api/evals`, `PUT`, `DELETE /api/evals/{name}`, `POST .../run`, `GET .../runs` | `evals:read`, `evals:write` |
+| `GET`, `PUT /api/preferences`, `GET`, `PUT`, `DELETE /api/preferences/photo` | Signed in, the caller's own |
 | `POST /api/runs/{id}/calls` | `runs:write` |
 | `GET /api/events?topic=agent[:name[:run]]` | `runs:read`, server-sent events |
 | `GET /api/analytics?window=1h` | `runs:read` |

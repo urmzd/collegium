@@ -15,6 +15,7 @@
     "@agent-ui/primitives": "link:../../../agent-ui/packages/primitives",
     "@agent-ui/render-web": "link:../../../agent-ui/packages/render-web",
     "@agent-ui/web": "link:../../../agent-ui/packages/web",
+    "@fontsource-variable/figtree": "^5.3.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0"
   },

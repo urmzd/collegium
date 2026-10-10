@@ -181,6 +181,13 @@ func seedAgents(ctx context.Context, p *platform.Platform, tenant string) error 
 			return fmt.Errorf("seed %s: %w", spec.Name, err)
 		}
 	}
+	// The lead answers when nobody picked an agent and none matched.
+	if err := p.SetSettings(ctx, tenant, platform.Settings{
+		Baseline: "lead",
+		Projects: []platform.Project{{Name: "Launch", Description: "Everything for the Q4 launch"}},
+	}); err != nil {
+		return fmt.Errorf("seed baseline: %w", err)
+	}
 	// One rule, so a failure shows up somewhere before anyone configures alerts.
 	err := p.Alerts.AddRule(tenant, alerts.Rule{Name: "any-run-fails", Kind: alerts.RunFailed, Severity: alerts.Critical, CreatedBy: "seed"})
 	if err != nil && !errors.Is(err, alerts.ErrExists) {

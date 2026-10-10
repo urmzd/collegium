@@ -103,7 +103,15 @@ stack until that is closed.
 | `pkg/journal`: event log, query, run traces | Built, a bounded ring in memory |
 | `pkg/alerts`: rules on run failure, failure rate and duration | Built, in memory |
 | `pkg/knowledge`: sources, documents, BM25 search | Built, in memory, lexical only |
-| Web console on agent-ui: runs, inbox, agents, knowledge, schedules, analytics, alerts | Built |
+| `pkg/evals`: suites of deterministic checks for agents, retrieval metrics for knowledge, scored by saige | Built, in memory |
+| Conversations: threads, branches, any agent on any turn, replayed history with a configurable limit | Built, in memory |
+| `pkg/pick`: lexical agent picker over name, description and prompt, with a baseline | Built |
+| Projects, workspace settings, `pkg/prefs`: per-person theme, accent and profile picture | Built, in memory |
+| Web console on agent-ui: chat, inbox, agent editor with revisions, evals, knowledge, schedules, analytics, alerts, settings | Built |
+| Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the only mode is loopback dev auth |
+| Model parameters on an agent (temperature, token and step limits) | Not built. opentag's agent spec has no fields for them |
+| Stopping a run in flight | Not built. The composer's queue waits for the run to end |
+| Summarizing history | Not built. Long conversations are truncated to the limit, oldest turns first |
 | Knowledge retrieval inside a run | Not built. opentag's retriever is not given the tenant or the agent, so wiring it would cross tenants |
 | Connections: MCP servers, OAuth to third parties, stored credentials | Not built |
 | Schedule delivery to Slack, email or another system | Not built. Needs connections |
@@ -115,7 +123,8 @@ stack until that is closed.
 | Approvals and budget requests in the inbox, routed by role | Not built. The inbox shows alerts and failed runs |
 | Alert delivery outside the console | Not built |
 | OTel export | Not built. Traces are rebuilt from the journal |
-| Online evals | Not built |
+| Evals that run on their own, on a schedule or on each revision | Not built. Evals run when someone starts them |
+| Model-graded evals | Not built, on purpose for now: every check is exact |
 | Email connector, MCP server, Slack and Jira wiring | Not built |
 | Remote execution nodes, peer connector | Not built |
 | Postgres stores | Not built. Everything above is lost on restart |

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
 
@@ -104,6 +105,34 @@ func TestAck(t *testing.T) {
 	second, _ := e.Ack("acme", a.ID, "bob", t0.Add(time.Hour))
 	if first.AckedBy != "ada" || second.AckedBy != "ada" {
 		t.Fatalf("the first acknowledgement was overwritten: %+v", second)
+	}
+}
+
+func TestEvalBelow(t *testing.T) {
+	e := NewEngine()
+	_ = e.AddRule("acme", Rule{Name: "lead-quality", Kind: EvalBelow, Agent: "lead", Threshold: 80, Severity: Warning})
+	run := func(subject string, rate float64, status evals.Status) evals.Run {
+		return evals.Run{Suite: "smoke", Target: evals.Agent, Subject: subject, Status: status, PassRate: rate, Passed: 1, Total: 2, EndedAt: t0}
+	}
+	if got := e.EvaluateEval("acme", run("lead", 90, evals.Passed)); len(got) != 0 {
+		t.Fatalf("90%% fired an 80%% rule: %v", got)
+	}
+	if got := e.EvaluateEval("acme", run("helper", 10, evals.Failed)); len(got) != 0 {
+		t.Fatalf("another agent's suite fired: %v", got)
+	}
+	if got := e.EvaluateEval("acme", run("lead", 50, evals.Running)); len(got) != 0 {
+		t.Fatalf("a run still in flight fired: %v", got)
+	}
+	got := e.EvaluateEval("acme", run("lead", 50, evals.Failed))
+	if len(got) != 1 || got[0].Suite != "smoke" || got[0].Agent != "lead" {
+		t.Fatalf("got %+v", got)
+	}
+	if got := e.EvaluateEval("globex", run("lead", 50, evals.Failed)); len(got) != 0 {
+		t.Fatalf("another tenant's rule fired: %v", got)
+	}
+	// A run of a normal agent does not trip an eval rule.
+	if got := e.Evaluate(ended("lead", runs.Failed, time.Second), nil); len(got) != 0 {
+		t.Fatalf("a failed run fired an eval rule: %v", got)
 	}
 }
 

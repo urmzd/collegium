@@ -18,8 +18,8 @@ Every caller becomes a `Principal`, and every route asks it one question:
 
 | Role | Permissions |
 |------|-------------|
-| `viewer` | `agents:read`, `runs:read`, `schedules:read`, `alerts:read`, `knowledge:read` |
-| `operator` | viewer, plus `runs:write`, `schedules:write`, `alerts:write` |
+| `viewer` | `agents:read`, `runs:read`, `schedules:read`, `alerts:read`, `knowledge:read`, `evals:read` |
+| `operator` | viewer, plus `runs:write`, `schedules:write`, `alerts:write`, `evals:write` |
 | `admin` | operator, plus `agents:write`, `knowledge:write` |
 
 Writing knowledge is an admin permission because a document an agent is grounded
@@ -54,6 +54,19 @@ no permission, grants nothing.
 - **An agent calls only who its spec allows.** The caller's pinned revision
   must list the target in `access.spawn`, then depth, fan-out and budget are
   checked. The zero limits allow no calls.
+- **Conversation keys are believed only from the API.** A run is placed in a
+  thread, a branch or a project only when the platform's own API raised it. A
+  trigger's tag carrying those keys is a conversation of its own.
+- **Continuing a conversation checks the tenant.** `after` must name a run in
+  the caller's tenant, or the request is a 404.
+- **Preferences are the caller's own.** Those routes take no subject, so there
+  is no way to name someone else.
+- **A profile picture is what its bytes say it is.** Only PNG, JPEG and WebP are
+  accepted, by signature, up to 512 KB. It is served with the type the server
+  determined, `nosniff`, and a sandboxing content security policy. SVG and HTML
+  are refused.
+- **Evals are bounded.** A suite holds at most 50 cases, one run of a suite is
+  open at a time, cases run one after another, and a case is given two minutes.
 - **Only trusted origins name a schedule.** A run is tied to a schedule only
   when the cron trigger or the platform's own run-now raised it.
 - **Queries are bounded.** Analytics and the journal take a window of at most
@@ -105,6 +118,8 @@ and a per-caller tenant claim are flags: see `serve -h`.
 - No token revocation check beyond expiry, and no refresh. A session lasts 8
   hours.
 - No rate limiting.
+- No local accounts. Without an identity provider the only mode is dev auth on
+  loopback, where everyone is an admin.
 - The audit trail is the server log, not a store.
 - A call cannot yet narrow the callee's access to the caller's grant.
 - Sign-in has been tested against an in-process issuer, not a live Okta org.

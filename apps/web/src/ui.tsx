@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
 
 export const field =
@@ -125,10 +125,10 @@ export function Page({
     <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
       <div className={`mx-auto flex w-full flex-col gap-4 px-4 py-6 ${wide ? "max-w-5xl" : "max-w-3xl"}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h1 className="text-aui-lg font-medium text-aui-fg">{title}</h1>
-            <p className="max-w-2xl text-aui-sm text-aui-muted">{lede}</p>
-          </div>
+          {/* The top bar carries the page's title. This is the line under it. */}
+          <p className="min-w-0 max-w-2xl text-aui-sm text-aui-muted" data-page={title}>
+            {lede}
+          </p>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </div>
         {children}
@@ -137,7 +137,7 @@ export function Page({
   );
 }
 
-export const card = "rounded-aui-lg border border-aui-border bg-aui-surface p-4";
+export const card = "oap-glass rounded-aui-lg p-4";
 
 /** A figure with its label. The value is ink, never a status color. */
 export function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
@@ -146,6 +146,202 @@ export function Stat({ label, value, note }: { label: string; value: string; not
       <span className="text-aui-xs text-aui-muted">{label}</span>
       <span className="text-aui-xl font-semibold text-aui-fg">{value}</span>
       {note && <span className="text-aui-2xs text-aui-muted">{note}</span>}
+    </div>
+  );
+}
+
+/** A stable hue for a name, so an agent keeps its color everywhere it appears. */
+export function hueOf(name: string): number {
+  let h = 0;
+  for (const c of name) h = (h * 31 + c.charCodeAt(0)) % 360;
+  return h;
+}
+
+/**
+ * An agent's mark: its initial on a tile tinted with its own hue. The letter is
+ * ink, so the mark reads without the color, and the color makes one agent
+ * recognizable among many.
+ */
+export function AgentMark({ name, size = 20 }: { name: string; size?: number }) {
+  const hue = hueOf(name);
+  return (
+    <span
+      aria-hidden
+      className="inline-flex shrink-0 items-center justify-center rounded-[28%] font-semibold text-aui-fg"
+      style={{
+        width: size,
+        height: size,
+        fontSize: Math.round(size * 0.52),
+        background: `oklch(0.66 0.15 ${hue} / 26%)`,
+        boxShadow: `inset 0 0 0 1px oklch(0.66 0.15 ${hue} / 55%)`,
+      }}
+    >
+      {(name.trim()[0] ?? "?").toUpperCase()}
+    </span>
+  );
+}
+
+/** A labelled on/off choice. */
+export function Switch({
+  label,
+  hint,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex items-start justify-between gap-4">
+      <span className="min-w-0">
+        <span className="block text-aui-sm text-aui-fg">{label}</span>
+        {hint && <span className="block text-aui-xs text-aui-muted">{hint}</span>}
+      </span>
+      <input
+        type="checkbox"
+        className="oap-switch mt-0.5"
+        checked={checked}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.checked)}
+      />
+    </label>
+  );
+}
+
+/** One of a few choices, shown together. */
+export function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: { id: T; label: string }[];
+  onChange: (next: T) => void;
+}) {
+  return (
+    <fieldset className="inline-flex rounded-aui border border-aui-border p-0.5">
+      <legend className="sr-only">{label}</legend>
+      {options.map((o) => (
+        <button
+          key={o.id}
+          type="button"
+          aria-pressed={value === o.id}
+          onClick={() => onChange(o.id)}
+          className="h-7 rounded-aui-sm px-2.5 text-aui-xs text-aui-muted transition-colors hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-pressed:bg-aui-hover aria-pressed:text-aui-fg"
+        >
+          {o.label}
+        </button>
+      ))}
+    </fieldset>
+  );
+}
+
+/** Tabs for the sections of one thing. */
+export function Tabs<T extends string>({
+  label,
+  value,
+  tabs,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  tabs: { id: T; label: string; count?: number }[];
+  onChange: (next: T) => void;
+}) {
+  return (
+    <div role="tablist" aria-label={label} className="flex gap-1 border-aui-border border-b">
+      {tabs.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          role="tab"
+          aria-selected={value === t.id}
+          onClick={() => onChange(t.id)}
+          className="-mb-px inline-flex h-9 items-center gap-1.5 border-transparent border-b-2 px-3 text-aui-sm text-aui-muted transition-colors hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-selected:border-aui-accent aria-selected:text-aui-fg"
+        >
+          {t.label}
+          {t.count !== undefined && t.count > 0 && (
+            <span className="rounded-full bg-aui-hover px-1.5 text-aui-2xs tabular-nums text-aui-muted">{t.count}</span>
+          )}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * A button that opens a small panel. It closes on Escape, on a click outside,
+ * and when focus leaves it, and returns focus to the button.
+ */
+export function Popover({
+  label,
+  button: trigger,
+  className,
+  align = "left",
+  up = false,
+  children,
+}: {
+  label: string;
+  button: ReactNode;
+  className?: string;
+  align?: "left" | "right";
+  up?: boolean;
+  children: (close: () => void) => ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  const id = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => {
+      if (root.current && !root.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [open]);
+
+  return (
+    <div
+      ref={root}
+      className="relative"
+      onKeyDown={(e) => {
+        if (e.key === "Escape" && open) {
+          e.stopPropagation();
+          setOpen(false);
+          root.current?.querySelector<HTMLButtonElement>("button")?.focus();
+        }
+      }}
+    >
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        onClick={() => setOpen(!open)}
+        className={className}
+      >
+        {trigger}
+      </button>
+      {open && (
+        <div
+          id={id}
+          role="dialog"
+          aria-label={label}
+          className={`oap-glass-pop aui-pop-in absolute z-40 w-80 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${
+            align === "right" ? "right-0" : "left-0"
+          } ${up ? "bottom-full mb-2" : "top-full mt-2"}`}
+        >
+          {children(() => setOpen(false))}
+        </div>
+      )}
     </div>
   );
 }

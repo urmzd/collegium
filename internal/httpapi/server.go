@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -28,7 +29,10 @@ import (
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
 	"github.com/urmzd/open-agent-platform/pkg/auth"
 	"github.com/urmzd/open-agent-platform/pkg/call"
+	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
+	"github.com/urmzd/open-agent-platform/pkg/pick"
+	"github.com/urmzd/open-agent-platform/pkg/prefs"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
 
@@ -60,8 +64,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/agents", s.authed(auth.AgentsRead, s.listAgents))
 	mux.HandleFunc("POST /api/agents", s.authed(auth.AgentsWrite, s.createAgent))
 	mux.HandleFunc("PUT /api/agents/{name}", s.authed(auth.AgentsWrite, s.reviseAgent))
+	mux.HandleFunc("GET /api/agents/{name}/history", s.authed(auth.AgentsRead, s.agentHistory))
 	mux.HandleFunc("GET /api/runs", s.authed(auth.RunsRead, s.listRuns))
 	mux.HandleFunc("POST /api/runs", s.authed(auth.RunsWrite, s.createRun))
+	mux.HandleFunc("GET /api/threads", s.authed(auth.RunsRead, s.listThreads))
+	mux.HandleFunc("GET /api/threads/{id}", s.authed(auth.RunsRead, s.getThread))
+	mux.HandleFunc("GET /api/pick", s.authed(auth.AgentsRead, s.pickAgent))
+	mux.HandleFunc("GET /api/settings", s.authed(auth.AgentsRead, s.getSettings))
+	mux.HandleFunc("PUT /api/settings", s.authed(auth.AgentsWrite, s.putSettings))
 	mux.HandleFunc("GET /api/runs/{id}", s.authed(auth.RunsRead, s.getRun))
 	mux.HandleFunc("GET /api/runs/{id}/tree", s.authed(auth.RunsRead, s.runTree))
 	mux.HandleFunc("POST /api/runs/{id}/calls", s.authed(auth.RunsWrite, s.createCall))
@@ -73,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/schedules/{name}/run", s.authed(auth.SchedulesWrite, s.runSchedule))
 	mux.HandleFunc("GET /api/events", s.authed(auth.RunsRead, s.events))
 	s.observeRoutes(mux)
+	s.preferenceRoutes(mux)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "no such route") })
 
 	if s.WebDir != "" {
@@ -92,7 +103,7 @@ func headers(next http.Handler) http.Handler {
 		h.Set("X-Content-Type-Options", "nosniff")
 		h.Set("Referrer-Policy", "no-referrer")
 		h.Set("Content-Security-Policy",
-			"default-src 'self'; img-src 'self' data: https:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+			"default-src 'self'; img-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		if strings.HasPrefix(r.URL.Path, "/api/") || strings.HasPrefix(r.URL.Path, "/auth/") {
 			h.Set("Cache-Control", "no-store")
 		}
@@ -180,14 +191,30 @@ func (s *Server) reviseAgent(w http.ResponseWriter, r *http.Request, who auth.Pr
 	ok(w, http.StatusOK, rev)
 }
 
+// agentHistory returns every revision of an agent, newest first.
+func (s *Server) agentHistory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	revs, err := s.P.Agents.History(r.Context(), who.Tenant, r.PathValue("name"))
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	slices.SortFunc(revs, func(a, b agentspec.Revision) int { return b.Rev - a.Rev })
+	ok(w, http.StatusOK, map[string]any{"revisions": orEmpty(revs)})
+}
+
 func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
 	ok(w, http.StatusOK, map[string]any{"runs": orEmpty(s.P.Runs.List(who.Tenant, 200))})
 }
 
 func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Principal) {
 	var body struct {
+		// Agent is who should answer. Empty or "auto" lets the platform pick.
 		Agent string `json:"agent"`
 		Text  string `json:"text"`
+		// After is the turn this message follows. Empty starts a conversation.
+		After string `json:"after"`
+		// Project files a new conversation under a project.
+		Project string `json:"project"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -201,19 +228,54 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		id = "api-" + who.Subject + "-" + key
 	}
-	run, err := s.P.Invoke(r.Context(), envelope.Tag{
-		ID:     id,
-		Tenant: who.Tenant,
-		Agent:  body.Agent,
-		Origin: "api",
-		Text:   body.Text,
-		Actor:  envelope.Actor{ID: who.Subject, Display: who.Name, Bot: who.Kind == auth.Machine},
+	run, err := s.P.Converse(r.Context(), who.Tenant, platform.Turn{
+		ID: id, Agent: body.Agent, Text: body.Text, After: body.After, Project: body.Project,
+		Actor: envelope.Actor{ID: who.Subject, Display: who.Name, Bot: who.Kind == auth.Machine},
 	})
 	if err != nil {
 		s.problem(w, err)
 		return
 	}
 	ok(w, http.StatusAccepted, run)
+}
+
+func (s *Server) listThreads(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
+	ok(w, http.StatusOK, map[string]any{"threads": orEmpty(s.P.Runs.Threads(who.Tenant, 200))})
+}
+
+func (s *Server) getThread(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	turns, err := s.P.Runs.Conversation(who.Tenant, r.PathValue("id"))
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, map[string]any{"turns": turns})
+}
+
+// pickAgent previews which agent would answer a message, and why.
+func (s *Server) pickAgent(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	choice, err := s.P.Pick(r.Context(), who.Tenant, r.URL.Query().Get("q"))
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, choice)
+}
+
+func (s *Server) getSettings(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
+	ok(w, http.StatusOK, s.P.Settings(who.Tenant))
+}
+
+func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	var next platform.Settings
+	if !decode(w, r, &next) {
+		return
+	}
+	if err := s.P.SetSettings(r.Context(), who.Tenant, next); err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, next)
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request, who auth.Principal) {
@@ -344,18 +406,27 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 	var tooBig *http.MaxBytesError
 	switch {
 	case errors.Is(err, runs.ErrNotFound), errors.Is(err, registry.ErrNotFound), errors.Is(err, platform.ErrScheduleNotFound),
-		errors.Is(err, alerts.ErrNotFound), errors.Is(err, knowledge.ErrNotFound):
+		errors.Is(err, alerts.ErrNotFound), errors.Is(err, knowledge.ErrNotFound), errors.Is(err, evals.ErrNotFound):
 		fail(w, http.StatusNotFound, "not found")
 	case errors.Is(err, registry.ErrExists), errors.Is(err, platform.ErrScheduleExists),
-		errors.Is(err, alerts.ErrExists), errors.Is(err, knowledge.ErrExists):
+		errors.Is(err, alerts.ErrExists), errors.Is(err, knowledge.ErrExists), errors.Is(err, evals.ErrExists):
 		fail(w, http.StatusConflict, "already exists")
+	case errors.Is(err, pick.ErrNoAgent):
+		fail(w, http.StatusBadRequest, "no agent matched this message and no baseline agent is set, so choose an agent")
+	case errors.Is(err, platform.ErrSettings):
+		fail(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, platform.ErrNoBaseline):
+		fail(w, http.StatusBadRequest, "the baseline must be an agent that exists")
+	case errors.Is(err, evals.ErrBusy):
+		fail(w, http.StatusConflict, "that suite is already running")
 	case errors.Is(err, registry.ErrConflict):
 		fail(w, http.StatusConflict, "the agent was revised by someone else, reload and try again")
 	case errors.Is(err, platform.ErrForbidden), errors.Is(err, call.ErrDepth), errors.Is(err, call.ErrFanOut), errors.Is(err, call.ErrBudget):
 		fail(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, call.ErrInvalid), errors.Is(err, registry.ErrInvalid), errors.Is(err, agentspec.ErrInvalid),
 		errors.Is(err, envelope.ErrInvalid), errors.Is(err, cron.ErrSchedule),
-		errors.Is(err, alerts.ErrInvalid), errors.Is(err, knowledge.ErrInvalid):
+		errors.Is(err, alerts.ErrInvalid), errors.Is(err, knowledge.ErrInvalid), errors.Is(err, evals.ErrInvalid),
+		errors.Is(err, prefs.ErrInvalid):
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &tooBig):
 		fail(w, http.StatusRequestEntityTooLarge, "request is too large")
