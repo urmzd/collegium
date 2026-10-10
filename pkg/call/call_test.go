@@ -110,6 +110,17 @@ func TestSameKeyIsTheSameRun(t *testing.T) {
 	}
 }
 
+// A join would let two different calls collide on one run.
+func TestChildIDsDoNotCollideAcrossParents(t *testing.T) {
+	a, b := root(t), root(t)
+	a.ID, b.ID = "a-b", "a"
+	x := mustCall(t, a, Request{Key: "c", Agent: "coder", Mode: Subagent})
+	y := mustCall(t, b, Request{Key: "b-c", Agent: "coder", Mode: Subagent})
+	if x.ID == y.ID {
+		t.Fatalf("both calls got id %q", x.ID)
+	}
+}
+
 func TestOnlyAHandoffInheritsTheSurface(t *testing.T) {
 	parent := root(t)
 	for _, tc := range []struct {

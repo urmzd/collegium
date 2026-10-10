@@ -1,0 +1,136 @@
+# Screenshots of the web console, written to ./showcase.
+#
+# Needs `make dev` and `make web` running. On a freshly started server the
+# console opens on the onboarding page, so run everything:
+#
+#   teasr run
+#
+# The `onboarding` scene takes its picture and then finishes onboarding as the
+# dev user, which is what lets the later scenes reach the console. Once that has
+# happened the page is not shown again until the server restarts, so refresh
+# the rest with:
+#
+#   teasr run --scenes home,runs,agents,analytics,primitives
+
+[output]
+dir = "./showcase"
+
+[[output.formats]]
+output_type = "png"
+
+[[scenes]]
+type = "web"
+name = "onboarding"
+uri = "http://127.0.0.1:5173/"
+viewport = { width = 1440, height = 900 }
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1500
+
+[[scenes.interactions]]
+type = "snapshot"
+
+[[scenes.interactions]]
+type = "click"
+selector = 'button[type="submit"]'
+hidden = true
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1000
+hidden = true
+
+[[scenes]]
+type = "web"
+name = "home"
+uri = "http://127.0.0.1:5173/"
+viewport = { width = 1440, height = 900 }
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1500
+
+[[scenes.interactions]]
+type = "snapshot"
+
+[[scenes]]
+type = "web"
+name = "runs"
+uri = "http://127.0.0.1:5173/"
+viewport = { width = 1440, height = 900 }
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1200
+
+[[scenes.interactions]]
+type = "click"
+selector = 'nav[aria-label="Sections"] button[aria-label="Runs"]'
+hidden = true
+
+[[scenes.interactions]]
+type = "wait"
+duration = 800
+
+[[scenes.interactions]]
+type = "snapshot"
+
+[[scenes]]
+type = "web"
+name = "agents"
+uri = "http://127.0.0.1:5173/"
+viewport = { width = 1440, height = 900 }
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1200
+
+[[scenes.interactions]]
+type = "click"
+selector = 'nav[aria-label="Sections"] button[aria-label="Agents"]'
+hidden = true
+
+[[scenes.interactions]]
+type = "wait"
+duration = 800
+
+[[scenes.interactions]]
+type = "snapshot"
+
+[[scenes]]
+type = "web"
+name = "analytics"
+uri = "http://127.0.0.1:5173/"
+viewport = { width = 1440, height = 900 }
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1200
+
+[[scenes.interactions]]
+type = "click"
+selector = 'nav[aria-label="Sections"] button[aria-label="Analytics"]'
+hidden = true
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1000
+
+[[scenes.interactions]]
+type = "snapshot"
+
+# Every state of the console's own primitives, drawn without the server.
+[[scenes]]
+type = "web"
+name = "primitives"
+uri = "http://127.0.0.1:5173/gallery.html"
+viewport = { width = 1280, height = 900 }
+full_page = true
+
+[[scenes.interactions]]
+type = "wait"
+duration = 1500
+
+[[scenes.interactions]]
+type = "snapshot"

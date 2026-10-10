@@ -1,0 +1,33 @@
+{
+  "name": "@open-agent-platform/web",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --experimental-strip-types src/*.test.ts"
+  },
+  "dependencies": {
+    "@agent-ui/components": "link:../../../agent-ui/packages/components",
+    "@agent-ui/core": "link:../../../agent-ui/packages/core",
+    "@agent-ui/primitives": "link:../../../agent-ui/packages/primitives",
+    "@agent-ui/render-web": "link:../../../agent-ui/packages/render-web",
+    "@agent-ui/web": "link:../../../agent-ui/packages/web",
+    "@fontsource-variable/bricolage-grotesque": "^5.3.0",
+    "@fontsource-variable/figtree": "^5.3.0",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^6.0.0",
+    "vite": "^8.3.3"
+  }
+}

@@ -15,16 +15,6 @@ a reproduction if you have one.
 
 ## Security boundaries
 
-### `pkg/call`
-
-The edge between two runs carries the budget lease and the tree a run belongs
-to. It travels in `Tag.Meta`, which triggers also write, so:
-
-- `EdgeOf` honors lineage only when `Tag.Origin` is `agent`. Every other tag is
-  a root, whatever its `Meta` claims.
-- The server must set `Origin` itself and never accept it from the wire, the
-  same way opentag sets `Tenant`.
-- An agent tag with a missing or malformed edge is an error, not a root.
-- The zero `Limits` allows no calls.
-
-A change to `pkg/call` needs tests proving these still hold.
+The rules the code holds are listed in [docs/security.md](docs/security.md).
+A change to `pkg/auth`, `pkg/call`, `internal/httpapi/session.go` or the
+tenant checks in `internal/httpapi` needs tests proving those rules still hold.

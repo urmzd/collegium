@@ -89,20 +89,88 @@ Known limit: duraturo's Postgres queue does not implement the delta log, so a
 Postgres-only deployment runs durably but cannot stream. Redis stays in the
 stack until that is closed.
 
+## Limits at scale
+
+Admission is one process holding one lock, reading counts from memory. That is correct for a single server and wrong for more than one.
+
+| Limit today | What it needs |
+|-------------|---------------|
+| The admission lock is in process, so two servers can both admit the last run | A counter in the shared store, taken in the same transaction as the ledger entry |
+| The usage ledger and policies are lost on restart | A durable ledger. `Rebuild` already derives every count from entries |
+| Usage is recounted from entries on each read | Counters per scope and period, checked against a rebuild |
+| Policy history grows without bound | Paging, as for conversations |
+| The inbox record grows without bound, and open counts are a scan | A durable log, with counters per reader |
+| The artifact index is in memory while the bytes are on disk, so a restart orphans stored files | The index in the same durable store as everything else |
+| A download reads the whole file into memory, which the 2 MB cap makes safe | Streaming, before the cap is raised |
+| The journal is a ring of 100,000 events | An event store, or OTel export |
+
 ## Status
 
 | Piece | State |
 |-------|-------|
 | `pkg/call`: edge, modes, depth, fan-out and lease checks | Built, tested |
-| Ledger that supplies a run's calls and spend | Not built |
-| Call tool in the sandbox, and returning a subagent's answer | Not built |
+| `pkg/runs`: run index, call tree, statistics | Built, in memory |
+| `internal/platform`: opentag composed, `Invoke`, `Call` with the spawn allowlist | Built, tested |
+| Ledger reconciler: ends runs whose retries ran out with no final event | Built, tested |
+| `pkg/auth`: OIDC sign-in, machine tokens, roles and scopes | Built, tested against an in-process issuer |
+| HTTP API, sessions, event stream | Built, tested |
+| Schedules through opentag's cron trigger: pause, run now, next fires, history | Built, in memory |
+| `pkg/journal`: event log, query, run traces | Built, a bounded ring in memory |
+| `pkg/alerts`: rules on run failure, failure rate and duration | Built, in memory |
+| `pkg/knowledge`: sources, documents, BM25 search, per-document exclusion, saved variants | Built, in memory, lexical only |
+| `pkg/memory`: per-agent notes sent with every turn, written by people or by a memory agent | Built, in memory |
+| Housekeeping runs: a title agent names a conversation, a memory agent writes notes after a turn | Built. Off until a workspace picks the agents, and never on the offline provider |
+| `pkg/evals`: suites of deterministic checks for agents, retrieval metrics for knowledge, scored by saige | Built, in memory |
+| Conversations: threads, branches, any agent on any turn, replayed history with a configurable limit | Built, in memory |
+| `pkg/pick`: lexical agent picker over name, description and prompt, with a baseline | Built |
+| Projects: conversations filed together, shared memory sent to every agent in the project, schedules whose runs are filed there | Built, in memory |
+| Workspace settings, `pkg/prefs`: per-person theme, accent and profile picture | Built, in memory |
+| Memory approval: what the memory agent writes waits for a person, following saige's memory policy | Built |
+| `pkg/policy`: versioned limits per workspace, project and agent on runs, concurrency, spend and lease; a narrower scope can only tighten | Built, in memory. One pure `Decide` function, so a refusal can be replayed from the policy version it names |
+| `pkg/usage`: append-only ledger of admitted, refused, warned and ended runs, with `Rebuild` from its entries | Built, in memory. Admissions are kept 62 days |
+| Admission: every run is checked under one lock before it is accepted; a refusal answers 429 or 402 with the limit, the policy version and the reset time, and raises a budget alert | Built, tested with 40 racers against a limit of 7 |
+| Console for limits: Settings, each project page, and usage against limits in Analytics | Built |
+| Spend limits | Stored and versioned, not enforced. opentag reports no cost for a run, so `spend.metered` is false |
+| Asking a person to approve a run at a limit | Not built. A run cannot be parked on a person, so the only action is to block |
+| Limits set by a project's owner | Not built. Only an admin sets limits, because projects have no owners |
+| First-run setup: the first admin names themselves and the workspace | Built. `first_admin`, `onboarded_at` and the workspace's setup fields |
+| Recents: conversations paged by an opaque keyset cursor, 200 a page | Built |
+| Project membership and per-project access | Not built. Everyone in the workspace sees every project |
+| Web console on agent-ui: chat, inbox, agent editor with revisions, evals, knowledge, schedules, analytics, alerts, settings | Built |
+| Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the only mode is loopback dev auth |
+| Model parameters on an agent (temperature, token and step limits) | Not built. opentag's agent spec has no fields for them |
+| Stopping a run in flight | Not built. The composer's queue waits for the run to end |
+| Skill consolidation | Not built |
+| Sandbox: each conversation has a scratch directory that agents with the file tools read and write. It is opened as an `os.Root`, bounded in file size, count and total, and removed after 7 days untouched | Built, tested against traversal, absolute paths and planted links |
+| `pkg/blob`: put, get, stat, delete, list behind one interface, on disk or in memory, with a conformance suite a new backend must pass | Built. An S3-compatible store is not written |
+| `pkg/artifacts`: published files with a sniffed type, sha256, and a version per title per conversation | Built, the index is in memory, the bytes are on disk |
+| Publishing: the `publish_artifact` tool copies a sandbox file to storage and reports it on the run's stream, where the console shows it as a card | Built |
+| Storage limits per workspace, project and agent, as `max_storage` on a policy | Built. A refusal raises a message in the inbox |
+| Downloads: tenant and right checked on every request, always an attachment unless an inert type is asked for inline, never HTML or SVG inline | Built, tested |
+| Built-in agents: `oap-writer` writes a document and publishes it. Provided by the platform, not editable, present only when the server is given `-builtin-provider` and `-builtin-model` | Built. One agent. Not run against a real model here: no provider key was available |
+| Files for a turn delegated inside another agent's turn | Not built. opentag gives such a turn no run id, so the platform cannot tell which conversation it belongs to. An agent with the file tools must be the one answering |
+| Publishing that waits for approval | Not built. A run cannot be parked on a person |
+| Run manifest: one JSON document of a run, every run under it, each pinned definition and every event with its body | Built, from the journal. A run older than the journal's ring comes back marked incomplete |
+| Token counts, context window and cost per run | Not available. The runtime reports none |
+| Uploading binary files (PDF, images) to knowledge or a message | Not built. Files are read as text in the browser |
+| Evals against a knowledge variant | Not built. Evals search the current view |
+| Summarizing history | Not built. Long conversations are truncated to the limit, oldest turns first |
+| Knowledge retrieval inside a run | Not built. opentag's retriever is not given the tenant or the agent, so wiring it would cross tenants |
+| Connections: MCP servers, OAuth to third parties, stored credentials | Not built |
+| Schedule delivery to Slack, email or another system | Not built. Needs connections |
+| Call tool inside the sandbox | Not built. Calls are made through the API |
+| Returning a subagent's answer to a parked caller | Not built |
 | Cancel propagation down a tree | Not built |
 | Access intersection across a call | Not built |
-| Envelope adapter for agent-ui | Not built |
-| Inbox routing by role | Not built |
-| Alert rules over bus events | Not built |
-| OTel across the bus | Not built |
-| Online evals and analytics | Not built |
-| Email connector, MCP server | Not built |
+| `pkg/inbox`: one server inbox of messages with typed parts, per-person read state, paging, and a record of changes that rebuilds it | Built, in memory |
+| What lands in the inbox: fired alert rules, failed runs no rule caught, proposed memories, reached limits | Built. An alert and its message are one state: settling either settles both |
+| Resolving in the inbox: acknowledge, retry a failed turn, keep or discard proposed memories, raise a limit, dismiss, snooze | Built. Each needs the right for the thing it does, and a second resolve returns the first outcome |
+| Approve, deny, choose and reply parts for a run waiting on a person | Defined, never raised. A run cannot be parked on a person |
+| Messages addressed to one person or one role | Not built. A message goes to everyone who may read its kind |
+| Alert delivery outside the console | Not built |
+| OTel export | Not built. Traces are rebuilt from the journal |
+| Evals that run on their own, on a schedule or on each revision | Not built. Evals run when someone starts them |
+| Model-graded evals | Not built, on purpose for now: every check is exact |
+| Email connector, MCP server, Slack and Jira wiring | Not built |
 | Remote execution nodes, peer connector | Not built |
-| Postgres stores | Not built |
+| Postgres stores | Not built. Everything above is lost on restart |

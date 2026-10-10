@@ -33,6 +33,8 @@
 package call
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"maps"
@@ -200,7 +202,7 @@ func New(parent envelope.Tag, req Request, st State, lim Limits, at time.Time) (
 	}
 
 	child := envelope.Tag{
-		ID:     parent.ID + "/" + req.Key,
+		ID:     childID(parent.ID, req.Key),
 		Tenant: parent.Tenant,
 		Agent:  req.Agent,
 		Origin: Origin,
@@ -220,4 +222,18 @@ func New(parent envelope.Tag, req Request, st State, lim Limits, at time.Time) (
 	child.Meta[metaMode] = string(req.Mode)
 	child.Meta[metaLease] = strconv.FormatInt(req.Lease, 10)
 	return child, nil
+}
+
+// childID derives the child's tag id from the caller's id and the call's key.
+//
+// It is a hash rather than a join for two reasons. A run id is a topic segment,
+// which allows no separator that could not also appear in either part, so any
+// join is ambiguous: ("a-b", "c") and ("a", "b-c") would name the same run. And
+// the caller's id may come from a trigger, so its shape is not ours to rely on.
+func childID(parentID, key string) string {
+	h := sha256.New()
+	h.Write([]byte(parentID))
+	h.Write([]byte{0})
+	h.Write([]byte(key))
+	return "c" + hex.EncodeToString(h.Sum(nil)[:12])
 }
