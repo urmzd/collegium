@@ -1,6 +1,6 @@
 import { type FormEvent, useRef, useState } from "react";
 import { ApiError, api, type Me, type Preferences, type Revision, type Settings as Workspace } from "./api.ts";
-import { AgentMark, button, card, field, Label, Problem, primary, Segmented, Switch } from "./ui.tsx";
+import { button, card, field, Label, Problem, primary, Segmented, Switch } from "./ui.tsx";
 
 type Section = "profile" | "appearance" | "workspace" | "connections" | "access";
 
@@ -26,8 +26,12 @@ export function Avatar({ name, prefs, size = 28 }: { name: string; prefs: Prefer
     );
   }
   return (
-    <span className="shrink-0 overflow-hidden rounded-full">
-      <AgentMark name={name} size={size} />
+    <span
+      aria-hidden
+      className="inline-flex shrink-0 items-center justify-center rounded-full bg-aui-hover font-medium text-aui-fg"
+      style={{ width: size, height: size, fontSize: Math.round(size * 0.42) }}
+    >
+      {(name.trim()[0] ?? "?").toUpperCase()}
     </span>
   );
 }
@@ -108,7 +112,7 @@ export function Settings({
           {section === "profile" && (
             <>
               <header>
-                <h2 className="text-aui-lg font-medium text-aui-fg">Profile</h2>
+                <h1 className="text-aui-xl font-semibold text-aui-fg">Profile</h1>
                 <p className="text-aui-sm text-aui-muted">How you appear to yourself in this console. Only you see these.</p>
               </header>
               <section className={`${card} flex flex-wrap items-center gap-4`}>
@@ -168,7 +172,7 @@ export function Settings({
           {section === "appearance" && (
             <>
               <header>
-                <h2 className="text-aui-lg font-medium text-aui-fg">Appearance</h2>
+                <h1 className="text-aui-xl font-semibold text-aui-fg">Appearance</h1>
                 <p className="text-aui-sm text-aui-muted">These follow you to any browser you sign in from.</p>
               </header>
               <section className={`${card} flex flex-col gap-4`}>
@@ -202,7 +206,7 @@ export function Settings({
           {section === "workspace" && (
             <>
               <header>
-                <h2 className="text-aui-lg font-medium text-aui-fg">Workspace</h2>
+                <h1 className="text-aui-xl font-semibold text-aui-fg">Workspace</h1>
                 <p className="text-aui-sm text-aui-muted">
                   Shared by everyone in {who.tenant}. {canAdmin ? "" : "Only an admin can change these."}
                 </p>
@@ -320,7 +324,7 @@ export function Settings({
           {section === "connections" && (
             <>
               <header>
-                <h2 className="text-aui-lg font-medium text-aui-fg">Connections</h2>
+                <h1 className="text-aui-xl font-semibold text-aui-fg">Connections</h1>
                 <p className="text-aui-sm text-aui-muted">
                   Where agents will reach outside systems: MCP servers, Slack, Jira, email, and accounts you connect with
                   OAuth.
@@ -339,7 +343,7 @@ export function Settings({
           {section === "access" && (
             <>
               <header>
-                <h2 className="text-aui-lg font-medium text-aui-fg">Access</h2>
+                <h1 className="text-aui-xl font-semibold text-aui-fg">Access</h1>
                 <p className="text-aui-sm text-aui-muted">What you are signed in as and what you may do. Your identity provider decides this.</p>
               </header>
               <section className={`${card} flex flex-col gap-2`}>

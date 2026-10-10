@@ -21,7 +21,8 @@ platform. agent-ui supplies the components. The design is in
 - **The ledger decides whether a run is over.** Events report attempts. Do not infer an ending from silence.
 - **Bound every query.** A window, a row cap and a bucket cap, enforced on the server.
 - **Evals are deterministic.** A check is a pure function of the output. Do not add a model as a judge without saying so in the suite.
-- **One title per screen.** The top bar carries it. Pages do not repeat it.
+- **One title per screen, on the page.** There is no top bar. What is running lives on the Runs page.
+- **Agents are told apart by color, not by letters in boxes.** Use `AgentMark`. Controls under the composer are text, not boxes.
 - **Keep the status table honest.** When a piece lands, update
   `docs/architecture.md#status` in the same change.
 

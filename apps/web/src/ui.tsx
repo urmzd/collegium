@@ -1,3 +1,4 @@
+import { BotIcon } from "@agent-ui/render-web";
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
 
@@ -125,10 +126,10 @@ export function Page({
     <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
       <div className={`mx-auto flex w-full flex-col gap-4 px-4 py-6 ${wide ? "max-w-5xl" : "max-w-3xl"}`}>
         <div className="flex flex-wrap items-start justify-between gap-3">
-          {/* The top bar carries the page's title. This is the line under it. */}
-          <p className="min-w-0 max-w-2xl text-aui-sm text-aui-muted" data-page={title}>
-            {lede}
-          </p>
+          <div className="min-w-0">
+            <h1 className="text-aui-xl font-semibold text-aui-fg">{title}</h1>
+            <p className="max-w-2xl text-aui-sm text-aui-muted">{lede}</p>
+          </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
         </div>
         {children}
@@ -158,27 +159,11 @@ export function hueOf(name: string): number {
 }
 
 /**
- * An agent's mark: its initial on a tile tinted with its own hue. The letter is
- * ink, so the mark reads without the color, and the color makes one agent
- * recognizable among many.
+ * An agent's mark: one glyph, drawn in the agent's own color. The color is what
+ * tells agents apart at a glance, and the name beside it is what identifies it.
  */
-export function AgentMark({ name, size = 20 }: { name: string; size?: number }) {
-  const hue = hueOf(name);
-  return (
-    <span
-      aria-hidden
-      className="inline-flex shrink-0 items-center justify-center rounded-[28%] font-semibold text-aui-fg"
-      style={{
-        width: size,
-        height: size,
-        fontSize: Math.round(size * 0.52),
-        background: `oklch(0.66 0.15 ${hue} / 26%)`,
-        boxShadow: `inset 0 0 0 1px oklch(0.66 0.15 ${hue} / 55%)`,
-      }}
-    >
-      {(name.trim()[0] ?? "?").toUpperCase()}
-    </span>
-  );
+export function AgentMark({ name, size = 18 }: { name: string; size?: number }) {
+  return <BotIcon size={size} style={{ color: `oklch(var(--oap-mark-l) 0.15 ${hueOf(name)})` }} />;
 }
 
 /** A labelled on/off choice. */

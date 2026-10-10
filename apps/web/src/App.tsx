@@ -28,8 +28,8 @@ import { Knowledge } from "./Knowledge.tsx";
 import { RunList } from "./Runs.tsx";
 import { Schedules } from "./Schedules.tsx";
 import { Settings } from "./Settings.tsx";
-import { PanelLeftIcon, Sidebar, type View } from "./Sidebar.tsx";
-import { AgentMark, cause, Popover, primary, Status } from "./ui.tsx";
+import { Sidebar, type View } from "./Sidebar.tsx";
+import { cause, primary } from "./ui.tsx";
 
 type Session = { state: "loading" } | { state: "signed-out" } | { state: "error"; message: string } | { state: "ready"; me: Me };
 
@@ -121,19 +121,6 @@ function inboxOf(runs: Run[], alerts: Alert[], dismissed: Set<string>): InboxIte
   }));
   return sortInbox([...failures, ...raised]);
 }
-
-const titles: Record<View, string> = {
-  chat: "New chat",
-  inbox: "Inbox",
-  runs: "Runs",
-  agents: "Agents",
-  agent: "Agent",
-  knowledge: "Knowledge",
-  schedules: "Schedules",
-  analytics: "Analytics",
-  alerts: "Alerts",
-  settings: "Settings",
-};
 
 function greeting(name: string): string {
   const h = new Date().getHours();
@@ -282,8 +269,6 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const waiting = inbox.filter((i) => i.state === "open").length;
   const openAlerts = alerts.filter((a) => !a.acked_by).length;
   const stats = useMemo(() => new Map((day?.by_agent ?? []).map((g) => [g.name, g])), [day]);
-  const active = runs.filter((r) => r.status !== "completed" && r.status !== "failed");
-  const current = threads.find((t) => t.id === thread);
   const editing = agents.find((a) => a.spec.name === agentName) ?? null;
   const shownName = prefs?.display_name || me.principal.name || "";
 
@@ -312,9 +297,6 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     api.saveSettings({ ...workspace, baseline: name }).then(setWorkspace).catch(() => {});
   };
 
-  const title =
-    view === "chat" ? (current?.title ?? "New chat") : view === "agent" ? (editing?.spec.name ?? "New agent") : titles[view];
-  const dark = (prefs?.theme ?? "system") === "dark" || document.documentElement.dataset.theme === "dark";
 
   return (
     <div className="flex h-full text-aui-fg">
@@ -335,101 +317,10 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
         onProject={setProject}
         inboxCount={waiting}
         alertCount={openAlerts}
+        live={live}
         onSignOut={() => api.logout().then(onSignedOut).catch(onSignedOut)}
       />
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="oap-glass-bar flex h-12 shrink-0 items-center gap-3 border-aui-border border-b px-3">
-          {!open && (
-            <button
-              type="button"
-              onClick={toggle}
-              aria-label="Open sidebar"
-              className="inline-flex size-8 items-center justify-center rounded-aui text-aui-muted hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent md:hidden"
-            >
-              <PanelLeftIcon />
-            </button>
-          )}
-          <div className="flex min-w-0 flex-1 items-baseline gap-3">
-            <h1 className="truncate text-aui-sm font-medium text-aui-fg">{title}</h1>
-            {view === "chat" && current && (
-              <p className="hidden shrink-0 text-aui-xs text-aui-muted sm:block">
-                {current.turns} {current.turns === 1 ? "turn" : "turns"}
-                {current.branches > 0 ? `, ${current.branches} branched` : ""}
-                {current.project ? `, in ${current.project}` : ""}
-              </p>
-            )}
-          </div>
-
-          {can("runs:read") && (
-            <Popover
-              label={`${active.length} running`}
-              align="right"
-              className="inline-flex h-8 items-center gap-2 rounded-aui border border-aui-border px-2.5 text-aui-xs text-aui-fg transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
-              button={
-                <>
-                  <span aria-hidden className={`size-1.5 rounded-full ${active.length > 0 ? "bg-aui-info" : "bg-aui-neutral"}`} />
-                  <span className="tabular-nums">{active.length}</span> running
-                </>
-              }
-            >
-              {(close) =>
-                active.length === 0 ? (
-                  <p className="px-2.5 py-2 text-aui-sm text-aui-muted">Nothing is running right now.</p>
-                ) : (
-                  <ul className="aui-scroll max-h-80 overflow-y-auto" aria-label="Runs in flight">
-                    {active.map((r) => (
-                      <li key={r.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            openRun(r.id);
-                            close();
-                          }}
-                          className="flex w-full items-center gap-2.5 rounded-aui px-2.5 py-2 text-left hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
-                        >
-                          <AgentMark name={r.agent} size={22} />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate text-aui-sm text-aui-fg">{r.text || r.agent}</span>
-                            <span className="block text-aui-2xs text-aui-muted">
-                              {r.agent}, from {r.origin}
-                              {r.depth > 0 ? ", called by another agent" : ""}
-                            </span>
-                          </span>
-                          <Status status={r.status} />
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )
-              }
-            </Popover>
-          )}
-
-          <label className="hidden items-center gap-1.5 text-aui-xs text-aui-muted sm:inline-flex">
-            Dark
-            <input
-              type="checkbox"
-              className="oap-switch"
-              checked={dark}
-              disabled={!prefs}
-              onChange={(e) => {
-                if (!prefs) return;
-                api
-                  .savePreferences({ display_name: prefs.display_name, accent: prefs.accent, theme: e.target.checked ? "dark" : "light" })
-                  .then(setPrefs)
-                  .catch(() => {});
-              }}
-            />
-          </label>
-          <span
-            role="img"
-            aria-label={live ? "Live" : "Reconnecting"}
-            title={live ? "Live: updates arrive as they happen" : "Reconnecting"}
-            className={`size-1.5 shrink-0 rounded-full ${live ? "bg-aui-ok" : "bg-aui-warn"}`}
-          />
-        </header>
-
-        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           {view === "chat" && (
             <Chat
               key={thread ?? "new"}
@@ -535,7 +426,6 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
             />
           )}
         </main>
-      </div>
     </div>
   );
 }

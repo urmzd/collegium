@@ -1,16 +1,18 @@
 import { ActionId, type UiAction } from "@agent-ui/core";
-import { WebSurface } from "@agent-ui/render-web";
+import { CheckIcon, ChevronDownIcon, WebSurface } from "@agent-ui/render-web";
 import { AgentMessage, PromptInput, Thread, useQueue } from "@agent-ui/web";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
 import { ApiError, api, type Choice, type Revision, type Settings } from "./api.ts";
 import { useRunTurn } from "./Runs.tsx";
 import { Trace } from "./Trace.tsx";
-import { AgentMark, Chip, cause, Popover, Problem } from "./ui.tsx";
+import { AgentMark, cause, Popover, Problem } from "./ui.tsx";
 
 const AUTO = "auto";
+// Controls in the dock are text, not boxes: they sit under the composer and
+// should not compete with it.
 const select =
-  "h-7 max-w-60 rounded-aui border border-aui-border bg-transparent px-2 text-aui-xs text-aui-fg outline-none focus-visible:border-aui-accent focus-visible:ring-2 focus-visible:ring-aui-ring disabled:opacity-50";
+  "h-7 max-w-60 cursor-pointer rounded-aui bg-transparent px-1.5 text-aui-sm text-aui-muted outline-none transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:opacity-50";
 
 /** The answers to one point in the conversation, oldest first. */
 function siblingsOf(turns: Run[], run: Run): Run[] {
@@ -293,7 +295,7 @@ export function Chat({
       </div>
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1 text-aui-xs text-aui-muted">
         {threadId ? (
-          tail?.project && <Chip>Project: {tail.project}</Chip>
+          tail?.project && <span className="px-1.5 text-aui-sm">In {tail.project}</span>
         ) : (
           <label className="inline-flex items-center gap-1.5">
             <span className="sr-only">Project</span>
@@ -318,15 +320,13 @@ export function Chat({
           label="Choose who answers"
           align="right"
           up
-          className="inline-flex h-8 items-center gap-2 rounded-aui border border-aui-border px-2 text-aui-sm text-aui-fg transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+          className="inline-flex h-7 items-center gap-1.5 rounded-aui px-1.5 text-aui-sm text-aui-fg transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
           button={
             <>
-              {(!auto || preview) && <AgentMark name={auto ? (preview?.agent ?? "?") : named} size={18} />}
+              {(!auto || preview) && <AgentMark name={auto ? (preview?.agent ?? "?") : named} size={16} />}
               <span className="max-w-32 truncate">{auto ? (preview?.agent ?? "Auto") : named}</span>
               {auto && preview && <span className="text-aui-xs text-aui-muted">Auto</span>}
-              <span aria-hidden className="text-aui-muted">
-                ⌄
-              </span>
+              <ChevronDownIcon size={14} className="text-aui-muted" />
             </>
           }
         >
@@ -358,7 +358,7 @@ export function Chat({
                         }}
                         className="flex w-full items-center gap-2.5 rounded-aui px-2.5 py-2 text-left transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent aria-pressed:bg-aui-hover"
                       >
-                        <AgentMark name={a.spec.name} size={26} />
+                        <AgentMark name={a.spec.name} size={18} />
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-2 text-aui-sm text-aui-fg">
                             {a.spec.name}
@@ -370,7 +370,7 @@ export function Chat({
                             {a.spec.description || "No description"}
                           </span>
                         </span>
-                        {on && <span aria-hidden>✓</span>}
+                        {on && <CheckIcon size={14} className="text-aui-fg" />}
                       </button>
                     </li>
                   );
@@ -387,7 +387,7 @@ export function Chat({
     return (
       <section className="flex min-h-0 flex-1 flex-col justify-center">
         <div className="flex flex-col items-center gap-1 px-6 pb-6 text-center">
-          <h2 className="text-aui-xl font-semibold text-aui-fg">{greeting}</h2>
+          <h1 className="text-aui-xl font-semibold text-aui-fg">{greeting}</h1>
           <p className="max-w-md text-aui-sm text-aui-muted">
             {agents.length === 0
               ? "Define an agent first, then start a conversation here."

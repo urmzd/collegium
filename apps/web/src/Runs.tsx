@@ -45,9 +45,16 @@ export function useRunTurn(run: Run | undefined): Turn | undefined {
 }
 
 /** Every run in the tenant, newest first. */
-export function RunList({ runs, onSelect }: { runs: Run[]; onSelect: (id: string) => void }) {
+export function RunList({ runs: all, onSelect }: { runs: Run[]; onSelect: (id: string) => void }) {
+  const live = (r: Run) => r.status !== "completed" && r.status !== "failed";
+  const inFlight = all.filter(live).length;
+  // Stable, so runs keep their newest-first order within each group.
+  const runs = [...all.filter(live), ...all.filter((r) => !live(r))];
   return (
-    <Page title="Runs" lede="Every run in this tenant, from people, schedules and other agents.">
+    <Page
+      title="Runs"
+      lede={`${inFlight === 0 ? "Nothing is running." : inFlight === 1 ? "1 run in flight, shown first." : `${inFlight} runs in flight, shown first.`} Every run from people, schedules, evals and other agents is here.`}
+    >
         {runs.length === 0 ? (
           <Empty title="No runs yet">Start one with New Run.</Empty>
         ) : (

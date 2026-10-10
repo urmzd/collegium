@@ -48,7 +48,7 @@ export function Agents({
                   className={`${card} flex h-full w-full flex-col gap-3 text-left transition-colors hover:border-aui-accent/50 focus-visible:outline-2 focus-visible:outline-aui-accent`}
                 >
                   <span className="flex items-center gap-3">
-                    <AgentMark name={a.spec.name} size={36} />
+                    <AgentMark name={a.spec.name} size={24} />
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
                         <span className="truncate text-aui-base font-medium text-aui-fg">{a.spec.name}</span>

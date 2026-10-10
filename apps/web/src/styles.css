@@ -33,6 +33,8 @@ body,
   --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 60%);
   --oap-shadow: 0 8px 28px oklch(0.2 0.02 250 / 0.08);
   --oap-glow: 7%;
+  /* Lightness of an agent's color, set so it reads on either surface. */
+  --oap-mark-l: 0.5;
 }
 html[data-theme="dark"] {
   --oap-glass: oklch(0.17 0 0 / 52%);
@@ -41,6 +43,7 @@ html[data-theme="dark"] {
   --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 7%);
   --oap-shadow: 0 8px 32px oklch(0 0 0 / 0.3);
   --oap-glow: 12%;
+  --oap-mark-l: 0.78;
 }
 
 body {
@@ -94,19 +97,6 @@ body {
     background: var(--aui-surface);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
-  }
-}
-
-.oap-wordmark {
-  background-image: linear-gradient(120deg, var(--oap-warm), var(--aui-accent));
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
-}
-@media (forced-colors: active) {
-  .oap-wordmark {
-    background: none;
-    color: CanvasText;
   }
 }
 

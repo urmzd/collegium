@@ -2,7 +2,6 @@ import { BotIcon, ClockIcon, MessageIcon } from "@agent-ui/render-web";
 import type { ReactNode, SVGProps } from "react";
 import type { Me, Preferences, ThreadSummary } from "./api.ts";
 import { Avatar } from "./Settings.tsx";
-import { AgentMark } from "./ui.tsx";
 
 export type View =
   | "chat"
@@ -60,7 +59,6 @@ const BellIcon = glyph(
     <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
   </>,
 );
-export const PanelLeftIcon = PanelIcon;
 const LogOutIcon = glyph(
   <>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -137,6 +135,7 @@ export function Sidebar({
   onProject,
   inboxCount,
   alertCount,
+  live,
   onSignOut,
 }: {
   open: boolean;
@@ -156,6 +155,8 @@ export function Sidebar({
   onProject: (name: string) => void;
   inboxCount: number;
   alertCount: number;
+  /** Updates are arriving. When false, the sidebar says so. */
+  live: boolean;
   onSignOut: () => void;
 }) {
   const who = me.principal;
@@ -175,7 +176,7 @@ export function Sidebar({
       }`}
     >
       <div className={`flex h-12 items-center ${open ? "justify-between pr-2 pl-3.5" : "justify-center"}`}>
-        {open && <span className="oap-wordmark truncate text-aui-sm font-semibold">Open Agent Platform</span>}
+        {open && <span className="truncate text-aui-sm font-semibold text-aui-fg">Open Agent Platform</span>}
         <button
           type="button"
           onClick={onToggle}
@@ -265,7 +266,7 @@ export function Sidebar({
                 aria-label="Show conversations in"
                 value={project}
                 onChange={(e) => onProject(e.target.value)}
-                className="h-6 max-w-28 rounded-aui border border-aui-border bg-transparent px-1 text-aui-2xs text-aui-muted outline-none focus-visible:border-aui-accent"
+                className="h-6 max-w-28 cursor-pointer rounded-aui bg-transparent px-1 text-aui-xs text-aui-muted outline-none transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent"
               >
                 <option value="">All projects</option>
                 {projects.map((p) => (
@@ -288,13 +289,17 @@ export function Sidebar({
                   aria-current={view === "chat" && t.id === selected ? "page" : undefined}
                   className="flex h-8 w-full items-center gap-2 rounded-aui px-2 text-left text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg"
                 >
-                  <AgentMark name={t.agents[t.agents.length - 1] ?? "?"} size={16} />
+                  {/* Color says how the conversation stands. The word is there for anyone who cannot see it. */}
+                  <span
+                    aria-hidden
+                    title={t.active > 0 ? "Running" : t.failed > 0 ? "A reply failed" : undefined}
+                    className={`size-1.5 shrink-0 rounded-full ${
+                      t.active > 0 ? "bg-aui-info" : t.failed > 0 ? "bg-aui-bad" : "bg-aui-neutral/50"
+                    }`}
+                  />
                   <span className="min-w-0 flex-1 truncate">{t.title}</span>
-                  {t.active > 0 ? (
-                    <span className="shrink-0 text-aui-2xs">Running</span>
-                  ) : t.failed > 0 ? (
-                    <span className="shrink-0 text-aui-2xs">Failed</span>
-                  ) : null}
+                  {t.active > 0 && <span className="sr-only">, running</span>}
+                  {t.active === 0 && t.failed > 0 && <span className="sr-only">, a reply failed</span>}
                 </button>
               </li>
             ))}
@@ -304,6 +309,7 @@ export function Sidebar({
         <div className="flex-1" />
       )}
 
+      {!live && open && <p className="px-4 pb-2 text-aui-2xs text-aui-muted">Reconnecting. What you see may be out of date.</p>}
       <div className={`flex items-center gap-1 border-aui-border border-t p-1.5 ${open ? "" : "flex-col"}`}>
         <button
           type="button"
