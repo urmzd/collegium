@@ -9,7 +9,7 @@ const linkish =
 export function StorageUsed({ use }: { use: StorageUse }) {
   const top = [...use.by_project].sort((a, b) => b.bytes - a.bytes).slice(0, 4);
   return (
-    <section data-testid="storage-use" className="grid grid-cols-1 gap-x-10 gap-y-5 border-[var(--oap-rule)] border-y py-5 @3xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    <section data-testid="storage-use" className="grid grid-cols-1 gap-x-10 gap-y-5 border-[var(--collegium-rule)] border-y py-5 @3xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <UsageMeter
         size="header"
         label={`Storage, ${use.count} ${use.count === 1 ? "file" : "files"}`}
@@ -58,10 +58,10 @@ export function StoredDetail({
   useEffect(() => setConfirming(false), [file.id]);
 
   return (
-    <section data-testid="stored-detail" aria-label={file.title} className="oap-enter oap-glass flex flex-col gap-4 rounded-aui-lg p-4">
+    <section data-testid="stored-detail" aria-label={file.title} className="collegium-enter collegium-glass flex flex-col gap-4 rounded-aui-lg p-4">
       <header className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="oap-display truncate text-aui-lg font-semibold text-aui-fg">{file.title}</h2>
+          <h2 className="collegium-display truncate text-aui-lg font-semibold text-aui-fg">{file.title}</h2>
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-aui-xs text-aui-muted">
             <span>{kindWord[file.kind]}</span>
             <span>{bytes(file.size)}</span>
@@ -90,7 +90,7 @@ export function StoredDetail({
         <img
           src={contentUrl(file.id, true)}
           alt={file.description || file.title}
-          className="max-h-96 w-auto max-w-full self-start rounded-aui border border-[var(--oap-rule)] object-contain"
+          className="max-h-96 w-auto max-w-full self-start rounded-aui border border-[var(--collegium-rule)] object-contain"
         />
       ) : file.preview ? (
         <pre data-testid="stored-preview" className="aui-scroll max-h-72 overflow-auto rounded-aui bg-aui-code p-3 font-aui-mono text-aui-xs text-aui-fg">
@@ -138,7 +138,7 @@ export function StoredDetail({
       </div>
 
       {canDelete && (
-        <div className="flex flex-wrap items-center gap-3 border-[var(--oap-rule)] border-t pt-3">
+        <div className="flex flex-wrap items-center gap-3 border-[var(--collegium-rule)] border-t pt-3">
           {confirming ? (
             <>
               <span className="text-aui-sm text-aui-fg">Delete version {file.version} of this file? This cannot be undone.</span>
@@ -187,7 +187,7 @@ export function StoredList({
   return (
     <ul className={rows} aria-label="Files">
       {files.map((f) => (
-        <li key={f.id} className="oap-enter">
+        <li key={f.id} className="collegium-enter">
           <button
             type="button"
             data-testid="stored-row"
@@ -330,7 +330,7 @@ export function Storage({
             type="button"
             onClick={store.more}
             disabled={store.loading === "more"}
-            className="inline-flex h-6 items-center rounded-full border border-[var(--oap-rule)] px-2.5 text-aui-xs text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-default"
+            className="inline-flex h-6 items-center rounded-full border border-[var(--collegium-rule)] px-2.5 text-aui-xs text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-default"
           >
             {store.loading === "more" ? "Loading" : store.moreFailed ? "Could not load. Try again" : "See more"}
           </button>

@@ -10,12 +10,12 @@ import (
 
 	"github.com/urmzd/opentag/pkg/envelope"
 
-	"github.com/urmzd/open-agent-platform/pkg/alerts"
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
-	"github.com/urmzd/open-agent-platform/pkg/memory"
-	"github.com/urmzd/open-agent-platform/pkg/policy"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/memory"
+	"github.com/urmzd/collegium/pkg/policy"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // The inbox is one state seen from two sides. An alert and the message about

@@ -7,8 +7,8 @@ import (
 
 	"github.com/urmzd/opentag/pkg/envelope"
 
-	"github.com/urmzd/open-agent-platform/pkg/evals"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/pkg/evals"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // OriginEval marks a run raised by an eval, so it can be told apart from work

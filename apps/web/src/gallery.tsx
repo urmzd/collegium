@@ -47,7 +47,7 @@ const workspace = { baseline: "", history: "recent", history_limit: 10, projects
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="flex flex-col gap-4">
-      <h2 className="oap-display text-aui-lg font-semibold text-aui-fg">{title}</h2>
+      <h2 className="collegium-display text-aui-lg font-semibold text-aui-fg">{title}</h2>
       {children}
     </section>
   );
@@ -64,7 +64,7 @@ function Gallery() {
   return (
     <main className="flex max-w-[68rem] flex-col gap-10 px-5 py-8 md:px-10">
       <header className="flex items-end justify-between gap-4">
-        <h1 className="oap-display text-[1.875rem] leading-[1.15] font-semibold text-aui-fg">Console primitives</h1>
+        <h1 className="collegium-display text-[1.875rem] leading-[1.15] font-semibold text-aui-fg">Console primitives</h1>
         <Segmented
           label="Theme"
           value={theme}
@@ -170,26 +170,26 @@ function Gallery() {
       <Section title="Activity: a conversation's runs, then one run's whole conversation">
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
           {/* The panel is a full sheet below the lg width. A transform keeps each one inside its box here. */}
-          <div data-testid="gallery-activity" className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--oap-rule)] [transform:translateZ(0)] [&>aside]:w-full">
+          <div data-testid="gallery-activity" className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--collegium-rule)] [transform:translateZ(0)] [&>aside]:w-full">
             <ActivityPanel trees={trees} selected={run} onSelect={setRun} onClose={() => setRun(null)} onJump={() => {}} />
           </div>
-          <div className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--oap-rule)] [transform:translateZ(0)] [&>aside]:w-full">
+          <div className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--collegium-rule)] [transform:translateZ(0)] [&>aside]:w-full">
             <ActivityPanel trees={trees} selected="r2a" onSelect={() => {}} onClose={() => {}} onJump={() => {}} />
           </div>
-          <div className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--oap-rule)] [transform:translateZ(0)] [&>aside]:w-full">
+          <div className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--collegium-rule)] [transform:translateZ(0)] [&>aside]:w-full">
             <ActivityPanel trees={[]} selected={null} onSelect={() => {}} onClose={() => {}} />
           </div>
         </div>
       </Section>
 
       <Section title="Inbox, held in memory with one message of every kind">
-        <div data-testid="gallery-inbox" className="flex h-[44rem] flex-col overflow-hidden rounded-aui-lg border border-[var(--oap-rule)]">
+        <div data-testid="gallery-inbox" className="flex h-[44rem] flex-col overflow-hidden rounded-aui-lg border border-[var(--collegium-rule)]">
           <InboxPage signal={0} viewer="You" via={inbox} onOpen={() => {}} />
         </div>
       </Section>
 
       <Section title="Storage, held in memory, then its over-limit, loading and failed states">
-        <div data-testid="gallery-storage" className="overflow-hidden rounded-aui-lg border border-[var(--oap-rule)]">
+        <div data-testid="gallery-storage" className="overflow-hidden rounded-aui-lg border border-[var(--collegium-rule)]">
           <Storage signal={0} agents={["lead", "billing", "oncall", "releaser"]} projects={["Launch"]} canDelete via={files} onOpenRun={() => {}} onOpenThread={() => {}} />
         </div>
         <div className="@container grid grid-cols-1 gap-6 md:grid-cols-3">
@@ -202,7 +202,7 @@ function Gallery() {
       <Section title="Onboarding, for everyone and for the first admin">
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           {[false, true].map((first) => (
-            <div key={String(first)} className="h-[46rem] overflow-hidden rounded-aui-lg border border-[var(--oap-rule)]">
+            <div key={String(first)} className="h-[46rem] overflow-hidden rounded-aui-lg border border-[var(--collegium-rule)]">
               <Onboarding
                 me={person}
                 prefs={prefs}

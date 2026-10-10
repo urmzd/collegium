@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/auth/authtest"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/auth/authtest"
 )
 
 const (
 	client   = "web-client"
-	audience = "api://oap"
+	audience = "api://collegium"
 )
 
 func verifier(t *testing.T, iss *authtest.Issuer, mut func(*auth.OIDCConfig)) *auth.Verifier {
@@ -24,8 +24,8 @@ func verifier(t *testing.T, iss *authtest.Issuer, mut func(*auth.OIDCConfig)) *a
 		Audience: audience,
 		Tenant:   "acme",
 		GroupRoles: map[string]auth.Role{
-			"oap-admins":    auth.Admin,
-			"oap-operators": auth.Operator,
+			"collegium-admins":    auth.Admin,
+			"collegium-operators": auth.Operator,
 		},
 	}
 	if mut != nil {
@@ -78,7 +78,7 @@ func TestSignInMapsGroupsToRoles(t *testing.T) {
 	v := verifier(t, iss, nil)
 	raw := iss.Sign(t, "00u1", client, map[string]any{
 		"nonce": "n1", "name": "Ada", "email": "ada@acme.test",
-		"groups": []string{"oap-operators", "everyone"},
+		"groups": []string{"collegium-operators", "everyone"},
 	})
 	p, err := v.IDToken(context.Background(), raw, "n1")
 	if err != nil {
@@ -115,7 +115,7 @@ func TestMachineGetsOnlyItsScopes(t *testing.T) {
 	v := verifier(t, iss, nil)
 	raw := iss.Sign(t, "0oa-ci", audience, map[string]any{
 		"cid": "0oa-ci",
-		"scp": []string{"oap:runs:write", "oap:everything", "runs:read", "other:agents:write"},
+		"scp": []string{"collegium:runs:write", "collegium:everything", "runs:read", "other:agents:write"},
 	})
 	p, err := v.Bearer(context.Background(), raw)
 	if err != nil {
@@ -132,7 +132,7 @@ func TestMachineGetsOnlyItsScopes(t *testing.T) {
 func TestMachineScopeString(t *testing.T) {
 	iss := authtest.New(t)
 	v := verifier(t, iss, nil)
-	raw := iss.Sign(t, "svc", audience, map[string]any{"scope": "oap:runs:read oap:agents:read"})
+	raw := iss.Sign(t, "svc", audience, map[string]any{"scope": "collegium:runs:read collegium:agents:read"})
 	p, err := v.Bearer(context.Background(), raw)
 	if err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestMachineScopeString(t *testing.T) {
 func TestBearerRejectsAnIDToken(t *testing.T) {
 	iss := authtest.New(t)
 	v := verifier(t, iss, nil)
-	raw := iss.Sign(t, "00u1", client, map[string]any{"groups": []string{"oap-admins"}})
+	raw := iss.Sign(t, "00u1", client, map[string]any{"groups": []string{"collegium-admins"}})
 	if _, err := v.Bearer(context.Background(), raw); !errors.Is(err, auth.ErrUnauthenticated) {
 		t.Fatalf("got %v, want ErrUnauthenticated", err)
 	}
@@ -156,7 +156,7 @@ func TestBearerRejectsAnIDToken(t *testing.T) {
 func TestBearerForAPerson(t *testing.T) {
 	iss := authtest.New(t)
 	v := verifier(t, iss, nil)
-	raw := iss.Sign(t, "00u1", audience, map[string]any{"groups": []string{"oap-admins"}})
+	raw := iss.Sign(t, "00u1", audience, map[string]any{"groups": []string{"collegium-admins"}})
 	p, err := v.Bearer(context.Background(), raw)
 	if err != nil {
 		t.Fatal(err)

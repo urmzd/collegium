@@ -15,12 +15,12 @@ import (
 	"github.com/urmzd/opentag/pkg/envelope"
 	"github.com/urmzd/opentag/pkg/topic"
 
-	"github.com/urmzd/open-agent-platform/internal/platform"
-	"github.com/urmzd/open-agent-platform/pkg/alerts"
-	"github.com/urmzd/open-agent-platform/pkg/call"
-	"github.com/urmzd/open-agent-platform/pkg/policy"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
-	"github.com/urmzd/open-agent-platform/pkg/usage"
+	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/policy"
+	"github.com/urmzd/collegium/pkg/runs"
+	"github.com/urmzd/collegium/pkg/usage"
 )
 
 const tenant = "acme"

@@ -15,7 +15,7 @@ const windows = [
 // sits on top of the stack and completed at the base, so the two are told
 // apart by position as well as hue.
 const series = [
-  { key: "completed", label: "Completed", fill: "var(--oap-ink)" },
+  { key: "completed", label: "Completed", fill: "var(--collegium-ink)" },
   { key: "active", label: "In flight", fill: "var(--aui-accent)" },
   { key: "failed", label: "Failed", fill: "var(--aui-bad)" },
 ] as const;
@@ -194,7 +194,7 @@ function Breakdown({ title, groups, onPick }: { title: string; groups: Group[]; 
                   <span className="flex items-center gap-2">
                     <span
                       aria-hidden
-                      className="h-2 rounded-r-aui-sm bg-[var(--oap-ink)]"
+                      className="h-2 rounded-r-aui-sm bg-[var(--collegium-ink)]"
                       style={{ width: `${Math.max((100 * g.runs) / max, 1.5)}%`, maxWidth: "calc(100% - 2.5rem)" }}
                     />
                     <span className="tabular-nums text-aui-fg">{g.runs}</span>

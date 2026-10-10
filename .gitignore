@@ -12,3 +12,6 @@ coverage.html
 # direnv
 .direnv/
 .envrc.local
+
+# Git worktrees
+.worktrees/

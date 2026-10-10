@@ -7,8 +7,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/prefs"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/prefs"
 )
 
 // Preferences are a person's own. Every route here acts on the caller and takes

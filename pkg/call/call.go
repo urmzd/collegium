@@ -49,7 +49,7 @@ import (
 const Origin = "agent"
 
 // metaPrefix namespaces the edge inside Tag.Meta.
-const metaPrefix = "oap."
+const metaPrefix = "collegium."
 
 const (
 	metaRoot   = metaPrefix + "root"

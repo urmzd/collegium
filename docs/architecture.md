@@ -4,7 +4,7 @@ This is the plan of record. The [status table](#status) says what exists.
 
 ## What this repo is
 
-open-agent-platform is the composition. It owns the pieces that only exist once
+collegium is the composition. It owns the pieces that only exist once
 the parts are put together: the call tree, governance, routing work to people,
 and the stores behind them. It does not reimplement what it composes.
 
@@ -161,7 +161,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Publishing: the `publish_artifact` tool copies a sandbox file to storage and reports it on the run's stream, where the console shows it as a card | Built |
 | Storage limits per workspace, project and agent, as `max_storage` on a policy | Built. A refusal raises a message in the inbox |
 | Downloads: tenant and right checked on every request, always an attachment unless an inert type is asked for inline, never HTML or SVG inline | Built, tested |
-| Built-in agents: `oap-writer` writes a document and publishes it. Provided by the platform, not editable, present only when the server is given `-builtin-provider` and `-builtin-model` | Built. One agent. Not run against a real model here: no provider key was available |
+| Built-in agents: `collegium-writer` writes a document and publishes it. Provided by the platform, not editable, present only when the server is given `-builtin-provider` and `-builtin-model` | Built. One agent. Not run against a real model here: no provider key was available |
 | Called agents are runs: an agent that tags another starts a run with its own id, events and record, in the caller's conversation and sandbox | Built, on opentag's `WithDelegator` hook. Needs the opentag branch `feat/delegated-runs`, pinned by a `replace` in `go.mod` until it is tagged |
 | Two lifetimes for a called run. Attached (tagged, the caller waits): ends with its caller, and the caller is not done until it is. Delegated (`delegate_task`, the caller carries on): independent, and its answer goes to the inbox | Built, tested three levels deep under the race detector |
 | Stopping a run: `POST /api/runs/{id}/stop` stops it and everything attached to it, with the cause recorded. What it delegated keeps running | Built. A stop is taken at the platform's edge: the run can start nothing more and its answer is discarded, but a model call in flight is not interrupted, because the runtime has no cancel |

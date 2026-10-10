@@ -7,9 +7,9 @@ import (
 
 	"github.com/urmzd/opentag/pkg/envelope"
 
-	"github.com/urmzd/open-agent-platform/pkg/memory"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
-	"github.com/urmzd/open-agent-platform/pkg/usage"
+	"github.com/urmzd/collegium/pkg/memory"
+	"github.com/urmzd/collegium/pkg/runs"
+	"github.com/urmzd/collegium/pkg/usage"
 )
 
 // Housekeeping the platform does around a conversation, by asking an agent.
@@ -23,8 +23,8 @@ import (
 // Both are off until a workspace chooses an agent for them, and neither runs on
 // the offline provider, whose answer is a notice and not a title or a fact.
 const (
-	metaHook = "oap.hook"
-	metaFor  = "oap.for"
+	metaHook = "collegium.hook"
+	metaFor  = "collegium.for"
 
 	hookTitle  = "title"
 	hookMemory = "memory"

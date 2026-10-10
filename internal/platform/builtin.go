@@ -22,7 +22,7 @@ import (
 // is told which provider and model to give them.
 
 // BuiltinWriter writes a document and publishes it.
-const BuiltinWriter = "oap-writer"
+const BuiltinWriter = "collegium-writer"
 
 const writerPrompt = `You write documents and publish them as files.
 

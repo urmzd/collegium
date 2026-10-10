@@ -40,19 +40,19 @@ import (
 	"github.com/urmzd/opentag/pkg/runtime"
 	"github.com/urmzd/opentag/pkg/topic"
 
-	"github.com/urmzd/open-agent-platform/pkg/alerts"
-	"github.com/urmzd/open-agent-platform/pkg/artifacts"
-	"github.com/urmzd/open-agent-platform/pkg/blob"
-	"github.com/urmzd/open-agent-platform/pkg/call"
-	"github.com/urmzd/open-agent-platform/pkg/evals"
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
-	"github.com/urmzd/open-agent-platform/pkg/journal"
-	"github.com/urmzd/open-agent-platform/pkg/knowledge"
-	"github.com/urmzd/open-agent-platform/pkg/memory"
-	"github.com/urmzd/open-agent-platform/pkg/policy"
-	"github.com/urmzd/open-agent-platform/pkg/prefs"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
-	"github.com/urmzd/open-agent-platform/pkg/usage"
+	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/artifacts"
+	"github.com/urmzd/collegium/pkg/blob"
+	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/evals"
+	"github.com/urmzd/collegium/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/journal"
+	"github.com/urmzd/collegium/pkg/knowledge"
+	"github.com/urmzd/collegium/pkg/memory"
+	"github.com/urmzd/collegium/pkg/policy"
+	"github.com/urmzd/collegium/pkg/prefs"
+	"github.com/urmzd/collegium/pkg/runs"
+	"github.com/urmzd/collegium/pkg/usage"
 )
 
 // ErrForbidden reports a call the caller's agent spec does not allow.
@@ -201,7 +201,7 @@ func (p *Platform) executor() (runtime.Executor, error) {
 		if err != nil {
 			base = os.TempDir()
 		}
-		dir = filepath.Join(base, "open-agent-platform", "workspace")
+		dir = filepath.Join(base, "collegium", "workspace")
 	}
 	p.dir = dir
 	ws, err := workspace.NewLocal(dir)

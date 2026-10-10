@@ -332,7 +332,7 @@ export function AgentDetail({
               </div>
               <textarea
                 id="agent-prompt"
-                className={`${field} oap-glass min-h-[22rem] resize-y font-aui-mono text-aui-sm leading-relaxed`}
+                className={`${field} collegium-glass min-h-[22rem] resize-y font-aui-mono text-aui-sm leading-relaxed`}
                 value={spec.system_prompt}
                 disabled={!canWrite}
                 spellCheck={false}
@@ -551,7 +551,7 @@ export function AgentDetail({
                 proposed after each turn.
               </p>
             ) : (
-              <ul className="oap-glass overflow-hidden rounded-aui-lg">
+              <ul className="collegium-glass overflow-hidden rounded-aui-lg">
                 {kept.map((n) => (
                   <li key={n.id} className="flex items-start justify-between gap-3 border-aui-border border-b px-4 py-2.5 last:border-b-0">
                     <span className="min-w-0">
@@ -608,7 +608,7 @@ export function AgentDetail({
                 No rules watch this agent. Rules for any agent still apply.
               </p>
             ) : (
-              <ul className="oap-glass overflow-hidden rounded-aui-lg">
+              <ul className="collegium-glass overflow-hidden rounded-aui-lg">
                 {myRules.map((r) => (
                   <li key={r.name} className="flex items-center justify-between gap-3 border-aui-border border-b px-4 py-2.5 last:border-b-0">
                     <span className="min-w-0">

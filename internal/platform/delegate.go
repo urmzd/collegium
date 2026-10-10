@@ -13,10 +13,10 @@ import (
 	"github.com/urmzd/opentag/pkg/runtime"
 	saigetypes "github.com/urmzd/saige/agent/types"
 
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/call"
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // Agents calling agents.

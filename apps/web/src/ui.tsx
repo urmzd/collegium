@@ -8,10 +8,10 @@ export const field =
   "w-full rounded-aui border border-aui-border bg-aui-bg px-2.5 py-1.5 text-aui-sm text-aui-fg outline-none placeholder:text-aui-muted focus-visible:border-aui-accent focus-visible:ring-2 focus-visible:ring-aui-ring";
 
 export const button =
-  "inline-flex h-8 items-center justify-center gap-1.5 oap-press rounded-aui border border-aui-border bg-aui-surface px-3 text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex h-8 items-center justify-center gap-1.5 collegium-press rounded-aui border border-aui-border bg-aui-surface px-3 text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
 
 export const primary =
-  "inline-flex h-8 items-center justify-center gap-1.5 oap-press rounded-aui bg-aui-primary px-3 text-aui-sm font-medium text-aui-primary-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex h-8 items-center justify-center gap-1.5 collegium-press rounded-aui bg-aui-primary px-3 text-aui-sm font-medium text-aui-primary-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
 
 export function Label({ text, hint, children }: { text: string; hint?: string; children: ReactNode }) {
   return (
@@ -35,7 +35,7 @@ export function Problem({ message }: { message: string | null }) {
 export function Empty({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="flex flex-col gap-1 py-10">
-      <p className="oap-display text-aui-lg font-medium text-aui-fg">{title}</p>
+      <p className="collegium-display text-aui-lg font-medium text-aui-fg">{title}</p>
       {children && <p className="max-w-md text-aui-sm text-aui-muted">{children}</p>}
     </div>
   );
@@ -45,10 +45,10 @@ const statusTone: Record<Run["status"], string> = {
   accepted: "bg-aui-neutral",
   running: "bg-aui-info",
   parked: "bg-aui-warn",
-  completed: "bg-[var(--oap-ink)]",
+  completed: "bg-[var(--collegium-ink)]",
   failed: "bg-aui-bad",
   // Stopped from outside is not a failure, so it is not red.
-  stopped: "bg-[var(--oap-ink-faint)]",
+  stopped: "bg-[var(--collegium-ink-faint)]",
 };
 
 const statusWord: Record<Run["status"], string> = {
@@ -116,10 +116,10 @@ export function Page({
   return (
     <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
       {/* A container, so rows lay themselves out by the room the page has, not by the window. */}
-      <div className="@container oap-fade flex w-full max-w-[68rem] flex-col gap-6 px-5 pt-8 pb-12 md:px-10">
+      <div className="@container collegium-fade flex w-full max-w-[68rem] flex-col gap-6 px-5 pt-8 pb-12 md:px-10">
         <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <div className="min-w-0">
-            <h1 className="oap-display text-[1.875rem] leading-[1.15] font-semibold text-aui-fg">{title}</h1>
+            <h1 className="collegium-display text-[1.875rem] leading-[1.15] font-semibold text-aui-fg">{title}</h1>
             <p className="max-w-[62ch] pt-1.5 text-aui-sm text-aui-muted">{lede}</p>
           </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
@@ -130,21 +130,21 @@ export function Page({
   );
 }
 
-export const card = "oap-glass rounded-aui-lg p-4";
+export const card = "collegium-glass rounded-aui-lg p-4";
 
 /** A list of rows on hairlines, with no box around it. */
-export const rows = "divide-y divide-[var(--oap-rule)] border-[var(--oap-rule)] border-y";
+export const rows = "divide-y divide-[var(--collegium-rule)] border-[var(--collegium-rule)] border-y";
 
 /** Figures side by side on one rule. Wrap a row of `Stat`s in it. */
 export const figures =
-  "grid grid-cols-2 gap-x-8 gap-y-5 border-[var(--oap-rule)] border-y py-5 sm:grid-cols-3 lg:grid-cols-5";
+  "grid grid-cols-2 gap-x-8 gap-y-5 border-[var(--collegium-rule)] border-y py-5 sm:grid-cols-3 lg:grid-cols-5";
 
 /** A figure with its label. The value is ink, never a status color. */
 export function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
     <div className="flex min-w-0 flex-col">
       <span className="text-aui-xs text-aui-muted">{label}</span>
-      <span className="oap-display pt-0.5 text-[1.75rem] leading-9 font-semibold text-aui-fg">{value}</span>
+      <span className="collegium-display pt-0.5 text-[1.75rem] leading-9 font-semibold text-aui-fg">{value}</span>
       {note && <span className="text-aui-2xs text-aui-muted">{note}</span>}
     </div>
   );
@@ -195,16 +195,16 @@ export function Tape({
   const shown = [...runs].sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(-slots);
   const top = Math.log1p(Math.max(scale ?? longest(shown), 1));
   const blanks = Array.from({ length: Math.max(slots - shown.length, 0) }, (_, i) => i);
-  const style = tall ? ({ "--oap-tape-h": "2.75rem" } as React.CSSProperties) : undefined;
+  const style = tall ? ({ "--collegium-tape-h": "2.75rem" } as React.CSSProperties) : undefined;
   return (
     <div
       role={onOpen ? "group" : "img"}
       aria-label={`Recent runs. ${tally(shown)}.`}
-      className={`oap-tape ${className}`}
+      className={`collegium-tape ${className}`}
       style={style}
     >
       {blanks.map((i) => (
-        <span key={i} aria-hidden className="oap-tick" data-status="none" />
+        <span key={i} aria-hidden className="collegium-tick" data-status="none" />
       ))}
       {shown.map((r) => {
         const t = { "--t": Math.min(Math.log1p(elapsed(r)) / top, 1).toFixed(3) } as React.CSSProperties;
@@ -213,7 +213,7 @@ export function Tape({
           <button
             key={r.id}
             type="button"
-            className="oap-tick"
+            className="collegium-tick"
             data-status={r.status}
             style={t}
             title={label}
@@ -221,7 +221,7 @@ export function Tape({
             onClick={() => onOpen(r.id)}
           />
         ) : (
-          <span key={r.id} aria-hidden className="oap-tick" data-status={r.status} style={t} title={label} />
+          <span key={r.id} aria-hidden className="collegium-tick" data-status={r.status} style={t} title={label} />
         );
       })}
     </div>
@@ -285,7 +285,7 @@ export function Switch({
       </span>
       <input
         type="checkbox"
-        className="oap-switch mt-0.5"
+        className="collegium-switch mt-0.5"
         checked={checked}
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
@@ -422,8 +422,8 @@ export function Popover({
           role="dialog"
           aria-label={label}
           data-leaving={present.leaving}
-          style={{ "--oap-pop-origin": `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
-          className={`oap-glass-pop oap-pop absolute z-40 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${narrow ? "w-56" : "w-80"} ${
+          style={{ "--collegium-pop-origin": `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
+          className={`collegium-glass-pop collegium-pop absolute z-40 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${narrow ? "w-56" : "w-80"} ${
             align === "right" ? "right-0" : "left-0"
           } ${up ? "bottom-full mb-2" : "top-full mt-2"}`}
         >
@@ -476,7 +476,7 @@ export function SearchField({
 }) {
   return (
     <div
-      className={`flex h-8 items-center gap-2 rounded-aui border border-[var(--oap-rule)] bg-aui-bg px-2.5 text-aui-muted transition-colors focus-within:border-aui-accent focus-within:text-aui-fg ${className}`}
+      className={`flex h-8 items-center gap-2 rounded-aui border border-[var(--collegium-rule)] bg-aui-bg px-2.5 text-aui-muted transition-colors focus-within:border-aui-accent focus-within:text-aui-fg ${className}`}
     >
       <SearchIcon />
       <input
@@ -573,7 +573,7 @@ export function FlashNote({ flash, align = "center" }: { flash: Flash | null; al
           data-testid="flash-note"
           data-bad={shown.bad}
           data-leaving={present.leaving}
-          className="oap-note oap-glass-pop flex items-center gap-1.5 whitespace-nowrap rounded-aui px-2 py-1 text-aui-xs text-aui-fg"
+          className="collegium-note collegium-glass-pop flex items-center gap-1.5 whitespace-nowrap rounded-aui px-2 py-1 text-aui-xs text-aui-fg"
         >
           {/* A mark as well as the words, so a small notice beside a bare icon still reads as a result. */}
           {shown.bad ? <XIcon size={12} className="text-aui-bad" /> : <CheckIcon size={12} className="text-aui-ok" />}
@@ -749,12 +749,12 @@ export function Menu<T extends string>({
         <div
           onKeyDown={onKey}
           data-leaving={present.leaving}
-          style={{ "--oap-pop-origin": `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
-          className={`oap-glass-pop oap-pop absolute z-40 flex max-h-80 min-w-full max-w-[min(22rem,calc(100vw-2rem))] flex-col rounded-aui-lg p-1 ${
+          style={{ "--collegium-pop-origin": `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
+          className={`collegium-glass-pop collegium-pop absolute z-40 flex max-h-80 min-w-full max-w-[min(22rem,calc(100vw-2rem))] flex-col rounded-aui-lg p-1 ${
             quiet ? "w-max min-w-44" : ""
           } ${align === "right" ? "right-0" : "left-0"} ${up ? "bottom-full mb-1.5" : "top-full mt-1.5"}`}
         >
-          {header && <div className="shrink-0 border-[var(--oap-rule)] border-b px-2.5 pt-1.5 pb-2 text-aui-xs text-aui-muted">{header}</div>}
+          {header && <div className="shrink-0 border-[var(--collegium-rule)] border-b px-2.5 pt-1.5 pb-2 text-aui-xs text-aui-muted">{header}</div>}
           {searchable && (
             <SearchField
               label={`Filter ${label.toLowerCase()}`}
@@ -842,8 +842,8 @@ export function Stroke({
       data-agent={agent}
       data-state={agent ? state : undefined}
       data-edge={edge}
-      className={`oap-stroke ${className}`}
-      style={agent ? ({ "--oap-hue": hueOf(agent) } as CSSProperties) : undefined}
+      className={`collegium-stroke ${className}`}
+      style={agent ? ({ "--collegium-hue": hueOf(agent) } as CSSProperties) : undefined}
     >
       {children}
     </div>
@@ -947,10 +947,10 @@ export function UsageMeter({
         aria-valuenow={Math.min(spent, cap || spent)}
         aria-valuetext={text}
         title={text}
-        className="oap-meter-track inline-block w-10 shrink-0"
-        style={{ "--oap-meter-h": "4px" } as CSSProperties}
+        className="collegium-meter-track inline-block w-10 shrink-0"
+        style={{ "--collegium-meter-h": "4px" } as CSSProperties}
       >
-        {cap > 0 && <span className="oap-meter-fill" style={{ width: pct(spent) }} />}
+        {cap > 0 && <span className="collegium-meter-fill" style={{ width: pct(spent) }} />}
       </span>
     );
   }
@@ -967,7 +967,7 @@ export function UsageMeter({
       )}
       {!header && labelled && <span className="truncate text-aui-xs text-aui-muted">{label}</span>}
       <div className="flex items-baseline justify-between gap-3">
-        <span className={`oap-display min-w-0 truncate font-semibold text-aui-fg ${header ? "text-[1.75rem] leading-9" : "text-aui-sm"}`}>
+        <span className={`collegium-display min-w-0 truncate font-semibold text-aui-fg ${header ? "text-[1.75rem] leading-9" : "text-aui-sm"}`}>
           {show(spent)}
           {!header && cap > 0 && <span className="font-normal text-aui-muted"> of {show(cap)}</span>}
         </span>
@@ -982,14 +982,14 @@ export function UsageMeter({
         aria-valuemax={cap || Math.max(spent, 1)}
         aria-valuenow={Math.min(spent, cap || spent)}
         aria-valuetext={text}
-        className="oap-meter-track"
-        style={header ? ({ "--oap-meter-h": "10px" } as CSSProperties) : undefined}
+        className="collegium-meter-track"
+        style={header ? ({ "--collegium-meter-h": "10px" } as CSSProperties) : undefined}
       >
-        {ahead > 0 && <span data-testid={`${testId}-projected`} className="oap-meter-projected" style={{ width: pct(ahead) }} />}
+        {ahead > 0 && <span data-testid={`${testId}-projected`} className="collegium-meter-projected" style={{ width: pct(ahead) }} />}
         {/* With no limit there is nothing to fill toward, so the track stays empty. */}
-        {cap > 0 && <span className="oap-meter-fill" style={{ width: pct(spent) }} />}
-        {cap > 0 && warnAt > 0 && warnAt < 1 && <span aria-hidden className="oap-meter-warn" style={{ left: pct(cap * warnAt) }} />}
-        {cap > 0 && scale > cap && <span aria-hidden className="oap-meter-limit" style={{ left: pct(cap) }} />}
+        {cap > 0 && <span className="collegium-meter-fill" style={{ width: pct(spent) }} />}
+        {cap > 0 && warnAt > 0 && warnAt < 1 && <span aria-hidden className="collegium-meter-warn" style={{ left: pct(cap * warnAt) }} />}
+        {cap > 0 && scale > cap && <span aria-hidden className="collegium-meter-limit" style={{ left: pct(cap) }} />}
       </div>
     </div>
   );
@@ -1129,7 +1129,7 @@ export function PolicyBadge({
     <span
       data-testid={testId}
       data-action={action}
-      className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full border border-[var(--oap-stroke)] pr-2.5 pl-2 text-aui-xs text-aui-muted"
+      className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full border border-[var(--collegium-stroke)] pr-2.5 pl-2 text-aui-xs text-aui-muted"
     >
       <Icon size={12} />
       <span className="truncate">

@@ -15,7 +15,7 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/urmzd/open-agent-platform/pkg/auth"
+	"github.com/urmzd/collegium/pkg/auth"
 )
 
 const (
@@ -138,7 +138,7 @@ func (a *Authn) Authenticate(r *http.Request) (auth.Principal, error) {
 		}
 		return a.Verifier.Bearer(r.Context(), raw)
 	}
-	c, err := r.Cookie(a.cookieName("oap_session"))
+	c, err := r.Cookie(a.cookieName("collegium_session"))
 	if err != nil {
 		return auth.Principal{}, auth.ErrUnauthenticated
 	}
@@ -178,7 +178,7 @@ func (a *Authn) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// The state also goes in a cookie, so the callback can tell that the
 	// browser finishing the flow is the browser that started it.
-	a.setCookie(w, "oap_login", state, loginTTL)
+	a.setCookie(w, "collegium_login", state, loginTTL)
 	http.Redirect(w, r, a.OAuth.AuthCodeURL(state,
 		oauth2.SetAuthURLParam("nonce", nonce),
 		oauth2.S256ChallengeOption(verifier),
@@ -193,8 +193,8 @@ func (a *Authn) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	state := q.Get("state")
-	c, err := r.Cookie(a.cookieName("oap_login"))
-	a.setCookie(w, "oap_login", "", 0)
+	c, err := r.Cookie(a.cookieName("collegium_login"))
+	a.setCookie(w, "collegium_login", "", 0)
 	if err != nil || state == "" || subtle.ConstantTimeCompare([]byte(c.Value), []byte(state)) != 1 {
 		http.Error(w, "sign-in was not started from this browser", http.StatusBadRequest)
 		return
@@ -226,7 +226,7 @@ func (a *Authn) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	a.sessions[id] = session{who: who, expires: a.clock().Add(sessionTTL)}
 	a.mu.Unlock()
-	a.setCookie(w, "oap_session", id, sessionTTL)
+	a.setCookie(w, "collegium_session", id, sessionTTL)
 	http.Redirect(w, r, l.returnTo, http.StatusFound)
 }
 
@@ -244,12 +244,12 @@ func (a *Authn) exchange(ctx context.Context, code string, l login) (auth.Princi
 
 // handleLogout ends the session.
 func (a *Authn) handleLogout(w http.ResponseWriter, r *http.Request) {
-	if c, err := r.Cookie(a.cookieName("oap_session")); err == nil {
+	if c, err := r.Cookie(a.cookieName("collegium_session")); err == nil {
 		a.mu.Lock()
 		delete(a.sessions, c.Value)
 		a.mu.Unlock()
 	}
-	a.setCookie(w, "oap_session", "", 0)
+	a.setCookie(w, "collegium_session", "", 0)
 	w.WriteHeader(http.StatusNoContent)
 }
 

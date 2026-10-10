@@ -23,10 +23,10 @@ import (
 	"github.com/urmzd/opentag/pkg/runtime"
 	saigetypes "github.com/urmzd/saige/agent/types"
 
-	"github.com/urmzd/open-agent-platform/pkg/alerts"
-	"github.com/urmzd/open-agent-platform/pkg/artifacts"
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/policy"
+	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/artifacts"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/policy"
 )
 
 // Files an agent makes.
