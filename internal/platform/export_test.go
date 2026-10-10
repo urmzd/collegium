@@ -5,8 +5,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentrt/payload"
-	"github.com/urmzd/opentag/pkg/runtime"
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
+	"github.com/urmzd/mandatum/pkg/runtime"
 )
 
 // UseTool calls one of a turn's file tools the way the agent loop would, and

@@ -1,4 +1,4 @@
-import { BotIcon, CheckIcon, ClockIcon, MessageIcon } from "@agent-ui/render-web";
+import { BotIcon, CheckIcon, ClockIcon, MessageIcon } from "@vultus/render-web";
 import { type ReactNode, type SVGProps, useState } from "react";
 import type { Me, Preferences, ThreadSummary } from "./api.ts";
 import { Avatar } from "./Settings.tsx";
@@ -19,7 +19,7 @@ export type View =
   | "storage"
   | "settings";
 
-// Glyphs agent-ui does not ship. Same grid and stroke as its set.
+// Glyphs vultus does not ship. Same grid and stroke as its set.
 function glyph(d: ReactNode) {
   return function Glyph({ size = 16, ...rest }: SVGProps<SVGSVGElement> & { size?: number }) {
     return (

@@ -16,9 +16,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentspec"
-	"github.com/urmzd/opentag/pkg/envelope"
-	"github.com/urmzd/opentag/pkg/registry"
+	"github.com/urmzd/mandatum/pkg/agentspec"
+	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/registry"
 
 	"github.com/urmzd/collegium/internal/httpapi"
 	"github.com/urmzd/collegium/internal/platform"
@@ -212,7 +212,7 @@ func loopback(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// seedAgents creates two agents on opentag's offline provider, so the console
+// seedAgents creates two agents on mandatum's offline provider, so the console
 // has something to run before a model key is configured.
 func seedAgents(ctx context.Context, p *platform.Platform, tenant string) error {
 	for _, spec := range []agentspec.AgentSpec{

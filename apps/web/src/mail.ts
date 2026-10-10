@@ -1,12 +1,12 @@
 /**
- * The one seam between the platform's inbox and agent-ui's mailbox.
+ * The one seam between the platform's inbox and vultus's mailbox.
  *
- * The model is agent-ui's (`InboxMessage`, its parts, its actions). The routes
+ * The model is vultus's (`InboxMessage`, its parts, its actions). The routes
  * and the wire shape are the platform's. `fromServer` turns one into the
  * other, `toRequest` turns a click back into a call, and `transport` makes the
  * calls. When either side changes, this file is what changes.
  */
-import { ActionId, type InboxMessage, type MessagePart, partTarget, type Resolution, type Tone, type UiAction } from "@agent-ui/core";
+import { ActionId, type InboxMessage, type MessagePart, partTarget, type Resolution, type Tone, type UiAction } from "@vultus/core";
 
 /** Something a message is about, which the console can open. */
 export type Source = { kind: "run" | "thread" | "rule" | "agent" | "project"; id: string; label: string };

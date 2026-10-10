@@ -5,9 +5,9 @@ go 1.26.9
 require (
 	github.com/coreos/go-oidc/v3 v3.21.0
 	github.com/go-jose/go-jose/v4 v4.1.5
-	github.com/urmzd/dispatch v0.1.0
 	github.com/urmzd/duraturo v0.1.1
-	github.com/urmzd/opentag v0.2.0
+	github.com/urmzd/legatus v0.2.0
+	github.com/urmzd/mandatum v0.4.0
 	github.com/urmzd/saige v0.34.0
 	golang.org/x/oauth2 v0.37.0
 )

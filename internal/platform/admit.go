@@ -3,8 +3,8 @@ package platform
 import (
 	"fmt"
 
-	"github.com/urmzd/opentag/pkg/envelope"
-	"github.com/urmzd/opentag/pkg/runtime"
+	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/runtime"
 
 	"github.com/urmzd/collegium/pkg/alerts"
 	"github.com/urmzd/collegium/pkg/call"

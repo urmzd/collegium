@@ -1,4 +1,4 @@
-import type { ItemActions, TurnItem } from "@agent-ui/render-web";
+import type { ItemActions, TurnItem } from "@vultus/render-web";
 import type { Run } from "./adapter.ts";
 import { CopyAs } from "./CopyAs.tsx";
 import type { Item } from "./copyas.ts";
@@ -27,11 +27,11 @@ export function itemOf(run: Run, item: TurnItem): Item | null {
 }
 
 /**
- * "Copy as" on every item agent-ui draws in a turn: each tool call, each call
+ * "Copy as" on every item vultus draws in a turn: each tool call, each call
  * to another agent, and the answer. Pass the result to `AgentMessage` as
  * `itemActions`.
  *
- * On the answer this is the only copy control. agent-ui draws its own plain
+ * On the answer this is the only copy control. vultus draws its own plain
  * copy button there only when a host returns nothing for the answer, so there
  * is one icon and never two. Return null itself to get that button back: an
  * element that renders nothing would leave the answer with no way to copy it.

@@ -19,12 +19,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentspec"
-	"github.com/urmzd/opentag/pkg/bus"
-	"github.com/urmzd/opentag/pkg/connectors/cron"
-	"github.com/urmzd/opentag/pkg/envelope"
-	"github.com/urmzd/opentag/pkg/registry"
-	"github.com/urmzd/opentag/pkg/topic"
+	"github.com/urmzd/mandatum/pkg/agentspec"
+	"github.com/urmzd/mandatum/pkg/bus"
+	"github.com/urmzd/mandatum/pkg/connectors/cron"
+	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/registry"
+	"github.com/urmzd/mandatum/pkg/topic"
 
 	"github.com/urmzd/collegium/internal/platform"
 	"github.com/urmzd/collegium/pkg/alerts"

@@ -1,6 +1,6 @@
 // Package runs is the platform's index of runs and the tree they form.
 //
-// opentag's ledger knows whether a run survived. This index knows how runs
+// mandatum's ledger knows whether a run survived. This index knows how runs
 // relate: which run called which, how many calls each has made, and how much
 // budget each has handed out. It is a projection of two inputs, the tag a run
 // was accepted with and the lifecycle events that run later publishes.
@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentrt/payload"
-	"github.com/urmzd/opentag/pkg/envelope"
-	"github.com/urmzd/opentag/pkg/runtime"
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
+	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/runtime"
 
 	"github.com/urmzd/collegium/pkg/call"
 )
@@ -205,7 +205,7 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 	if _, ok := x.runs[runID]; ok {
 		return nil
 	}
-	// The edge names tags. Runs are indexed by run id, which opentag derives
+	// The edge names tags. Runs are indexed by run id, which mandatum derives
 	// from the tag id, so the links are translated once, here.
 	parent := ""
 	if edge.Parent != "" {

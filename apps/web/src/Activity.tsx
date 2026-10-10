@@ -1,5 +1,5 @@
-import { ChevronRightIcon, WebSurface, XIcon } from "@agent-ui/render-web";
-import { AgentMessage } from "@agent-ui/web";
+import { ChevronRightIcon, WebSurface, XIcon } from "@vultus/render-web";
+import { AgentMessage } from "@vultus/web";
 import { useEffect, useMemo, useState } from "react";
 import { type Run, turnOf } from "./adapter.ts";
 import { api, type Span } from "./api.ts";

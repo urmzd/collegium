@@ -4,8 +4,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/connectors/cron"
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/connectors/cron"
+	"github.com/urmzd/mandatum/pkg/envelope"
 
 	"github.com/urmzd/collegium/internal/platform"
 	"github.com/urmzd/collegium/pkg/auth"

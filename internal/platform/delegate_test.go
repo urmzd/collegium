@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentrt"
-	"github.com/urmzd/opentag/pkg/agentspec"
-	"github.com/urmzd/opentag/pkg/runtime"
+	"github.com/urmzd/mandatum/pkg/agentrt"
+	"github.com/urmzd/mandatum/pkg/agentspec"
+	"github.com/urmzd/mandatum/pkg/runtime"
 	"github.com/urmzd/saige/agent/agenttest"
 	saigetypes "github.com/urmzd/saige/agent/types"
 

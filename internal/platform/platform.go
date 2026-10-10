@@ -1,4 +1,4 @@
-// Package platform assembles the system: opentag's registry, bus, router and
+// Package platform assembles the system: mandatum's registry, bus, router and
 // durable runtime, the cron trigger, and this repo's run index and call path.
 //
 //	trigger or API  →  Invoke  →  runtime  →  bus  →  router  →  sinks
@@ -20,25 +20,25 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/urmzd/dispatch/pkg/controlplane"
-	"github.com/urmzd/dispatch/pkg/metrics"
-	"github.com/urmzd/dispatch/pkg/node/inproc"
-	"github.com/urmzd/dispatch/pkg/tool"
-	"github.com/urmzd/dispatch/pkg/workspace"
 	"github.com/urmzd/duraturo"
 	"github.com/urmzd/duraturo/pkg/ledger"
 	dqueue "github.com/urmzd/duraturo/pkg/queue"
 	drun "github.com/urmzd/duraturo/pkg/run"
 	"github.com/urmzd/duraturo/pkg/worker"
-	"github.com/urmzd/opentag/pkg/agentrt"
-	"github.com/urmzd/opentag/pkg/bus"
-	"github.com/urmzd/opentag/pkg/connector"
-	"github.com/urmzd/opentag/pkg/connectors/cron"
-	"github.com/urmzd/opentag/pkg/envelope"
-	"github.com/urmzd/opentag/pkg/registry"
-	"github.com/urmzd/opentag/pkg/router"
-	"github.com/urmzd/opentag/pkg/runtime"
-	"github.com/urmzd/opentag/pkg/topic"
+	"github.com/urmzd/legatus/pkg/controlplane"
+	"github.com/urmzd/legatus/pkg/metrics"
+	"github.com/urmzd/legatus/pkg/node/inproc"
+	"github.com/urmzd/legatus/pkg/tool"
+	"github.com/urmzd/legatus/pkg/workspace"
+	"github.com/urmzd/mandatum/pkg/agentrt"
+	"github.com/urmzd/mandatum/pkg/bus"
+	"github.com/urmzd/mandatum/pkg/connector"
+	"github.com/urmzd/mandatum/pkg/connectors/cron"
+	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/registry"
+	"github.com/urmzd/mandatum/pkg/router"
+	"github.com/urmzd/mandatum/pkg/runtime"
+	"github.com/urmzd/mandatum/pkg/topic"
 
 	"github.com/urmzd/collegium/pkg/alerts"
 	"github.com/urmzd/collegium/pkg/artifacts"
@@ -192,7 +192,7 @@ func New(cfg Config) (*Platform, error) {
 	return p, nil
 }
 
-// executor builds the sandbox every turn runs in: a dispatch task under the
+// executor builds the sandbox every turn runs in: a legatus task under the
 // NGAC policy compiled from the pinned revision's access grant.
 func (p *Platform) executor() (runtime.Executor, error) {
 	dir := p.cfg.Workspace

@@ -1,5 +1,5 @@
-import { ActionId, type InboxMessage, messageState, openParts, type UiAction } from "@agent-ui/core";
-import { Mailbox, type MailboxShow } from "@agent-ui/web";
+import { ActionId, type InboxMessage, messageState, openParts, type UiAction } from "@vultus/core";
+import { Mailbox, type MailboxShow } from "@vultus/web";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useInbox } from "./inbox.ts";
 import { platformParts } from "./MailParts.tsx";
@@ -36,7 +36,7 @@ export function edgeOf(message: InboxMessage): { agent?: string; state: StrokeSt
 }
 
 /**
- * agent-ui's mailbox with the platform's own pieces on it: the parts it draws
+ * vultus's mailbox with the platform's own pieces on it: the parts it draws
  * itself, the agent's edge on what an agent sent, and everything a message is
  * about as things to open.
  */
@@ -113,7 +113,7 @@ export function MailboxView({
 /**
  * The inbox. Alerts, failed runs, memory to review and limits that were
  * reached all arrive here as messages, and are resolved here where they can
- * be. The mailbox is agent-ui's. This page loads it from the platform, keeps
+ * be. The mailbox is vultus's. This page loads it from the platform, keeps
  * it current, and sends each click back.
  */
 export function InboxPage({

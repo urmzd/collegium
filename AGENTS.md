@@ -2,19 +2,19 @@
 
 ## What this is
 
-A Go module that composes opentag, saige, dispatch and duraturo into one agent
-platform. agent-ui supplies the components. The design is in
+A Go module that composes mandatum, saige, legatus and duraturo into one agent
+platform. vultus supplies the components. The design is in
 [docs/architecture.md](docs/architecture.md).
 
 ## Rules
 
-- **Compose, don't reimplement.** If opentag, saige, dispatch or duraturo owns
+- **Compose, don't reimplement.** If mandatum, saige, legatus or duraturo owns
   a concern, use it or change it upstream.
 - **One way to call an agent.** Subagents, handoffs and delegations all go
   through `pkg/call`. Do not add a second path.
 - **Default deny.** A zero value grants nothing: no calls, no budget, no access.
 - **Fail closed.** A missing or malformed edge on an agent's tag is an error.
-- **Nothing presentational here.** Rendering belongs in agent-ui. Anything that
+- **Nothing presentational here.** Rendering belongs in vultus. Anything that
   needs a network call, a database or an identity belongs here.
 - **Tenant comes from the Principal.** Never read it from a request, and return 404 for another tenant's objects.
 - **Every route checks one permission.** Add it in `Server.Handler`, next to the route.
@@ -33,7 +33,7 @@ platform. agent-ui supplies the components. The design is in
 - `pkg/memory`: what an agent carries between conversations. `internal/platform/hooks.go`: housekeeping runs.
 - `pkg/evals`: suites and runs, scored by saige. `pkg/pick`: who answers a message. `pkg/prefs`: a person's own settings.
 - `internal/platform`: the composition root. `internal/httpapi`: routes, sessions, event stream.
-- `cmd/collegium`: the binary. `apps/web`: the console, built on agent-ui.
+- `cmd/collegium`: the binary. `apps/web`: the console, built on vultus.
 
 ## Commands
 

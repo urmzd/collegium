@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/envelope"
 
 	"github.com/urmzd/collegium/pkg/evals"
 	"github.com/urmzd/collegium/pkg/runs"
