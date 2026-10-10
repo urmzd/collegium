@@ -325,6 +325,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
             <Chat
               key={thread ?? "new"}
               threadId={thread}
+              summary={threads.find((t) => t.id === thread)}
               tick={tick}
               agents={agents}
               settings={workspace}

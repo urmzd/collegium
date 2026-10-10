@@ -102,7 +102,9 @@ stack until that is closed.
 | Schedules through opentag's cron trigger: pause, run now, next fires, history | Built, in memory |
 | `pkg/journal`: event log, query, run traces | Built, a bounded ring in memory |
 | `pkg/alerts`: rules on run failure, failure rate and duration | Built, in memory |
-| `pkg/knowledge`: sources, documents, BM25 search | Built, in memory, lexical only |
+| `pkg/knowledge`: sources, documents, BM25 search, per-document exclusion, saved variants | Built, in memory, lexical only |
+| `pkg/memory`: per-agent notes sent with every turn, written by people or by a memory agent | Built, in memory |
+| Housekeeping runs: a title agent names a conversation, a memory agent writes notes after a turn | Built. Off until a workspace picks the agents, and never on the offline provider |
 | `pkg/evals`: suites of deterministic checks for agents, retrieval metrics for knowledge, scored by saige | Built, in memory |
 | Conversations: threads, branches, any agent on any turn, replayed history with a configurable limit | Built, in memory |
 | `pkg/pick`: lexical agent picker over name, description and prompt, with a baseline | Built |
@@ -111,6 +113,9 @@ stack until that is closed.
 | Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the only mode is loopback dev auth |
 | Model parameters on an agent (temperature, token and step limits) | Not built. opentag's agent spec has no fields for them |
 | Stopping a run in flight | Not built. The composer's queue waits for the run to end |
+| Skill consolidation | Not built |
+| Uploading binary files (PDF, images) to knowledge or a message | Not built. Files are read as text in the browser |
+| Evals against a knowledge variant | Not built. Evals search the current view |
 | Summarizing history | Not built. Long conversations are truncated to the limit, oldest turns first |
 | Knowledge retrieval inside a run | Not built. opentag's retriever is not given the tenant or the agent, so wiring it would cross tenants |
 | Connections: MCP servers, OAuth to third parties, stored credentials | Not built |

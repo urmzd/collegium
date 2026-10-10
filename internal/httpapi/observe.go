@@ -40,6 +40,9 @@ func (s *Server) observeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/knowledge/{name}/documents", s.authed(auth.KnowledgeRead, s.listDocuments))
 	mux.HandleFunc("POST /api/knowledge/{name}/documents", s.authed(auth.KnowledgeWrite, s.addDocument))
 	mux.HandleFunc("DELETE /api/knowledge/{name}/documents/{id}", s.authed(auth.KnowledgeWrite, s.removeDocument))
+	mux.HandleFunc("PUT /api/knowledge/{name}/documents/{id}", s.authed(auth.KnowledgeWrite, s.excludeDocument))
+	mux.HandleFunc("POST /api/knowledge/{name}/variants", s.authed(auth.KnowledgeWrite, s.saveVariant))
+	mux.HandleFunc("DELETE /api/knowledge/{name}/variants/{variant}", s.authed(auth.KnowledgeWrite, s.deleteVariant))
 }
 
 // window reads ?window= as a duration ending now. It defaults to an hour.
@@ -212,13 +215,51 @@ func (s *Server) removeDocument(w http.ResponseWriter, r *http.Request, who auth
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) excludeDocument(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	var body struct {
+		Excluded bool `json:"excluded"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	doc, err := s.P.Knowledge.SetExcluded(who.Tenant, r.PathValue("name"), r.PathValue("id"), body.Excluded, time.Now())
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, doc)
+}
+
+func (s *Server) saveVariant(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	var body struct {
+		Name string `json:"name"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	v, err := s.P.Knowledge.SaveVariant(who.Tenant, r.PathValue("name"), body.Name, time.Now())
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusCreated, v)
+}
+
+func (s *Server) deleteVariant(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	if err := s.P.Knowledge.DeleteVariant(who.Tenant, r.PathValue("name"), r.PathValue("variant")); err != nil {
+		s.problem(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) searchKnowledge(w http.ResponseWriter, r *http.Request, who auth.Principal) {
 	q := r.URL.Query()
 	var names []string
 	if raw := q.Get("source"); raw != "" {
 		names = strings.Split(raw, ",")
 	}
-	hits, err := s.P.Knowledge.Search(who.Tenant, names, q.Get("q"), 0)
+	hits, err := s.P.Knowledge.Search(who.Tenant, names, q.Get("q"), 0, q.Get("variant"))
 	if err != nil {
 		s.problem(w, err)
 		return

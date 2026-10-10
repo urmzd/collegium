@@ -25,7 +25,7 @@ const Auto = "auto"
 const maxTranscript = 12_000
 
 // ErrNoBaseline reports a baseline that names no agent in the tenant.
-var ErrNoBaseline = errors.New("platform: the baseline must be an agent in this tenant")
+var ErrNoBaseline = errors.New("platform: a setting names an agent that is not in this tenant")
 
 // ErrSettings reports settings that cannot be stored.
 var ErrSettings = errors.New("platform: invalid settings")
@@ -66,6 +66,12 @@ type Settings struct {
 	History      History   `json:"history"`
 	HistoryLimit int       `json:"history_limit"`
 	Projects     []Project `json:"projects"`
+	// TitleAgent names conversations after their first turn. Empty leaves a
+	// conversation shown by its first message.
+	TitleAgent string `json:"title_agent"`
+	// MemoryAgent reads each finished turn and writes what the answering
+	// agent should remember. Empty leaves memory to people.
+	MemoryAgent string `json:"memory_agent"`
 }
 
 func (s Settings) withDefaults() Settings {
@@ -98,9 +104,12 @@ func (p *Platform) Settings(tenant string) Settings { return p.settings.get(tena
 // SetSettings replaces a tenant's settings.
 func (p *Platform) SetSettings(ctx context.Context, tenant string, next Settings) error {
 	next = next.withDefaults()
-	if next.Baseline != "" {
-		if _, err := p.Agents.Get(ctx, tenant, next.Baseline, 0); err != nil {
-			return fmt.Errorf("%w: %q", ErrNoBaseline, next.Baseline)
+	for _, name := range []string{next.Baseline, next.TitleAgent, next.MemoryAgent} {
+		if name == "" {
+			continue
+		}
+		if _, err := p.Agents.Get(ctx, tenant, name, 0); err != nil {
+			return fmt.Errorf("%w: %q", ErrNoBaseline, name)
 		}
 	}
 	switch {
@@ -198,6 +207,11 @@ func (p *Platform) Converse(ctx context.Context, tenant string, t Turn) (runs.Ru
 		}
 		agent = choice.Agent
 		meta[runs.MetaPicked] = choice.Reason
+	}
+
+	// What this agent remembers goes first, ahead of the conversation.
+	if notes := p.Memory.Prompt(tenant, agent); notes != "" {
+		prompt = notes + "\n\n" + prompt
 	}
 
 	return p.Invoke(ctx, envelope.Tag{

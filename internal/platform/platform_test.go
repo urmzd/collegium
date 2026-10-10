@@ -3,6 +3,7 @@ package platform_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -267,6 +268,105 @@ func TestARunThatExhaustsItsRetriesEnds(t *testing.T) {
 	raised := p.Alerts.Alerts(tenant)
 	if len(raised) != 1 || raised[0].RunID != r.ID {
 		t.Fatalf("alerts = %+v, want exactly one for the run", raised)
+	}
+}
+
+// After a first turn, the title agent names the conversation, and the memory
+// agent's answer becomes a note the answering agent carries forward.
+func TestHousekeepingTitlesAndRemembers(t *testing.T) {
+	p, err := platform.New(platform.Config{Workspace: t.TempDir(), OfflineHooks: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- p.Run(ctx) }()
+	defer func() {
+		cancel()
+		<-done
+	}()
+	for _, name := range []string{"lead", "scribe"} {
+		spec := agentspec.AgentSpec{Name: name, Model: "offline", Provider: "offline", SystemPrompt: "x"}
+		if _, err := p.Agents.Create(ctx, tenant, spec, "test"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := p.SetSettings(ctx, tenant, platform.Settings{TitleAgent: "scribe", MemoryAgent: "scribe"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.SetSettings(ctx, tenant, platform.Settings{TitleAgent: "ghost"}); err == nil {
+		t.Fatal("a title agent that does not exist was accepted")
+	}
+
+	first, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-1", Agent: "lead", Text: "Plan the launch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, first.ID, runs.Completed)
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var named bool
+		for _, th := range p.Runs.Threads(tenant, 0) {
+			named = named || (th.ID == first.Thread && th.Named && th.Title != "Plan the launch")
+		}
+		notes := p.Memory.List(tenant, "lead")
+		if named && len(notes) > 0 {
+			if notes[0].Source != "consolidated" || len(notes) > 3 {
+				t.Fatalf("notes = %+v", notes)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("housekeeping did not finish: named=%v notes=%v", named, notes)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The housekeeping agent itself gets no title and no memory: a system run
+	// must not start more system runs.
+	if got := p.Memory.List(tenant, "scribe"); len(got) != 0 {
+		t.Fatalf("the memory agent was given memory of its own housekeeping: %v", got)
+	}
+	system := 0
+	for _, r := range p.Runs.List(tenant, 0) {
+		if r.Origin == runs.OriginSystem {
+			system++
+		}
+	}
+	if system != 2 {
+		t.Fatalf("%d system runs, want one title and one memory", system)
+	}
+
+	// The next turn is sent what the agent remembers.
+	second, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-2", Agent: "lead", Text: "And then?", After: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := second.Tag().Text; !strings.Contains(got, "What you remember from earlier conversations:") {
+		t.Fatalf("the prompt carries no memory: %q", got)
+	}
+	if second.Text != "And then?" {
+		t.Fatalf("the record shows %q, want what the person typed", second.Text)
+	}
+}
+
+// Housekeeping does not run on the offline provider unless a test asks for it.
+func TestHousekeepingSkipsTheOfflineProvider(t *testing.T) {
+	p := start(t, call.Limits{})
+	ctx := t.Context()
+	if err := p.SetSettings(ctx, tenant, platform.Settings{TitleAgent: "helper", MemoryAgent: "helper"}); err != nil {
+		t.Fatal(err)
+	}
+	r, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-1", Agent: "lead", Text: "Plan the launch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, r.ID, runs.Completed)
+	time.Sleep(300 * time.Millisecond)
+	for _, run := range p.Runs.List(tenant, 0) {
+		if run.Origin == runs.OriginSystem {
+			t.Fatal("a housekeeping run started on the offline provider")
+		}
 	}
 }
 

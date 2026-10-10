@@ -233,6 +233,41 @@ export function Settings({
                   </section>
 
                   <section className={`${card} flex flex-col gap-3`}>
+                    <Label
+                      text="Title agent"
+                      hint="After a conversation's first turn, this agent is asked to name it. It needs a real model: nothing happens on the offline provider."
+                    >
+                      <select
+                        className={field}
+                        value={workspace.title_agent}
+                        disabled={!canAdmin}
+                        onChange={(e) => saveWorkspace({ title_agent: e.target.value })}
+                      >
+                        <option value="">None. Conversations are shown by their first message.</option>
+                        {agents.map((a) => (
+                          <option key={a.spec.name}>{a.spec.name}</option>
+                        ))}
+                      </select>
+                    </Label>
+                    <Label
+                      text="Memory agent"
+                      hint="After each turn, this agent is asked what the answering agent should remember. What it writes is shown on that agent's Memory tab, where anyone who can edit the agent can remove it."
+                    >
+                      <select
+                        className={field}
+                        value={workspace.memory_agent}
+                        disabled={!canAdmin}
+                        onChange={(e) => saveWorkspace({ memory_agent: e.target.value })}
+                      >
+                        <option value="">None. Agents remember only what people write down.</option>
+                        {agents.map((a) => (
+                          <option key={a.spec.name}>{a.spec.name}</option>
+                        ))}
+                      </select>
+                    </Label>
+                  </section>
+
+                  <section className={`${card} flex flex-col gap-3`}>
                     <Switch
                       label="Carry the conversation forward"
                       hint="Send the agent answering the next turn what was said before it. Off sends only the new message."

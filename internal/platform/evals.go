@@ -143,7 +143,7 @@ func (p *Platform) evalKnowledge(tenant string, suite evals.Suite) ([]evals.Resu
 		began := time.Now()
 		// Ask for more passages than k: several can come from one document,
 		// and a case is judged on k distinct documents.
-		hits, err := p.Knowledge.Search(tenant, []string{suite.Subject}, c.Input, 50)
+		hits, err := p.Knowledge.Search(tenant, []string{suite.Subject}, c.Input, 50, "")
 		if err != nil {
 			results = append(results, evals.Result{CaseID: c.ID, Input: c.Input, Error: err.Error()})
 			continue

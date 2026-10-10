@@ -1,9 +1,10 @@
 import { ActionId, type UiAction } from "@agent-ui/core";
 import { CheckIcon, ChevronDownIcon, WebSurface } from "@agent-ui/render-web";
-import { AgentMessage, PromptInput, Thread, useQueue } from "@agent-ui/web";
+import { AgentMessage, Thread, useQueue } from "@agent-ui/web";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
-import { ApiError, api, type Choice, type Revision, type Settings } from "./api.ts";
+import { Composer } from "./Composer.tsx";
+import { ApiError, api, type Choice, type Revision, type Settings, type ThreadSummary } from "./api.ts";
 import { useRunTurn } from "./Runs.tsx";
 import { Trace } from "./Trace.tsx";
 import { AgentMark, cause, Popover, Problem } from "./ui.tsx";
@@ -163,6 +164,7 @@ function TurnView({
  */
 export function Chat({
   threadId,
+  summary,
   tick,
   agents,
   settings,
@@ -172,6 +174,8 @@ export function Chat({
   onChanged,
 }: {
   threadId: string | null;
+  /** The conversation at a glance, once it exists. */
+  summary: ThreadSummary | undefined;
   /** Changes whenever any run starts or ends. */
   tick: number;
   agents: Revision[];
@@ -282,17 +286,14 @@ export function Chat({
   }, [auto, draft]);
 
   const composer = canRun && agents.length > 0 && (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-2 px-4 pb-4">
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-2 px-4 pb-4">
       <Problem message={problem} />
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: listens for typing that bubbles from the composer, to preview the pick */}
-      <div onInput={(e) => setDraft((e.target as HTMLTextAreaElement).value ?? "")}>
-        <PromptInput
-          config={{ placeholder: auto ? "Ask anything" : `Ask ${named}` }}
-          showSuggestions={false}
-          autoFocus={!threadId}
-          queue={queue}
-        />
-      </div>
+      <Composer
+        placeholder={auto ? "Ask anything" : `Ask ${named}`}
+        queue={queue}
+        autoFocus={!threadId}
+        onDraft={setDraft}
+      />
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1 text-aui-xs text-aui-muted">
         {threadId ? (
           tail?.project && <span className="px-1.5 text-aui-sm">In {tail.project}</span>
@@ -307,17 +308,13 @@ export function Chat({
             </select>
           </label>
         )}
-        <span className="min-w-0 flex-1 truncate text-right" aria-live="polite">
-          {auto
-            ? preview
-              ? preview.reason
-              : settings?.baseline
-                ? "Picks the agent that fits"
-                : "No baseline agent is set"
-            : ""}
+        <span className="flex-1" />
+        {/* The reason for a pick is one hover away, and announced, without taking a line. */}
+        <span className="sr-only" aria-live="polite">
+          {auto && preview ? `${preview.agent}. ${preview.reason}` : ""}
         </span>
         <Popover
-          label="Choose who answers"
+          label={auto && preview ? `Choose who answers. ${preview.reason}` : "Choose who answers"}
           align="right"
           up
           className="inline-flex h-7 items-center gap-1.5 rounded-aui px-1.5 text-aui-sm text-aui-fg transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
@@ -386,13 +383,9 @@ export function Chat({
   if (!threadId || path.length === 0) {
     return (
       <section className="flex min-h-0 flex-1 flex-col justify-center">
-        <div className="flex flex-col items-center gap-1 px-6 pb-6 text-center">
-          <h1 className="text-aui-xl font-semibold text-aui-fg">{greeting}</h1>
-          <p className="max-w-md text-aui-sm text-aui-muted">
-            {agents.length === 0
-              ? "Define an agent first, then start a conversation here."
-              : "Ask anything. Auto sends it to the agent whose description fits, or choose one yourself."}
-          </p>
+        <div className="flex flex-col items-center gap-1 px-6 pb-8 text-center">
+          <h1 className="text-[2rem] leading-tight font-semibold text-aui-fg">{greeting}</h1>
+          {agents.length === 0 && <p className="text-aui-sm text-aui-muted">Define an agent first, then start here.</p>}
         </div>
         {composer}
       </section>
@@ -401,8 +394,21 @@ export function Chat({
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
+      {/* Arrives with the conversation: its name, then who has answered in it. */}
+      <header className="aui-fade-up mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-4 gap-y-1 px-4 pt-4 pb-2">
+        <h1 className="min-w-0 flex-1 truncate text-aui-lg font-semibold text-aui-fg">{summary?.title ?? path[0]?.text}</h1>
+        <ul className="flex shrink-0 items-center gap-3 text-aui-xs text-aui-muted" aria-label="Agents in this conversation">
+          {(summary?.agents ?? []).map((a) => (
+            <li key={a} className="inline-flex items-center gap-1">
+              <AgentMark name={a} size={14} />
+              {a}
+            </li>
+          ))}
+          {tail?.project && <li>{tail.project}</li>}
+        </ul>
+      </header>
       <WebSurface onAction={onAction} className="flex min-h-0 flex-1 flex-col">
-        <Thread className="mx-auto w-full max-w-3xl flex-1 px-4" busy={!tailEnded} label="Conversation">
+        <Thread className="mx-auto w-full max-w-4xl flex-1 px-4" busy={!tailEnded} label="Conversation">
           {path.map((run, i) => (
             <TurnView
               key={run.id}

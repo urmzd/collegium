@@ -65,6 +65,15 @@ no permission, grants nothing.
   accepted, by signature, up to 512 KB. It is served with the type the server
   determined, `nosniff`, and a sandboxing content security policy. SVG and HTML
   are refused.
+- **Reserved origins cannot be claimed.** A trigger's tag saying it came from
+  the API, the platform, an eval, a person's run-now or an agent is dropped.
+- **Housekeeping output is untrusted.** A title or a memory note is a model's
+  words about text a person supplied. A title is cut to one line of 80
+  characters. A note is one line of at most 300 characters, at most three per
+  turn, stored as plain text that is shown on the agent and can be removed.
+  A housekeeping run never starts another.
+- **An agent's memory never displaces a person's note.** When an agent's notes
+  are full, only notes the memory agent wrote make room.
 - **Evals are bounded.** A suite holds at most 50 cases, one run of a suite is
   open at a time, cases run one after another, and a case is given two minutes.
 - **Only trusted origins name a schedule.** A run is tied to a schedule only
@@ -113,6 +122,11 @@ and a per-caller tenant claim are flags: see `serve -h`.
 - Knowledge is not yet used by runs. The runtime's retriever is not told which
   tenant or agent is asking, and wiring it before that changes would let one
   tenant's agent read another's documents.
+- Memory written by the memory agent can carry whatever a conversation
+  persuaded it to write, into later conversations. It is visible and removable,
+  and off by default, but nothing reviews a note before it is used.
+- Dictation uses the browser's speech recognition. In Chrome that sends audio
+  to the browser vendor's service, not to this server.
 - No connections. Nothing stores a third-party credential yet, and that should
   wait for an encrypted, durable store rather than be held in memory.
 - No token revocation check beyond expiry, and no refresh. A session lasts 8

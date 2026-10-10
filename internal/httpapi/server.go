@@ -31,6 +31,7 @@ import (
 	"github.com/urmzd/open-agent-platform/pkg/call"
 	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
+	"github.com/urmzd/open-agent-platform/pkg/memory"
 	"github.com/urmzd/open-agent-platform/pkg/pick"
 	"github.com/urmzd/open-agent-platform/pkg/prefs"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
@@ -65,6 +66,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/agents", s.authed(auth.AgentsWrite, s.createAgent))
 	mux.HandleFunc("PUT /api/agents/{name}", s.authed(auth.AgentsWrite, s.reviseAgent))
 	mux.HandleFunc("GET /api/agents/{name}/history", s.authed(auth.AgentsRead, s.agentHistory))
+	mux.HandleFunc("GET /api/agents/{name}/memory", s.authed(auth.AgentsRead, s.listMemory))
+	mux.HandleFunc("POST /api/agents/{name}/memory", s.authed(auth.AgentsWrite, s.addMemory))
+	mux.HandleFunc("DELETE /api/agents/{name}/memory/{id}", s.authed(auth.AgentsWrite, s.removeMemory))
 	mux.HandleFunc("GET /api/runs", s.authed(auth.RunsRead, s.listRuns))
 	mux.HandleFunc("POST /api/runs", s.authed(auth.RunsWrite, s.createRun))
 	mux.HandleFunc("GET /api/threads", s.authed(auth.RunsRead, s.listThreads))
@@ -200,6 +204,41 @@ func (s *Server) agentHistory(w http.ResponseWriter, r *http.Request, who auth.P
 	}
 	slices.SortFunc(revs, func(a, b agentspec.Revision) int { return b.Rev - a.Rev })
 	ok(w, http.StatusOK, map[string]any{"revisions": orEmpty(revs)})
+}
+
+func (s *Server) listMemory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	if _, err := s.P.Agents.Get(r.Context(), who.Tenant, r.PathValue("name"), 0); err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, map[string]any{"notes": orEmpty(s.P.Memory.List(who.Tenant, r.PathValue("name")))})
+}
+
+func (s *Server) addMemory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	var body struct {
+		Text string `json:"text"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if _, err := s.P.Agents.Get(r.Context(), who.Tenant, r.PathValue("name"), 0); err != nil {
+		s.problem(w, err)
+		return
+	}
+	note, err := s.P.Memory.Add(who.Tenant, r.PathValue("name"), body.Text, memory.Person, who.Subject, time.Now())
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusCreated, note)
+}
+
+func (s *Server) removeMemory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	if err := s.P.Memory.Remove(who.Tenant, r.PathValue("name"), r.PathValue("id")); err != nil {
+		s.problem(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) listRuns(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
@@ -406,7 +445,8 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 	var tooBig *http.MaxBytesError
 	switch {
 	case errors.Is(err, runs.ErrNotFound), errors.Is(err, registry.ErrNotFound), errors.Is(err, platform.ErrScheduleNotFound),
-		errors.Is(err, alerts.ErrNotFound), errors.Is(err, knowledge.ErrNotFound), errors.Is(err, evals.ErrNotFound):
+		errors.Is(err, alerts.ErrNotFound), errors.Is(err, knowledge.ErrNotFound), errors.Is(err, evals.ErrNotFound),
+		errors.Is(err, memory.ErrNotFound):
 		fail(w, http.StatusNotFound, "not found")
 	case errors.Is(err, registry.ErrExists), errors.Is(err, platform.ErrScheduleExists),
 		errors.Is(err, alerts.ErrExists), errors.Is(err, knowledge.ErrExists), errors.Is(err, evals.ErrExists):
@@ -416,7 +456,7 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, platform.ErrSettings):
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, platform.ErrNoBaseline):
-		fail(w, http.StatusBadRequest, "the baseline must be an agent that exists")
+		fail(w, http.StatusBadRequest, "that setting names an agent that does not exist")
 	case errors.Is(err, evals.ErrBusy):
 		fail(w, http.StatusConflict, "that suite is already running")
 	case errors.Is(err, registry.ErrConflict):
@@ -426,7 +466,7 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, call.ErrInvalid), errors.Is(err, registry.ErrInvalid), errors.Is(err, agentspec.ErrInvalid),
 		errors.Is(err, envelope.ErrInvalid), errors.Is(err, cron.ErrSchedule),
 		errors.Is(err, alerts.ErrInvalid), errors.Is(err, knowledge.ErrInvalid), errors.Is(err, evals.ErrInvalid),
-		errors.Is(err, prefs.ErrInvalid):
+		errors.Is(err, prefs.ErrInvalid), errors.Is(err, memory.ErrInvalid):
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.As(err, &tooBig):
 		fail(w, http.StatusRequestEntityTooLarge, "request is too large")

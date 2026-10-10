@@ -397,3 +397,41 @@ func TestPreferencesAreTheCallersOwn(t *testing.T) {
 		t.Fatalf("another caller read the photo: %d", res.StatusCode)
 	}
 }
+
+func TestAgentMemory(t *testing.T) {
+	f := newFixture(t)
+	acme, globex := f.machine(t, "acme", everything...), f.machine(t, "globex", everything...)
+	f.do(t, nil, "POST", "/api/agents", acme, helperSpec)
+
+	res, note := f.do(t, nil, "POST", "/api/agents/helper/memory", acme, `{"text":"Releases go out on Tuesdays."}`)
+	if res.StatusCode != http.StatusCreated || note["source"] != "person" {
+		t.Fatalf("add = %d %v", res.StatusCode, note)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/agents/helper/memory", acme, `{"text":"   "}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("an empty note = %d", res.StatusCode)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/agents/ghost/memory", acme, `{"text":"x"}`); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a note for an agent that does not exist = %d", res.StatusCode)
+	}
+	// Another tenant has no such agent, so no such memory.
+	for _, tc := range []struct{ method, path, body string }{
+		{"GET", "/api/agents/helper/memory", ""},
+		{"POST", "/api/agents/helper/memory", `{"text":"x"}`},
+		{"DELETE", "/api/agents/helper/memory/" + note["id"].(string), ""},
+	} {
+		if res, _ := f.do(t, nil, tc.method, tc.path, globex, tc.body); res.StatusCode != http.StatusNotFound {
+			t.Errorf("other tenant %s %s = %d, want 404", tc.method, tc.path, res.StatusCode)
+		}
+	}
+	reader := f.machine(t, "acme", "oap:agents:read")
+	if res, _ := f.do(t, nil, "POST", "/api/agents/helper/memory", reader, `{"text":"x"}`); res.StatusCode != http.StatusForbidden {
+		t.Errorf("a reader wrote memory: %d", res.StatusCode)
+	}
+	_, list := f.do(t, nil, "GET", "/api/agents/helper/memory", acme, "")
+	if len(list["notes"].([]any)) != 1 {
+		t.Fatalf("notes = %v", list)
+	}
+	if res, _ := f.do(t, nil, "DELETE", "/api/agents/helper/memory/"+note["id"].(string), acme, ""); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("remove = %d", res.StatusCode)
+	}
+}

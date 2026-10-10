@@ -1,9 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { type Alert, type AlertRule, type AgentSpec, ApiError, api, type Group, type Revision, type Source, type SuiteView } from "./api.ts";
+import {
+  type AgentSpec,
+  type Alert,
+  type AlertRule,
+  ApiError,
+  api,
+  type Group,
+  type Note,
+  type Revision,
+  type Source,
+  type SuiteView,
+} from "./api.ts";
 import { Evals } from "./Evals.tsx";
 import { AgentMark, ago, button, card, Chip, field, Label, Problem, primary, Switch, Tabs, took } from "./ui.tsx";
 
-type Tab = "prompt" | "setup" | "evals" | "alerts" | "revisions";
+type Tab = "prompt" | "setup" | "memory" | "evals" | "alerts" | "revisions";
 
 const models: Record<string, string> = {
   offline: "offline",
@@ -125,6 +136,8 @@ export function AgentDetail({
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState<Revision[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [note, setNote] = useState("");
   const set = (patch: Partial<AgentSpec>) => setSpec((s) => ({ ...s, ...patch }));
   const name = revision?.spec.name ?? "";
 
@@ -147,6 +160,12 @@ export function AgentDetail({
       live = false;
     };
   }, [name, revision?.rev]);
+
+  const loadNotes = () => {
+    if (name) api.memory(name).then(setNotes).catch(() => setNotes([]));
+  };
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reload when the agent changes or its tab is opened
+  useEffect(loadNotes, [name, tab]);
 
   const dirty = useMemo(() => JSON.stringify(spec) !== JSON.stringify(saved), [spec, saved]);
   const myRules = rules.filter((r) => r.agent === name);
@@ -266,6 +285,7 @@ export function AgentDetail({
             { id: "setup", label: "Setup" },
             ...(revision
               ? ([
+                  { id: "memory", label: "Memory", count: notes.length },
                   { id: "evals", label: "Evals", count: mySuites.length },
                   { id: "alerts", label: "Alerts", count: myRules.length },
                   { id: "revisions", label: "Revisions", count: history.length },
@@ -409,6 +429,72 @@ export function AgentDetail({
               Temperature, token limits and step limits are not settings yet: the agent spec this platform runs on has no
               fields for them.
             </p>
+          </section>
+        )}
+
+        {tab === "memory" && revision && (
+          <section className="flex flex-col gap-3">
+            <p className="max-w-xl text-aui-sm text-aui-muted">
+              What {name} carries from one conversation to the next. Every note is sent with each turn, so keep them few
+              and lasting.
+            </p>
+            {canWrite && (
+              <form
+                className="flex gap-2"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  setProblem(null);
+                  api
+                    .addMemory(name, note)
+                    .then(() => {
+                      setNote("");
+                      loadNotes();
+                    })
+                    .catch((err) => setProblem(err instanceof ApiError ? err.message : "The note could not be saved."));
+                }}
+              >
+                <input
+                  aria-label="Something to remember"
+                  className={field}
+                  value={note}
+                  maxLength={300}
+                  required
+                  placeholder="A lasting fact, such as: Releases go out on Tuesdays."
+                  onChange={(e) => setNote(e.target.value)}
+                />
+                <button type="submit" className={primary}>
+                  Remember
+                </button>
+              </form>
+            )}
+            {notes.length === 0 ? (
+              <p className={`${card} text-aui-sm text-aui-muted`}>
+                Nothing yet. Write a note here, or choose a memory agent under Settings to have notes written after each
+                turn.
+              </p>
+            ) : (
+              <ul className="oap-glass overflow-hidden rounded-aui-lg">
+                {notes.map((n) => (
+                  <li key={n.id} className="flex items-start justify-between gap-3 border-aui-border border-b px-4 py-2.5 last:border-b-0">
+                    <span className="min-w-0">
+                      <span className="block text-aui-sm text-aui-fg">{n.text}</span>
+                      <span className="block text-aui-xs text-aui-muted">
+                        {n.source === "person" ? `Written by ${n.by}` : "Written by the memory agent"}, {ago(n.at)}
+                      </span>
+                    </span>
+                    {canWrite && (
+                      <button
+                        type="button"
+                        className={button}
+                        onClick={() => api.removeMemory(name, n.id).then(loadNotes).catch(() => {})}
+                      >
+                        Forget
+                      </button>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         )}
 

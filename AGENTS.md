@@ -30,6 +30,7 @@ platform. agent-ui supplies the components. The design is in
 
 - `pkg/call`: the call primitive. `pkg/runs`: the run index and statistics. `pkg/auth`: principals, roles, OIDC.
 - `pkg/journal`: the event log, queries and traces. `pkg/alerts`: rules and alerts. `pkg/knowledge`: sources and search.
+- `pkg/memory`: what an agent carries between conversations. `internal/platform/hooks.go`: housekeeping runs.
 - `pkg/evals`: suites and runs, scored by saige. `pkg/pick`: who answers a message. `pkg/prefs`: a person's own settings.
 - `internal/platform`: the composition root. `internal/httpapi`: routes, sessions, event stream.
 - `cmd/open-agent-platform`: the binary. `apps/web`: the console, built on agent-ui.

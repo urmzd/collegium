@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { ApiError, api, type Doc, type Hit, type Revision, type Source, type SuiteView } from "./api.ts";
 import { Evals } from "./Evals.tsx";
 import { ago, button, card, Chip, Empty, field, Label, Page, Problem, primary } from "./ui.tsx";
@@ -146,6 +146,10 @@ function SourceDetail({
   const [query, setQuery] = useState("");
   const [hits, setHits] = useState<Hit[] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  const [variant, setVariant] = useState("");
+  const [saveAs, setSaveAs] = useState("");
+  const [pasting, setPasting] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload when the source's counts change
   useEffect(() => {
@@ -157,7 +161,7 @@ function SourceDetail({
     return () => {
       live = false;
     };
-  }, [source.name, source.documents]);
+  }, [source.name, source.documents, source.excluded]);
 
   const fail = (fallback: string) => (e: unknown) => setProblem(e instanceof ApiError ? e.message : fallback);
 
@@ -176,7 +180,28 @@ function SourceDetail({
   const search = (e: FormEvent) => {
     e.preventDefault();
     setProblem(null);
-    api.searchKnowledge(query, source.name).then(setHits).catch(fail("The search failed."));
+    api.searchKnowledge(query, source.name, variant).then(setHits).catch(fail("The search failed."));
+  };
+
+  // Files are read here and sent as text, so only text files can be added.
+  const upload = async (picked: FileList | null) => {
+    if (!picked) return;
+    setProblem(null);
+    const skipped: string[] = [];
+    for (const file of Array.from(picked)) {
+      const text = await file.text();
+      if (file.size > 900 * 1024) skipped.push(`${file.name} is larger than 900 KB`);
+      else if (text.includes("\u0000")) skipped.push(`${file.name} is not a text file`);
+      else {
+        try {
+          await api.addDocument(source.name, { title: file.name.replace(/\.[^.]+$/, ""), uri: "", text });
+        } catch (e) {
+          skipped.push(`${file.name}: ${e instanceof ApiError ? e.message : "could not be added"}`);
+        }
+      }
+    }
+    onChanged();
+    if (skipped.length > 0) setProblem(skipped.join(". "));
   };
 
   return (
@@ -216,6 +241,24 @@ function SourceDetail({
             required
             onChange={(e) => setQuery(e.target.value)}
           />
+          {source.variants.length > 0 && (
+            <select
+              aria-label="Search in"
+              className={`${field} w-auto shrink-0`}
+              value={variant}
+              onChange={(e) => {
+                setVariant(e.target.value);
+                setHits(null);
+              }}
+            >
+              <option value="">Current view</option>
+              {source.variants.map((v) => (
+                <option key={v.name} value={v.name}>
+                  {v.name}
+                </option>
+              ))}
+            </select>
+          )}
           <button type="submit" className={button}>
             Search
           </button>
@@ -241,46 +284,45 @@ function SourceDetail({
       </section>
 
       <section className={`${card} flex flex-col gap-2`}>
-        <h3 className="text-aui-sm font-medium text-aui-fg">Documents ({docs.length})</h3>
-        {docs.length === 0 ? (
-          <p className="text-aui-sm text-aui-muted">Empty. Paste a document below.</p>
-        ) : (
-          <ul>
-            {docs.map((d) => (
-              <li key={d.id} className="flex items-center gap-3 border-aui-border border-t py-2 first:border-t-0">
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-aui-sm text-aui-fg">{d.title}</p>
-                  <p className="truncate text-aui-xs text-aui-muted">
-                    {d.passages} passages, {Math.max(1, Math.round(d.bytes / 1024))} KB, added {ago(d.added_at)}
-                    {d.uri ? `, ${d.uri}` : ""}
-                  </p>
-                </div>
-                {canWrite && (
-                  <button
-                    type="button"
-                    className={button}
-                    onClick={() =>
-                      api.removeDocument(source.name, d.id).then(onChanged).catch(fail("The document could not be removed."))
-                    }
-                  >
-                    Remove
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-        {canWrite && (
-          <form onSubmit={add} className="flex flex-col gap-3 border-aui-border border-t pt-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-aui-sm font-medium text-aui-fg">
+            Documents ({docs.length}
+            {source.excluded > 0 ? `, ${source.excluded} excluded` : ""})
+          </h3>
+          {canWrite && (
+            <div className="flex gap-2">
+              <input
+                ref={picker}
+                type="file"
+                multiple
+                className="sr-only"
+                tabIndex={-1}
+                aria-hidden
+                onChange={(e) => {
+                  void upload(e.target.files);
+                  e.target.value = "";
+                }}
+              />
+              <button type="button" className={primary} onClick={() => picker.current?.click()}>
+                Upload Files
+              </button>
+              <button type="button" className={button} aria-expanded={pasting} onClick={() => setPasting(!pasting)}>
+                Paste Text
+              </button>
+            </div>
+          )}
+        </div>
+        {canWrite && pasting && (
+          <form onSubmit={add} className="flex flex-col gap-3 border-aui-border border-b pb-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Label text="Title">
                 <input className={field} value={draft.title} required onChange={(e) => setDraft({ ...draft, title: e.target.value })} />
               </Label>
-              <Label text="Link" hint="Optional. Shown with citations.">
+              <Label text="Link">
                 <input className={field} value={draft.uri} onChange={(e) => setDraft({ ...draft, uri: e.target.value })} />
               </Label>
             </div>
-            <Label text="Text" hint="Plain text or Markdown, up to 1 MB. It is split into passages on blank lines.">
+            <Label text="Text">
               <textarea
                 className={`${field} min-h-28`}
                 value={draft.text}
@@ -293,6 +335,112 @@ function SourceDetail({
                 Add Document
               </button>
             </div>
+          </form>
+        )}
+        {docs.length === 0 ? (
+          <p className="text-aui-sm text-aui-muted">Empty. Upload text files or paste text.</p>
+        ) : (
+          <ul>
+            {docs.map((d) => (
+              <li key={d.id} className="flex items-center gap-3 border-aui-border border-t py-2 first:border-t-0">
+                <div className={`min-w-0 flex-1 ${d.excluded ? "opacity-55" : ""}`}>
+                  <p className="truncate text-aui-sm text-aui-fg">{d.title}</p>
+                  <p className="truncate text-aui-xs text-aui-muted">
+                    {d.excluded ? "Excluded from search. " : ""}
+                    {d.passages} passages, {Math.max(1, Math.round(d.bytes / 1024))} KB, added {ago(d.added_at)}
+                  </p>
+                </div>
+                {canWrite && (
+                  <>
+                    <label className="inline-flex shrink-0 items-center gap-1.5 text-aui-xs text-aui-muted">
+                      Searchable
+                      <input
+                        type="checkbox"
+                        className="oap-switch"
+                        checked={!d.excluded}
+                        onChange={(e) =>
+                          api
+                            .excludeDocument(source.name, d.id, !e.target.checked)
+                            .then(onChanged)
+                            .catch(fail("The document could not be changed."))
+                        }
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      className={button}
+                      onClick={() =>
+                        api.removeDocument(source.name, d.id).then(onChanged).catch(fail("The document could not be removed."))
+                      }
+                    >
+                      Remove
+                    </button>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section className={`${card} flex flex-col gap-2`}>
+        <h3 className="text-aui-sm font-medium text-aui-fg">Variants</h3>
+        <p className="text-aui-xs text-aui-muted">
+          A variant saves which documents are searchable right now, so you can search two ways of curating this source
+          side by side.
+        </p>
+        {source.variants.length > 0 && (
+          <ul>
+            {source.variants.map((v) => (
+              <li key={v.name} className="flex items-center justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
+                <span className="text-aui-sm text-aui-fg">
+                  {v.name}
+                  <span className="pl-2 text-aui-xs text-aui-muted">
+                    {source.documents - v.excluded.length} of {source.documents} documents
+                  </span>
+                </span>
+                {canWrite && (
+                  <button
+                    type="button"
+                    className={button}
+                    onClick={() => {
+                      if (variant === v.name) setVariant("");
+                      api.deleteVariant(source.name, v.name).then(onChanged).catch(fail("The variant could not be deleted."));
+                    }}
+                  >
+                    Delete
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        {canWrite && (
+          <form
+            className="flex gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              setProblem(null);
+              api
+                .saveVariant(source.name, saveAs)
+                .then(() => {
+                  setSaveAs("");
+                  onChanged();
+                })
+                .catch(fail("The variant could not be saved."));
+            }}
+          >
+            <input
+              aria-label="Variant name"
+              className={field}
+              placeholder="Name this view, such as no-drafts"
+              value={saveAs}
+              required
+              onChange={(e) => setSaveAs(e.target.value)}
+            />
+            <button type="submit" className={button}>
+              Save Variant
+            </button>
           </form>
         )}
       </section>

@@ -138,6 +138,9 @@ export interface Source {
   description?: string;
   documents: number;
   passages: number;
+  /** Documents held but left out of search. */
+  excluded: number;
+  variants: { name: string; excluded: string[] }[];
   updated_at: string;
 }
 
@@ -147,6 +150,7 @@ export interface Doc {
   uri?: string;
   bytes: number;
   passages: number;
+  excluded: boolean;
   added_by?: string;
   added_at: string;
 }
@@ -164,6 +168,8 @@ export interface Hit {
 export interface ThreadSummary {
   id: string;
   title: string;
+  /** The title is a name, not just the first message. */
+  named: boolean;
   origin: string;
   project?: string;
   agents: string[];
@@ -191,6 +197,16 @@ export interface Settings {
   history: "recent" | "none";
   history_limit: number;
   projects: Project[];
+  title_agent: string;
+  memory_agent: string;
+}
+
+export interface Note {
+  id: string;
+  text: string;
+  source: "person" | "consolidated";
+  by?: string;
+  at: string;
 }
 
 export interface Preferences {
@@ -296,6 +312,13 @@ export const api = {
   history: (name: string) =>
     call<{ revisions: Revision[] }>("GET", `/api/agents/${encodeURIComponent(name)}/history`).then((r) => r.revisions),
 
+  memory: (agent: string) =>
+    call<{ notes: Note[] }>("GET", `/api/agents/${encodeURIComponent(agent)}/memory`).then((r) => r.notes),
+  addMemory: (agent: string, text: string) =>
+    call<Note>("POST", `/api/agents/${encodeURIComponent(agent)}/memory`, { text }),
+  removeMemory: (agent: string, id: string) =>
+    call<void>("DELETE", `/api/agents/${encodeURIComponent(agent)}/memory/${encodeURIComponent(id)}`),
+
   preferences: () => call<Preferences>("GET", "/api/preferences"),
   savePreferences: (p: Pick<Preferences, "display_name" | "theme" | "accent">) =>
     call<Preferences>("PUT", "/api/preferences", p),
@@ -340,10 +363,16 @@ export const api = {
     call<Doc>("POST", `/api/knowledge/${encodeURIComponent(name)}/documents`, d),
   removeDocument: (name: string, id: string) =>
     call<void>("DELETE", `/api/knowledge/${encodeURIComponent(name)}/documents/${encodeURIComponent(id)}`),
-  searchKnowledge: (q: string, source?: string) =>
+  excludeDocument: (name: string, id: string, excluded: boolean) =>
+    call<Doc>("PUT", `/api/knowledge/${encodeURIComponent(name)}/documents/${encodeURIComponent(id)}`, { excluded }),
+  saveVariant: (name: string, variant: string) =>
+    call<{ name: string }>("POST", `/api/knowledge/${encodeURIComponent(name)}/variants`, { name: variant }),
+  deleteVariant: (name: string, variant: string) =>
+    call<void>("DELETE", `/api/knowledge/${encodeURIComponent(name)}/variants/${encodeURIComponent(variant)}`),
+  searchKnowledge: (q: string, source: string, variant = "") =>
     call<{ hits: Hit[] }>(
       "GET",
-      `/api/knowledge/search?${new URLSearchParams(source ? { q, source } : { q })}`,
+      `/api/knowledge/search?${new URLSearchParams(variant ? { q, source, variant } : { q, source })}`,
     ).then((r) => r.hits),
   logout: () => call<void>("POST", "/auth/logout"),
 };

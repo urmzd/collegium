@@ -30,6 +30,10 @@ var ErrNotFound = errors.New("runs: not found")
 // OriginManual marks a schedule fired by a person rather than by the clock.
 const OriginManual = "manual"
 
+// OriginSystem marks a run the platform raised for its own housekeeping, such
+// as naming a conversation. Nothing outside the platform can raise one.
+const OriginSystem = "system"
+
 // OriginAPI marks a run a caller asked for through the platform's API. It is
 // the only origin whose conversation keys are believed.
 const OriginAPI = "api"
@@ -122,10 +126,20 @@ type Index struct {
 	runs map[string]*Run
 	// order is run ids, oldest first.
 	order []string
+	// titles names conversations, by tenant and thread.
+	titles map[string]string
 }
 
 // NewIndex returns an empty index.
-func NewIndex() *Index { return &Index{runs: map[string]*Run{}} }
+func NewIndex() *Index { return &Index{runs: map[string]*Run{}, titles: map[string]string{}} }
+
+// SetTitle names a conversation. A conversation with no name is shown by the
+// first thing that was asked in it.
+func (x *Index) SetTitle(tenant, thread, title string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	x.titles[tenant+"\x00"+thread] = title
+}
 
 // Record adds an accepted run. Recording a run that is already known changes
 // nothing, because accepting the same tag twice joins the existing run.
@@ -329,8 +343,11 @@ func (x *Index) Tree(tenant, runID string) ([]Run, error) {
 // ThreadSummary is one conversation at a glance.
 type ThreadSummary struct {
 	ID string `json:"id"`
-	// Title is the first thing that was asked.
-	Title   string `json:"title"`
+	// Title is the conversation's name, or the first thing that was asked
+	// when it has not been named.
+	Title string `json:"title"`
+	// Named reports whether the title is a name rather than the first message.
+	Named   bool   `json:"named"`
 	Origin  string `json:"origin"`
 	Project string `json:"project,omitempty"`
 	// Agents is every agent that has answered in it, in order of first reply.
@@ -428,7 +445,11 @@ func (x *Index) Threads(tenant string, limit int) []ThreadSummary {
 	}
 	out := make([]ThreadSummary, 0, len(order))
 	for _, id := range order {
-		out = append(out, *byID[id])
+		s := *byID[id]
+		if title := x.titles[tenant+"\x00"+id]; title != "" {
+			s.Title, s.Named = title, true
+		}
+		out = append(out, s)
 	}
 	slices.SortStableFunc(out, func(a, b ThreadSummary) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
 	if limit > 0 && len(out) > limit {

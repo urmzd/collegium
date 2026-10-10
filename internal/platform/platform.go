@@ -43,6 +43,7 @@ import (
 	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/journal"
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
+	"github.com/urmzd/open-agent-platform/pkg/memory"
 	"github.com/urmzd/open-agent-platform/pkg/prefs"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
@@ -60,7 +61,10 @@ type Config struct {
 	Limits call.Limits
 	// Concurrency is how many runs execute at once. Zero means one.
 	Concurrency int
-	Log         *slog.Logger
+	// OfflineHooks lets housekeeping run on the offline provider. It exists
+	// for tests: an offline answer is a notice, not a title or a fact.
+	OfflineHooks bool
+	Log          *slog.Logger
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 }
@@ -79,6 +83,7 @@ type Platform struct {
 	Knowledge *knowledge.Store
 	Evals     *evals.Store
 	Prefs     *prefs.Store
+	Memory    *memory.Store
 
 	broker  bus.Bus
 	sinks   *connector.Registry
@@ -114,6 +119,7 @@ func New(cfg Config) (*Platform, error) {
 		Knowledge: knowledge.NewStore(),
 		Evals:     evals.NewStore(),
 		Prefs:     prefs.NewStore(),
+		Memory:    memory.NewStore(),
 		broker:    bus.NewMemory(),
 		sinks:     connector.NewRegistry(),
 		ledger:    ledger.NewMemory(),
@@ -250,6 +256,15 @@ func (p *Platform) Call(ctx context.Context, tenant, runID string, req call.Requ
 	return child, nil
 }
 
+// reserved reports whether an origin is one only the platform may use.
+func reserved(origin string) bool {
+	switch origin {
+	case call.Origin, runs.OriginAPI, runs.OriginSystem, runs.OriginManual, OriginEval:
+		return true
+	}
+	return false
+}
+
 // reconcileEvery is how often open runs are checked against the ledger.
 const reconcileEvery = 2 * time.Second
 
@@ -280,7 +295,7 @@ func (p *Platform) reconcile(ctx context.Context) {
 		}
 		if run, ended := p.Runs.End(id, status, "", rec.Error, at); ended {
 			p.log.Info("platform: run ended in the ledger without a final event", "run", id, "status", status)
-			p.raise(run)
+			p.ended(ctx, run)
 		}
 	}
 }
@@ -384,7 +399,7 @@ func (p *Platform) Run(ctx context.Context) error {
 			}
 			p.Journal.Append(e)
 			if run, ended := p.Runs.Observe(e); ended {
-				p.raise(run)
+				p.ended(ctx, run)
 			}
 		}
 	})
@@ -412,10 +427,11 @@ func (p *Platform) Run(ctx context.Context) error {
 			case <-ctx.Done():
 				return nil
 			case tag := <-tags:
-				// A trigger's tag cannot claim to come from an agent.
-				// Lineage is only ever minted by Call.
-				if tag.Origin == call.Origin {
-					p.log.Warn("platform: dropped a trigger tag claiming agent origin", "tag", tag.ID)
+				// A trigger's tag cannot claim an origin the platform keeps
+				// for itself. Lineage is only ever minted by Call, and the
+				// rest carry keys the index believes.
+				if reserved(tag.Origin) {
+					p.log.Warn("platform: dropped a trigger tag claiming a reserved origin", "tag", tag.ID, "origin", tag.Origin)
 					continue
 				}
 				if r, err := p.Invoke(ctx, tag); err != nil {

@@ -36,21 +36,39 @@ var validName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
 
 // Source is a named collection of documents.
 type Source struct {
-	Name        string    `json:"name"`
-	Description string    `json:"description,omitempty"`
-	Documents   int       `json:"documents"`
-	Passages    int       `json:"passages"`
-	CreatedBy   string    `json:"created_by,omitempty"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Documents   int    `json:"documents"`
+	Passages    int    `json:"passages"`
+	// Excluded is how many documents are held but left out of search.
+	Excluded int `json:"excluded"`
+	// Variants are saved views of the source: the same documents with a
+	// different set left out.
+	Variants  []Variant `json:"variants"`
+	CreatedBy string    `json:"created_by,omitempty"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// MaxVariants bounds how many views a source keeps.
+const MaxVariants = 20
+
+// Variant is a named view of a source. It records which documents it leaves
+// out, so two ways of curating the same documents can be searched side by side.
+type Variant struct {
+	Name string `json:"name"`
+	// Excluded is the ids of the documents this view leaves out.
+	Excluded []string `json:"excluded"`
 }
 
 // Document is one thing added to a source. Its text is held as passages.
 type Document struct {
-	ID       string    `json:"id"`
-	Title    string    `json:"title"`
-	URI      string    `json:"uri,omitempty"`
-	Bytes    int       `json:"bytes"`
-	Passages int       `json:"passages"`
+	ID       string `json:"id"`
+	Title    string `json:"title"`
+	URI      string `json:"uri,omitempty"`
+	Bytes    int    `json:"bytes"`
+	Passages int    `json:"passages"`
+	// Excluded keeps the document but leaves it out of search.
+	Excluded bool      `json:"excluded"`
 	AddedBy  string    `json:"added_by,omitempty"`
 	AddedAt  time.Time `json:"added_at"`
 }
@@ -110,7 +128,7 @@ func (s *Store) Create(tenant, name, description, by string, at time.Time) (Sour
 	if s.tenants[tenant] == nil {
 		s.tenants[tenant] = map[string]*source{}
 	}
-	src := &source{Source: Source{Name: name, Description: description, CreatedBy: by, UpdatedAt: at}}
+	src := &source{Source: Source{Name: name, Description: description, Variants: []Variant{}, CreatedBy: by, UpdatedAt: at}}
 	s.tenants[tenant][name] = src
 	return src.Source, nil
 }
@@ -132,7 +150,9 @@ func (s *Store) List(tenant string) []Source {
 	defer s.mu.RUnlock()
 	out := make([]Source, 0, len(s.tenants[tenant]))
 	for _, src := range s.tenants[tenant] {
-		out = append(out, src.Source)
+		view := src.Source
+		view.Variants = slices.Clone(src.Variants)
+		out = append(out, view)
 	}
 	slices.SortFunc(out, func(a, b Source) int { return strings.Compare(a.Name, b.Name) })
 	return out
@@ -203,14 +223,97 @@ func (s *Store) Remove(tenant, name, id string, at time.Time) error {
 	}
 	src.docs = slices.Delete(src.docs, i, i+1)
 	src.passages = slices.DeleteFunc(src.passages, func(p *passage) bool { return p.doc.ID == id })
+	for i := range src.Variants {
+		src.Variants[i].Excluded = slices.DeleteFunc(src.Variants[i].Excluded, func(x string) bool { return x == id })
+	}
 	src.Documents, src.Passages, src.UpdatedAt = len(src.docs), len(src.passages), at
+	src.recount()
+	return nil
+}
+
+func (src *source) recount() {
+	src.Excluded = 0
+	for _, d := range src.docs {
+		if d.Excluded {
+			src.Excluded++
+		}
+	}
+}
+
+// SetExcluded leaves a document out of search, or puts it back. The document
+// and its text are kept either way.
+func (s *Store) SetExcluded(tenant, name, id string, excluded bool, at time.Time) (Document, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, err := s.get(tenant, name)
+	if err != nil {
+		return Document{}, err
+	}
+	i := slices.IndexFunc(src.docs, func(d *Document) bool { return d.ID == id })
+	if i < 0 {
+		return Document{}, fmt.Errorf("%w: document %q", ErrNotFound, id)
+	}
+	src.docs[i].Excluded = excluded
+	src.UpdatedAt = at
+	src.recount()
+	return *src.docs[i], nil
+}
+
+// SaveVariant records the documents currently left out as a named view. Saving
+// a name that exists replaces it.
+func (s *Store) SaveVariant(tenant, name, variant string, at time.Time) (Variant, error) {
+	if !validName.MatchString(variant) {
+		return Variant{}, fmt.Errorf("%w: a variant name is lowercase letters, digits and dashes", ErrInvalid)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, err := s.get(tenant, name)
+	if err != nil {
+		return Variant{}, err
+	}
+	v := Variant{Name: variant, Excluded: []string{}}
+	for _, d := range src.docs {
+		if d.Excluded {
+			v.Excluded = append(v.Excluded, d.ID)
+		}
+	}
+	i := slices.IndexFunc(src.Variants, func(x Variant) bool { return x.Name == variant })
+	switch {
+	case i >= 0:
+		src.Variants[i] = v
+	case len(src.Variants) >= MaxVariants:
+		return Variant{}, fmt.Errorf("%w: a source keeps at most %d variants", ErrInvalid, MaxVariants)
+	default:
+		src.Variants = append(src.Variants, v)
+	}
+	src.UpdatedAt = at
+	return v, nil
+}
+
+// DeleteVariant removes a saved view. The documents are untouched.
+func (s *Store) DeleteVariant(tenant, name, variant string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src, err := s.get(tenant, name)
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(src.Variants, func(x Variant) bool { return x.Name == variant })
+	if i < 0 {
+		return fmt.Errorf("%w: variant %q", ErrNotFound, variant)
+	}
+	src.Variants = slices.Delete(src.Variants, i, i+1)
 	return nil
 }
 
 // Search ranks passages in the named sources against a query. No names means
 // every source in the tenant. A name that does not exist is an error, so a
 // caller cannot mistake "no such source" for "no matches".
-func (s *Store) Search(tenant string, names []string, query string, limit int) ([]Hit, error) {
+//
+// Documents marked excluded are left out. variant, when set, searches one
+// source through a saved view instead: what that view leaves out, rather than
+// what is left out now.
+func (s *Store) Search(tenant string, names []string, query string, limit int, variant string) ([]Hit, error) {
 	q := tokens(query)
 	if len(q) == 0 {
 		return nil, fmt.Errorf("%w: a search needs words to look for", ErrInvalid)
@@ -235,12 +338,30 @@ func (s *Store) Search(tenant string, names []string, query string, limit int) (
 		in = append(in, src)
 	}
 
+	skip := func(p *passage) bool { return p.doc.Excluded }
+	if variant != "" {
+		// The source must be named. Guessing it from "the tenant happens to
+		// have one source" would change meaning when a second is added.
+		if len(names) != 1 {
+			return nil, fmt.Errorf("%w: a variant belongs to one source", ErrInvalid)
+		}
+		i := slices.IndexFunc(in[0].Variants, func(x Variant) bool { return x.Name == variant })
+		if i < 0 {
+			return nil, fmt.Errorf("%w: variant %q", ErrNotFound, variant)
+		}
+		out := in[0].Variants[i].Excluded
+		skip = func(p *passage) bool { return slices.Contains(out, p.doc.ID) }
+	}
+
 	// BM25 over the selected passages.
 	const k1, b = 1.2, 0.75
 	var total, count int
 	df := map[string]int{}
 	for _, src := range in {
 		for _, p := range src.passages {
+			if skip(p) {
+				continue
+			}
 			total += p.n
 			count++
 			for _, t := range q {
@@ -257,6 +378,9 @@ func (s *Store) Search(tenant string, names []string, query string, limit int) (
 	hits := []Hit{}
 	for _, src := range in {
 		for _, p := range src.passages {
+			if skip(p) {
+				continue
+			}
 			var score float64
 			for _, t := range q {
 				tf := float64(p.terms[t])
