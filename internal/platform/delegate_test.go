@@ -27,22 +27,13 @@ type gated struct {
 	gate <-chan struct{}
 }
 
-func (g *gated) ChatStream(ctx context.Context, m []saigetypes.Message, t []saigetypes.ToolDef) (<-chan saigetypes.Delta, error) {
+func (g *gated) Stream(ctx context.Context, req saigetypes.Request) (<-chan saigetypes.Delta, error) {
 	select {
 	case <-g.gate:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
-	return g.ScriptedProvider.ChatStream(ctx, m, t)
-}
-
-func (g *gated) ChatStreamWithOptions(ctx context.Context, m []saigetypes.Message, t []saigetypes.ToolDef, o saigetypes.RequestOptions) (<-chan saigetypes.Delta, error) {
-	select {
-	case <-g.gate:
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-	return g.ScriptedProvider.ChatStreamWithOptions(ctx, m, t, o)
+	return g.ScriptedProvider.Stream(ctx, req)
 }
 
 // cast is the agents of one test: what each one's model says, turn by turn,
