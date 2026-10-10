@@ -209,7 +209,7 @@ function SharedMemory({ project, canWrite, onChanged }: { project: string; canWr
       ) : (
         <ul>
           {kept.map((n) => (
-            <li key={n.id} className="oap-enter flex items-start justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
+            <li key={n.id} className="collegium-enter flex items-start justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
               <span className="min-w-0">
                 <span className="block text-aui-sm text-aui-fg">{n.text}</span>
                 <span className="block text-aui-xs text-aui-muted">
@@ -328,7 +328,7 @@ export function ProjectPage({
         ) : (
           <ul>
             {mine.map((t) => (
-              <li key={t.id} className="oap-enter border-aui-border border-t first:border-t-0">
+              <li key={t.id} className="collegium-enter border-aui-border border-t first:border-t-0">
                 <button
                   type="button"
                   onClick={() => onOpenThread(t.id)}

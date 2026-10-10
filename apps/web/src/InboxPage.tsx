@@ -89,7 +89,7 @@ export function MailboxView({
           <Stroke agent={edge.agent} state={edge.state} testId="mail-frame" className="flex min-h-0 flex-1 flex-col pl-4">
             {children}
             {sources.length > 0 && (
-              <ul className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-[var(--oap-rule)] border-t pt-2 text-aui-xs" aria-label="About">
+              <ul className="flex shrink-0 flex-wrap gap-x-4 gap-y-1 border-[var(--collegium-rule)] border-t pt-2 text-aui-xs" aria-label="About">
                 {sources.map((s) => (
                   <li key={`${s.kind}:${s.id}`}>
                     <button
@@ -193,7 +193,7 @@ export function InboxPage({
   }
 
   return (
-    <div data-testid="inbox" className="oap-fade flex min-h-0 flex-1 flex-col gap-3 px-5 pt-8 pb-4 md:px-10">
+    <div data-testid="inbox" className="collegium-fade flex min-h-0 flex-1 flex-col gap-3 px-5 pt-8 pb-4 md:px-10">
       <p className="sr-only" aria-live="polite">
         {open === 0 ? "Nothing is waiting on you." : `${open} open, ${unread} unread.`}
       </p>
@@ -231,7 +231,7 @@ export function InboxPage({
                   type="button"
                   onClick={inbox.more}
                   disabled={inbox.loading === "more"}
-                  className="inline-flex h-6 items-center rounded-full border border-[var(--oap-rule)] px-2.5 text-aui-xs text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-default"
+                  className="inline-flex h-6 items-center rounded-full border border-[var(--collegium-rule)] px-2.5 text-aui-xs text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-default"
                 >
                   {inbox.loading === "more" ? "Loading" : inbox.moreFailed ? "Could not load. Try again" : "See more"}
                 </button>

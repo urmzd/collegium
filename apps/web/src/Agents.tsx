@@ -62,7 +62,7 @@ export function Agents({
                   ]
                 : [];
             return (
-              <li key={name} className="oap-enter">
+              <li key={name} className="collegium-enter">
                 <Stroke agent={name} state={waiting ? "waiting" : busy ? "working" : "idle"}>
                 <button
                   type="button"
@@ -75,7 +75,7 @@ export function Agents({
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
-                        <span className="oap-display truncate text-aui-lg font-semibold text-aui-fg">{name}</span>
+                        <span className="collegium-display truncate text-aui-lg font-semibold text-aui-fg">{name}</span>
                         {name === baseline && <Chip>Baseline</Chip>}
                         {builtin.includes(name) && <Chip>Built in, read only</Chip>}
                       </span>
@@ -94,7 +94,7 @@ export function Agents({
                     <span className="grid grid-cols-3 gap-4">
                       {figures.map(([label, value]) => (
                         <span key={label} className="flex min-w-0 flex-col">
-                          <span className="oap-display text-aui-lg font-semibold text-aui-fg">{value}</span>
+                          <span className="collegium-display text-aui-lg font-semibold text-aui-fg">{value}</span>
                           <span className="truncate text-aui-2xs text-aui-muted">{label}</span>
                         </span>
                       ))}

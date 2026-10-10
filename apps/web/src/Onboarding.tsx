@@ -95,12 +95,12 @@ export function Onboarding({
   };
 
   return (
-    <main data-testid="onboarding" data-first-admin={firstAdmin} className="oap-fade aui-scroll flex h-full flex-col overflow-y-auto text-aui-fg">
+    <main data-testid="onboarding" data-first-admin={firstAdmin} className="collegium-fade aui-scroll flex h-full flex-col overflow-y-auto text-aui-fg">
       <form onSubmit={finish} noValidate className="m-auto flex w-full max-w-xl flex-col gap-8 px-5 py-12">
         <header>
-          <p className="text-aui-sm text-aui-muted">Open Agent Platform</p>
+          <p className="text-aui-sm text-aui-muted">Collegium</p>
           {/* The greeting the console opens with, changing as the name is typed. */}
-          <h1 aria-live="polite" className="oap-display pt-1 text-[2.25rem] leading-[1.1] font-semibold text-aui-fg">
+          <h1 aria-live="polite" className="collegium-display pt-1 text-[2.25rem] leading-[1.1] font-semibold text-aui-fg">
             {welcome(name)}
           </h1>
           <p className="max-w-[52ch] pt-2 text-aui-sm text-aui-muted">
@@ -174,7 +174,7 @@ export function Onboarding({
         </div>
 
         {firstAdmin && (
-          <fieldset data-testid="onboarding-workspace" className="flex flex-col gap-5 border-[var(--oap-rule)] border-t pt-6">
+          <fieldset data-testid="onboarding-workspace" className="flex flex-col gap-5 border-[var(--collegium-rule)] border-t pt-6">
             <legend className="sr-only">Workspace</legend>
             <p className="text-aui-sm text-aui-muted">
               You are the first admin of this workspace. Admins create and change agents, connect knowledge, set limits and

@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/urmzd/open-agent-platform/internal/platform"
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
+	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/inbox"
 )
 
 // The inbox routes ask only for runs:read, which every role has. What a caller

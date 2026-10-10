@@ -7,9 +7,9 @@ import (
 	"github.com/urmzd/opentag/pkg/connectors/cron"
 	"github.com/urmzd/opentag/pkg/envelope"
 
-	"github.com/urmzd/open-agent-platform/internal/platform"
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // schedule is the wire form of a cron schedule. Tenant is absent on purpose.

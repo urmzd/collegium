@@ -13,11 +13,11 @@ import (
 	"github.com/urmzd/saige/agent/agenttest"
 	saigetypes "github.com/urmzd/saige/agent/types"
 
-	"github.com/urmzd/open-agent-platform/internal/platform"
-	"github.com/urmzd/open-agent-platform/pkg/artifacts"
-	"github.com/urmzd/open-agent-platform/pkg/call"
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/artifacts"
+	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // gated is a scripted model that does not answer until it is let through, so

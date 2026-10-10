@@ -13,9 +13,9 @@ import (
 	"github.com/urmzd/opentag/pkg/envelope"
 	"github.com/urmzd/opentag/pkg/registry"
 
-	"github.com/urmzd/open-agent-platform/pkg/memory"
-	"github.com/urmzd/open-agent-platform/pkg/pick"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/pkg/memory"
+	"github.com/urmzd/collegium/pkg/pick"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // Auto asks the platform to pick the agent.

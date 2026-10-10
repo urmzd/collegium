@@ -380,7 +380,7 @@ export function BillingSettings({ projects, agents, canWrite }: { projects: stri
                 {changes.slice(0, 30).map((c) => (
                   <li
                     key={`${keyOf(c.scope)}:${c.at}:${c.after?.version ?? "x"}`}
-                    className="oap-enter border-aui-border border-t py-2 text-aui-sm first:border-t-0"
+                    className="collegium-enter border-aui-border border-t py-2 text-aui-sm first:border-t-0"
                   >
                     <span className="text-aui-fg">
                       {scopeName(c.scope)}: {c.after ? brief(c.after) : "limits removed"}

@@ -13,12 +13,12 @@ import (
 	"github.com/urmzd/opentag/pkg/agentrt"
 	"github.com/urmzd/opentag/pkg/runtime"
 
-	"github.com/urmzd/open-agent-platform/internal/platform"
-	"github.com/urmzd/open-agent-platform/pkg/artifacts"
-	"github.com/urmzd/open-agent-platform/pkg/call"
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
-	"github.com/urmzd/open-agent-platform/pkg/policy"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/artifacts"
+	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/policy"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // turn starts a conversation and returns the request its tools would be

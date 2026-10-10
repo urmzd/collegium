@@ -189,7 +189,7 @@ export function RunList({ runs: all, onSelect }: { runs: Run[]; onSelect: (id: s
           ) : (
             <ul className={`${rows} -mt-3`}>
               {runs.map((r) => (
-                <li key={r.id} className="oap-enter">
+                <li key={r.id} className="collegium-enter">
                   <button
                     type="button"
                     onClick={() => onSelect(r.id)}

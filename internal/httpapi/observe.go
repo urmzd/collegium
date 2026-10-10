@@ -10,11 +10,11 @@ import (
 	"github.com/urmzd/opentag/pkg/agentspec"
 	"github.com/urmzd/opentag/pkg/envelope"
 
-	"github.com/urmzd/open-agent-platform/pkg/alerts"
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/evals"
-	"github.com/urmzd/open-agent-platform/pkg/journal"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/evals"
+	"github.com/urmzd/collegium/pkg/journal"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // maxWindow bounds how far back analytics and the journal may be asked for.

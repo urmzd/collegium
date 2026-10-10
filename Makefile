@@ -1,6 +1,6 @@
 .PHONY: all init build test lint fmt check dev web
 
-BIN := open-agent-platform
+BIN := collegium
 
 all: check
 

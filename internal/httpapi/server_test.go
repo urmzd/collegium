@@ -14,15 +14,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/open-agent-platform/internal/platform"
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/auth/authtest"
-	"github.com/urmzd/open-agent-platform/pkg/call"
+	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/auth/authtest"
+	"github.com/urmzd/collegium/pkg/call"
 )
 
 const (
 	clientID = "web-client"
-	audience = "api://oap"
+	audience = "api://collegium"
 )
 
 type fixture struct {
@@ -46,7 +46,7 @@ func newFixture(t *testing.T) *fixture {
 	iss := authtest.New(t)
 	v, err := auth.NewVerifier(ctx, auth.OIDCConfig{
 		Issuer: iss.URL, ClientID: clientID, Audience: audience, TenantClaim: "org",
-		GroupRoles: map[string]auth.Role{"oap-admins": auth.Admin, "oap-viewers": auth.Viewer},
+		GroupRoles: map[string]auth.Role{"collegium-admins": auth.Admin, "collegium-viewers": auth.Viewer},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -113,7 +113,7 @@ func TestUnauthenticatedIsRefused(t *testing.T) {
 
 func TestMachineIsHeldToItsScopes(t *testing.T) {
 	f := newFixture(t)
-	reader := f.machine(t, "acme", "oap:agents:read", "oap:runs:read")
+	reader := f.machine(t, "acme", "collegium:agents:read", "collegium:runs:read")
 
 	if res, _ := f.do(t, nil, "GET", "/api/agents", reader, ""); res.StatusCode != http.StatusOK {
 		t.Fatalf("read = %d", res.StatusCode)
@@ -128,7 +128,7 @@ func TestMachineIsHeldToItsScopes(t *testing.T) {
 
 func TestTenantsAreIsolated(t *testing.T) {
 	f := newFixture(t)
-	all := []string{"oap:agents:read", "oap:agents:write", "oap:runs:read", "oap:runs:write", "oap:schedules:read", "oap:schedules:write"}
+	all := []string{"collegium:agents:read", "collegium:agents:write", "collegium:runs:read", "collegium:runs:write", "collegium:schedules:read", "collegium:schedules:write"}
 	acme, globex := f.machine(t, "acme", all...), f.machine(t, "globex", all...)
 
 	if res, _ := f.do(t, nil, "POST", "/api/agents", acme, helperSpec); res.StatusCode != http.StatusCreated {
@@ -175,7 +175,7 @@ func TestTenantsAreIsolated(t *testing.T) {
 
 func TestEventsStreamARun(t *testing.T) {
 	f := newFixture(t)
-	tok := f.machine(t, "acme", "oap:agents:write", "oap:runs:read", "oap:runs:write")
+	tok := f.machine(t, "acme", "collegium:agents:write", "collegium:runs:read", "collegium:runs:write")
 	f.do(t, nil, "POST", "/api/agents", tok, helperSpec)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -265,7 +265,7 @@ func (f *fixture) signIn(t *testing.T, groups ...string) *http.Client {
 
 func TestBrowserSignIn(t *testing.T) {
 	f := newFixture(t)
-	c := f.signIn(t, "oap-viewers")
+	c := f.signIn(t, "collegium-viewers")
 
 	res, me := f.do(t, c, "GET", "/api/me", "", "")
 	if res.StatusCode != http.StatusOK {
@@ -282,7 +282,7 @@ func TestBrowserSignIn(t *testing.T) {
 
 	u, _ := url.Parse(f.srv.URL)
 	for _, ck := range c.Jar.Cookies(u) {
-		if ck.Name == "oap_session" && len(ck.Value) < 40 {
+		if ck.Name == "collegium_session" && len(ck.Value) < 40 {
 			t.Fatalf("session id is too short to be unguessable: %d chars", len(ck.Value))
 		}
 	}
@@ -326,7 +326,7 @@ func TestCallbackRejectsAForeignState(t *testing.T) {
 
 func TestCrossOriginWritesAreRefused(t *testing.T) {
 	f := newFixture(t)
-	c := f.signIn(t, "oap-admins")
+	c := f.signIn(t, "collegium-admins")
 
 	res, _ := f.do(t, c, "POST", "/api/agents", "", helperSpec, "Sec-Fetch-Site", "cross-site", "Origin", "https://evil.test")
 	if res.StatusCode != http.StatusForbidden {
@@ -356,7 +356,7 @@ func TestSafeReturn(t *testing.T) {
 
 func TestErrorsDoNotLeak(t *testing.T) {
 	f := newFixture(t)
-	tok := f.machine(t, "acme", "oap:runs:write")
+	tok := f.machine(t, "acme", "collegium:runs:write")
 	res, out := f.do(t, nil, "POST", "/api/runs", tok, `{"agent":"ghost","text":"hi"}`)
 	if res.StatusCode != http.StatusNotFound || out["error"] != "not found" {
 		t.Fatalf("got %d %v", res.StatusCode, out)

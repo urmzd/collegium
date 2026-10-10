@@ -24,7 +24,7 @@ import (
 	"github.com/urmzd/opentag/pkg/envelope"
 	"github.com/urmzd/opentag/pkg/runtime"
 
-	"github.com/urmzd/open-agent-platform/pkg/call"
+	"github.com/urmzd/collegium/pkg/call"
 )
 
 // ErrNotFound reports a run that does not exist in the caller's tenant. A run
@@ -46,11 +46,11 @@ const OriginAPI = "api"
 // Keys the platform's API writes into a tag's Meta to place a run in a
 // conversation. A tag from any other origin carrying them is ignored.
 const (
-	MetaThread  = "oap.thread"
-	MetaPrev    = "oap.prev"
-	MetaAsk     = "oap.ask"
-	MetaPicked  = "oap.picked"
-	MetaProject = "oap.project"
+	MetaThread  = "collegium.thread"
+	MetaPrev    = "collegium.prev"
+	MetaAsk     = "collegium.ask"
+	MetaPicked  = "collegium.picked"
+	MetaProject = "collegium.project"
 )
 
 // ProjectOf returns the project a tag files its run under, or "". Only origins

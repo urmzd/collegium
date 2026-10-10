@@ -57,7 +57,7 @@ export function App() {
     const back = encodeURIComponent(window.location.pathname + window.location.search);
     return (
       <Centered>
-        <h1 className="text-aui-lg font-medium text-aui-fg">Open Agent Platform</h1>
+        <h1 className="text-aui-lg font-medium text-aui-fg">Collegium</h1>
         <p className="text-aui-sm text-aui-muted">Sign in with your organization's account to continue.</p>
         <a className={primary} href={`/auth/login?return_to=${back}`}>
           Sign In
@@ -76,7 +76,7 @@ function Centered({ children }: { children: React.ReactNode }) {
   );
 }
 
-const SIDEBAR_KEY = "oap.sidebar";
+const SIDEBAR_KEY = "collegium.sidebar";
 
 /** A per-viewer convenience, so it lives in the browser and must never throw. */
 function stored(key: string, fallback: boolean): boolean {

@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/inbox"
 )
 
 func messages(t *testing.T, out map[string]any) []map[string]any {
@@ -55,9 +55,9 @@ func TestInboxResolvesWhatItHolds(t *testing.T) {
 	f := newFixture(t)
 	admin := f.machine(t, "acme", everything...)
 	// These three are the same caller with fewer rights each time.
-	reader := f.machine(t, "acme", "oap:runs:read", "oap:alerts:read")
-	acker := f.machine(t, "acme", "oap:runs:read", "oap:alerts:read", "oap:alerts:write")
-	blind := f.machine(t, "acme", "oap:runs:read")
+	reader := f.machine(t, "acme", "collegium:runs:read", "collegium:alerts:read")
+	acker := f.machine(t, "acme", "collegium:runs:read", "collegium:alerts:read", "collegium:alerts:write")
+	blind := f.machine(t, "acme", "collegium:runs:read")
 	globex := f.machine(t, "globex", everything...)
 
 	f.do(t, nil, "POST", "/api/agents", admin, helperSpec)

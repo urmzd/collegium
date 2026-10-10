@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/open-agent-platform/pkg/evals"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/collegium/pkg/evals"
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 var t0 = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)

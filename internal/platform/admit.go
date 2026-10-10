@@ -6,12 +6,12 @@ import (
 	"github.com/urmzd/opentag/pkg/envelope"
 	"github.com/urmzd/opentag/pkg/runtime"
 
-	"github.com/urmzd/open-agent-platform/pkg/alerts"
-	"github.com/urmzd/open-agent-platform/pkg/call"
-	"github.com/urmzd/open-agent-platform/pkg/inbox"
-	"github.com/urmzd/open-agent-platform/pkg/policy"
-	"github.com/urmzd/open-agent-platform/pkg/runs"
-	"github.com/urmzd/open-agent-platform/pkg/usage"
+	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/policy"
+	"github.com/urmzd/collegium/pkg/runs"
+	"github.com/urmzd/collegium/pkg/usage"
 )
 
 // Denied reports a run a billing policy refused. It carries the decision, so a

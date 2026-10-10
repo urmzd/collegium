@@ -1,4 +1,4 @@
-module github.com/urmzd/open-agent-platform
+module github.com/urmzd/collegium
 
 go 1.26.9
 

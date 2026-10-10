@@ -25,8 +25,8 @@ Every caller becomes a `Principal`, and every route asks it one question:
 Writing knowledge is an admin permission because a document an agent is grounded
 in changes what that agent says.
 
-A machine has no role. It is issued scopes named `oap:<permission>`, for
-example `oap:runs:write`. A scope without the `oap:` prefix, or one that names
+A machine has no role. It is issued scopes named `collegium:<permission>`, for
+example `collegium:runs:write`. A scope without the `collegium:` prefix, or one that names
 no permission, grants nothing.
 
 ## Rules the code holds
@@ -105,20 +105,20 @@ address that is not loopback. Never put it behind a proxy.
 1. Create an **OIDC web application**. Sign-in redirect URI:
    `<public-url>/auth/callback`. Note the client ID and secret.
 2. On the **authorization server** (for example `default`), set the audience
-   to a value of your choice, such as `api://oap`.
+   to a value of your choice, such as `api://collegium`.
 3. Add a **groups claim** named `groups` to both ID and access tokens, filtered
    to the platform's groups.
-4. Create the groups `oap-admins`, `oap-operators` and `oap-viewers`, and
+4. Create the groups `collegium-admins`, `collegium-operators` and `collegium-viewers`, and
    assign people.
 5. For each machine, create an **API services application** and grant it only
-   the `oap:` scopes it needs. Add those scopes to the authorization server.
+   the `collegium:` scopes it needs. Add those scopes to the authorization server.
 
 ```sh
-export OAP_OIDC_ISSUER="https://<org>.okta.com/oauth2/default"
-export OAP_OIDC_CLIENT_ID="<web app client id>"
-export OAP_OIDC_CLIENT_SECRET="<from your secret store>"
-export OAP_OIDC_AUDIENCE="api://oap"
-open-agent-platform serve -public-url https://oap.example.com
+export COLLEGIUM_OIDC_ISSUER="https://<org>.okta.com/oauth2/default"
+export COLLEGIUM_OIDC_CLIENT_ID="<web app client id>"
+export COLLEGIUM_OIDC_CLIENT_SECRET="<from your secret store>"
+export COLLEGIUM_OIDC_AUDIENCE="api://collegium"
+collegium serve -public-url https://collegium.example.com
 ```
 
 Any OpenID Connect provider works the same way. Group names, the groups claim

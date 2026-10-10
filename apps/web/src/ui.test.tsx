@@ -90,19 +90,19 @@ test("UsageMeter: a row shows its label only when asked", () => {
 test("UsageMeter: over the limit, the value stops at the limit and the limit line is drawn", () => {
   const out = html(<UsageMeter label="x" spent={12 * M} limit={10 * M} />);
   assert.equal(attr(out, "aria-valuenow"), String(10 * M));
-  assert.match(out, /oap-meter-limit/);
+  assert.match(out, /collegium-meter-limit/);
   assert.match(attr(out, "aria-valuetext") ?? "", /Over limit by .*2\.00/);
 });
 
 test("UsageMeter: no limit draws no fill", () => {
-  assert.doesNotMatch(html(<UsageMeter label="x" spent={3 * M} />), /oap-meter-fill/);
+  assert.doesNotMatch(html(<UsageMeter label="x" spent={3 * M} />), /collegium-meter-fill/);
 });
 
 test("UsageMeter: a projected value is drawn and read out only when it is ahead of what is spent", () => {
   const ahead = html(<UsageMeter label="x" spent={40 * M} limit={50 * M} projected={58 * M} />);
   assert.match(ahead, /data-testid="usage-meter-projected"/);
   assert.match(attr(ahead, "aria-valuetext") ?? "", /Heading for .*58\.00/);
-  assert.match(ahead, /oap-meter-limit/);
+  assert.match(ahead, /collegium-meter-limit/);
   const behind = html(<UsageMeter label="x" spent={40 * M} limit={50 * M} projected={30 * M} />);
   assert.doesNotMatch(behind, /usage-meter-projected/);
 });
@@ -135,12 +135,12 @@ test("Stroke: an agent's stroke carries its hue and state", () => {
   assert.equal(attr(out, "data-agent"), "oncall");
   assert.equal(attr(out, "data-state"), "waiting");
   assert.equal(attr(out, "data-edge"), "around");
-  assert.match(out, /--oap-hue:\d+/);
+  assert.match(out, /--collegium-hue:\d+/);
 });
 
 test("Stroke: without an agent it is neutral and has no state", () => {
   const out = html(<Stroke state="working">x</Stroke>);
-  assert.doesNotMatch(out, /data-agent|data-state|--oap-hue/);
+  assert.doesNotMatch(out, /data-agent|data-state|--collegium-hue/);
   assert.equal(attr(out, "data-edge"), "start");
 });
 
@@ -152,13 +152,13 @@ test("Stroke: waiting never animates, in markup or in the stylesheet", () => {
   );
   assert.doesNotMatch(out, /animate|aui-shimmer|aui-spinner/);
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, selector]) => selector?.includes(".oap-stroke"));
+  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, selector]) => selector?.includes(".collegium-stroke"));
   assert.ok(rules.length > 5, "the stroke rules were found");
   for (const [, selector = "", body = ""] of rules) {
     if (selector.includes('"waiting"')) assert.doesNotMatch(body, /animation/, `waiting animates in: ${selector.trim()}`);
   }
   assert.ok(
-    rules.some(([, selector = "", body = ""]) => selector.includes('"working"') && /animation:\s*oap-stroke-work/.test(body)),
+    rules.some(([, selector = "", body = ""]) => selector.includes('"working"') && /animation:\s*collegium-stroke-work/.test(body)),
     "working is the state that animates",
   );
 });
@@ -888,17 +888,17 @@ test("StoredDetail: delete is offered only to those who may, and asks first", ()
 
 test("motion: every class moves only transform and opacity, and reduced motion removes the travel", () => {
   const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
-  const frames = [...css.matchAll(/@keyframes (oap-[a-z-]+) \{((?:[^{}]|\{[^{}]*\})*)\}/g)];
+  const frames = [...css.matchAll(/@keyframes (collegium-[a-z-]+) \{((?:[^{}]|\{[^{}]*\})*)\}/g)];
   assert.ok(frames.length >= 7, "the motion keyframes were found");
   for (const [, name, body = ""] of frames) {
     const props = [...body.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1]);
     for (const prop of props) assert.ok(prop === "opacity" || prop === "transform", `${name} animates ${prop}`);
   }
   const reduced = css.slice(css.indexOf("/* With motion reduced, nothing travels."));
-  for (const cls of [".oap-enter", ".oap-pop", ".oap-drawer", ".oap-note"]) assert.ok(reduced.includes(cls), `${cls} is covered when motion is reduced`);
-  assert.match(reduced, /animation: oap-fade /, "what arrives only fades");
-  assert.doesNotMatch(css, /animation:[^;]*infinite[^;]*;[^}]*\}\s*(?=[^]*\.oap-(enter|pop|drawer|note|fade)\b)(?!)/, "no motion class loops");
-  for (const cls of ["oap-enter", "oap-fade", "oap-pop", "oap-drawer", "oap-note"]) {
+  for (const cls of [".collegium-enter", ".collegium-pop", ".collegium-drawer", ".collegium-note"]) assert.ok(reduced.includes(cls), `${cls} is covered when motion is reduced`);
+  assert.match(reduced, /animation: collegium-fade /, "what arrives only fades");
+  assert.doesNotMatch(css, /animation:[^;]*infinite[^;]*;[^}]*\}\s*(?=[^]*\.collegium-(enter|pop|drawer|note|fade)\b)(?!)/, "no motion class loops");
+  for (const cls of ["collegium-enter", "collegium-fade", "collegium-pop", "collegium-drawer", "collegium-note"]) {
     const rule = css.match(new RegExp(`\\.${cls} \\{([^}]*)\\}`))?.[1] ?? "";
     assert.doesNotMatch(rule, /infinite/, `${cls} plays once`);
   }

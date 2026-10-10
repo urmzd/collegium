@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/open-agent-platform/internal/platform"
+	"github.com/urmzd/collegium/internal/platform"
 )
 
 func (f *fixture) raw(t *testing.T, path, bearer string) (*http.Response, string) {
@@ -31,8 +31,8 @@ func (f *fixture) raw(t *testing.T, path, bearer string) (*http.Response, string
 func TestArtifactsAreServedSafely(t *testing.T) {
 	f := newFixture(t)
 	admin := f.machine(t, "acme", everything...)
-	reader := f.machine(t, "acme", "oap:artifacts:read")
-	none := f.machine(t, "acme", "oap:runs:read")
+	reader := f.machine(t, "acme", "collegium:artifacts:read")
+	none := f.machine(t, "acme", "collegium:runs:read")
 	globex := f.machine(t, "globex", everything...)
 
 	publish := func(thread, name, content string) string {
@@ -163,11 +163,11 @@ func TestArtifactsAreServedSafely(t *testing.T) {
 	}
 
 	// The platform's own agent cannot be edited or impersonated.
-	spec := `{"name":"oap-writer","model":"offline","provider":"offline","system_prompt":"x"}`
+	spec := `{"name":"collegium-writer","model":"offline","provider":"offline","system_prompt":"x"}`
 	if res, _ := f.do(t, nil, "POST", "/api/agents", admin, spec); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("creating an agent under a built-in's name = %d", res.StatusCode)
 	}
-	if res, _ := f.do(t, nil, "PUT", "/api/agents/oap-writer", admin, `{"spec":`+spec+`,"expected_rev":1}`); res.StatusCode != http.StatusForbidden {
+	if res, _ := f.do(t, nil, "PUT", "/api/agents/collegium-writer", admin, `{"spec":`+spec+`,"expected_rev":1}`); res.StatusCode != http.StatusForbidden {
 		t.Fatalf("revising a built-in = %d", res.StatusCode)
 	}
 }

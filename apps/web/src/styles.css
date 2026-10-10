@@ -24,55 +24,55 @@ body,
  * planes for its chrome and panels, and the run tape.
  */
 @theme inline {
-  --font-oap-display: "Bricolage Grotesque Variable", "Figtree Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-collegium-display: "Bricolage Grotesque Variable", "Figtree Variable", ui-sans-serif, system-ui, sans-serif;
 }
 
 :root {
   /* agent-ui names Figtree. The console ships it, so it is never a fallback. */
   --font-aui-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
   /* The sidebar's plane and a panel's plane, each one step off the page. */
-  --oap-plane: oklch(0.975 0 0);
-  --oap-panel: oklch(1 0 0);
-  --oap-rule: oklch(0.07 0 0 / 9%);
+  --collegium-plane: oklch(0.975 0 0);
+  --collegium-panel: oklch(1 0 0);
+  --collegium-rule: oklch(0.07 0 0 / 9%);
   /* Finished work is drawn in ink. Color is kept for what needs a look. */
-  --oap-ink: oklch(0.07 0 0 / 42%);
-  --oap-ink-faint: oklch(0.07 0 0 / 14%);
-  --oap-glass-strong: oklch(1 0 0 / 86%);
-  --oap-glass-border: oklch(0.2 0.02 250 / 12%);
-  --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 60%);
+  --collegium-ink: oklch(0.07 0 0 / 42%);
+  --collegium-ink-faint: oklch(0.07 0 0 / 14%);
+  --collegium-glass-strong: oklch(1 0 0 / 86%);
+  --collegium-glass-border: oklch(0.2 0.02 250 / 12%);
+  --collegium-bevel: inset 0 1px 0 oklch(1 0 0 / 60%);
   /* Lightness of an agent's color, set so it reads on either surface. */
-  --oap-mark-l: 0.5;
+  --collegium-mark-l: 0.5;
   /*
    * Strokes. The neutral one is the rule. The agent one takes an agent's hue
    * at a lightness and chroma checked against both planes for every hue:
    * at least 3.9:1 here and 6.6:1 in the dark theme.
    */
-  --oap-stroke: var(--oap-rule);
-  --oap-stroke-l: 0.55;
-  --oap-stroke-c: 0.14;
+  --collegium-stroke: var(--collegium-rule);
+  --collegium-stroke-l: 0.55;
+  --collegium-stroke-c: 0.14;
   /*
    * Motion. Three lengths: a press or a hover, a menu or a row, a drawer or a
    * page. One curve for arriving, which settles gently, and a quicker one for
    * leaving, which gets out of the way.
    */
-  --oap-dur-fast: 110ms;
-  --oap-dur: 180ms;
-  --oap-dur-slow: 260ms;
-  --oap-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --oap-ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --collegium-dur-fast: 110ms;
+  --collegium-dur: 180ms;
+  --collegium-dur-slow: 260ms;
+  --collegium-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --collegium-ease-in: cubic-bezier(0.4, 0, 1, 1);
 }
 html[data-theme="dark"] {
-  --oap-plane: oklch(0.105 0 0);
-  --oap-panel: oklch(0.115 0 0);
-  --oap-rule: oklch(1 0 0 / 9%);
-  --oap-ink: oklch(1 0 0 / 46%);
-  --oap-ink-faint: oklch(1 0 0 / 13%);
-  --oap-glass-strong: oklch(0.14 0 0 / 82%);
-  --oap-glass-border: oklch(1 0 0 / 9%);
-  --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 7%);
-  --oap-mark-l: 0.78;
-  --oap-stroke-l: 0.68;
-  --oap-stroke-c: 0.13;
+  --collegium-plane: oklch(0.105 0 0);
+  --collegium-panel: oklch(0.115 0 0);
+  --collegium-rule: oklch(1 0 0 / 9%);
+  --collegium-ink: oklch(1 0 0 / 46%);
+  --collegium-ink-faint: oklch(1 0 0 / 13%);
+  --collegium-glass-strong: oklch(0.14 0 0 / 82%);
+  --collegium-glass-border: oklch(1 0 0 / 9%);
+  --collegium-bevel: inset 0 1px 0 oklch(1 0 0 / 7%);
+  --collegium-mark-l: 0.78;
+  --collegium-stroke-l: 0.68;
+  --collegium-stroke-c: 0.13;
 }
 
 body {
@@ -87,8 +87,8 @@ body {
  * Titles and figures. The face is narrowed a little so a long title and a
  * column of numbers both sit tight, and figures line up in columns.
  */
-.oap-display {
-  font-family: var(--font-oap-display);
+.collegium-display {
+  font-family: var(--font-collegium-display);
   font-variation-settings: "wdth" 86;
   font-optical-sizing: auto;
   font-variant-numeric: tabular-nums;
@@ -96,33 +96,33 @@ body {
 }
 
 /* A panel groups things that belong together. It is flat: one plane, one rule. */
-.oap-glass {
-  background: var(--oap-panel);
-  border: 1px solid var(--oap-rule);
+.collegium-glass {
+  background: var(--collegium-panel);
+  border: 1px solid var(--collegium-rule);
 }
 
 /* Chrome beside the page: its own plane, no blur. */
-.oap-glass-bar {
-  background: var(--oap-plane);
+.collegium-glass-bar {
+  background: var(--collegium-plane);
 }
 
 /* Only what floats above the page is glass. */
-.oap-glass-pop {
-  background: var(--oap-glass-strong);
+.collegium-glass-pop {
+  background: var(--collegium-glass-strong);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
   backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid var(--oap-glass-border);
-  box-shadow: 0 18px 50px oklch(0 0 0 / 0.22), var(--oap-bevel);
+  border: 1px solid var(--collegium-glass-border);
+  box-shadow: 0 18px 50px oklch(0 0 0 / 0.22), var(--collegium-bevel);
 }
 
 /* Without backdrop blur, glass is unreadable. Fall back to a solid surface. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .oap-glass-pop {
+  .collegium-glass-pop {
     background: var(--aui-pop);
   }
 }
 @media (prefers-reduced-transparency: reduce) {
-  .oap-glass-pop {
+  .collegium-glass-pop {
     background: var(--aui-pop);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
@@ -134,59 +134,59 @@ body {
  * Height is how long the run took. A finished run is ink, and only a run that
  * failed, is running, or is waiting on a person takes a color.
  */
-.oap-tape {
-  --oap-tape-h: 1.75rem;
+.collegium-tape {
+  --collegium-tape-h: 1.75rem;
   display: flex;
   align-items: flex-end;
   justify-content: flex-end;
   gap: 2px;
-  height: var(--oap-tape-h);
-  border-bottom: 1px solid var(--oap-rule);
+  height: var(--collegium-tape-h);
+  border-bottom: 1px solid var(--collegium-rule);
   overflow: hidden;
 }
-.oap-tick {
+.collegium-tick {
   flex: 0 0 auto;
   width: 4px;
-  height: calc(3px + (var(--oap-tape-h) - 3px) * var(--t, 0));
+  height: calc(3px + (var(--collegium-tape-h) - 3px) * var(--t, 0));
   padding: 0;
   border: 0;
   border-radius: 1px 1px 0 0;
-  background: var(--oap-ink);
+  background: var(--collegium-ink);
 }
-.oap-tick[data-status="failed"] {
+.collegium-tick[data-status="failed"] {
   background: var(--aui-bad);
 }
-.oap-tick[data-status="running"] {
+.collegium-tick[data-status="running"] {
   background: var(--aui-accent);
-  animation: oap-tick-live 1.6s ease-in-out infinite;
+  animation: collegium-tick-live 1.6s ease-in-out infinite;
 }
 /* Waiting on a person: colored, and still. */
-.oap-tick[data-status="parked"] {
+.collegium-tick[data-status="parked"] {
   background: var(--aui-warn);
 }
-.oap-tick[data-status="accepted"] {
-  background: var(--oap-ink-faint);
+.collegium-tick[data-status="accepted"] {
+  background: var(--collegium-ink-faint);
 }
 /* A slot no run has filled yet keeps the ruler's rhythm. */
-.oap-tick[data-status="none"] {
+.collegium-tick[data-status="none"] {
   height: 2px;
-  background: var(--oap-ink-faint);
+  background: var(--collegium-ink-faint);
 }
-button.oap-tick {
+button.collegium-tick {
   cursor: pointer;
 }
-button.oap-tick:hover,
-button.oap-tick:focus-visible {
+button.collegium-tick:hover,
+button.collegium-tick:focus-visible {
   outline: 2px solid var(--aui-fg);
   outline-offset: 1px;
 }
-@keyframes oap-tick-live {
+@keyframes collegium-tick-live {
   50% {
     opacity: 0.45;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .oap-tick[data-status="running"] {
+  .collegium-tick[data-status="running"] {
     animation: none;
   }
 }
@@ -201,69 +201,69 @@ button.oap-tick:focus-visible {
  * idle is thin and quiet, done is thin, working is thick and breathes, waiting
  * on a person is thick, dashed and still, and failed is thick and red.
  */
-.oap-stroke {
-  --oap-stroke-color: var(--oap-stroke);
-  --oap-stroke-w: 1px;
-  --oap-stroke-style: solid;
+.collegium-stroke {
+  --collegium-stroke-color: var(--collegium-stroke);
+  --collegium-stroke-w: 1px;
+  --collegium-stroke-style: solid;
   position: relative;
 }
-.oap-stroke[data-agent] {
-  --oap-stroke-color: oklch(var(--oap-stroke-l) var(--oap-stroke-c) var(--oap-hue));
+.collegium-stroke[data-agent] {
+  --collegium-stroke-color: oklch(var(--collegium-stroke-l) var(--collegium-stroke-c) var(--collegium-hue));
 }
-.oap-stroke[data-agent][data-state="idle"] {
-  --oap-stroke-color: oklch(var(--oap-stroke-l) var(--oap-stroke-c) var(--oap-hue) / 60%);
+.collegium-stroke[data-agent][data-state="idle"] {
+  --collegium-stroke-color: oklch(var(--collegium-stroke-l) var(--collegium-stroke-c) var(--collegium-hue) / 60%);
 }
-.oap-stroke:is([data-state="working"], [data-state="waiting"], [data-state="failed"]) {
-  --oap-stroke-w: 2px;
+.collegium-stroke:is([data-state="working"], [data-state="waiting"], [data-state="failed"]) {
+  --collegium-stroke-w: 2px;
 }
-.oap-stroke[data-state="waiting"] {
-  --oap-stroke-style: dashed;
+.collegium-stroke[data-state="waiting"] {
+  --collegium-stroke-style: dashed;
 }
-.oap-stroke[data-state="failed"] {
-  --oap-stroke-color: var(--aui-bad);
+.collegium-stroke[data-state="failed"] {
+  --collegium-stroke-color: var(--aui-bad);
 }
-.oap-stroke::before {
+.collegium-stroke::before {
   content: "";
   position: absolute;
   pointer-events: none;
-  border: 0 var(--oap-stroke-style) var(--oap-stroke-color);
+  border: 0 var(--collegium-stroke-style) var(--collegium-stroke-color);
 }
-.oap-stroke[data-edge="start"]::before {
+.collegium-stroke[data-edge="start"]::before {
   inset: 0 auto 0 0;
-  border-left-width: var(--oap-stroke-w);
+  border-left-width: var(--collegium-stroke-w);
 }
-.oap-stroke[data-edge="under"]::before {
+.collegium-stroke[data-edge="under"]::before {
   inset: auto 0 0 0;
-  border-bottom-width: var(--oap-stroke-w);
+  border-bottom-width: var(--collegium-stroke-w);
 }
-.oap-stroke[data-edge="around"]::before {
+.collegium-stroke[data-edge="around"]::before {
   inset: 0;
-  border-width: var(--oap-stroke-w);
+  border-width: var(--collegium-stroke-w);
   border-radius: inherit;
 }
 /* A change of state eases from one line to the next. Arriving at waiting does not: it is simply there. */
-.oap-stroke::before {
+.collegium-stroke::before {
   transition:
-    border-color var(--oap-dur) var(--oap-ease-out),
-    opacity var(--oap-dur) var(--oap-ease-out);
+    border-color var(--collegium-dur) var(--collegium-ease-out),
+    opacity var(--collegium-dur) var(--collegium-ease-out);
 }
-.oap-stroke[data-state="waiting"]::before {
+.collegium-stroke[data-state="waiting"]::before {
   transition: none;
 }
 /* Only work in flight moves. Waiting on a person never does. */
-.oap-stroke[data-state="working"]::before {
-  animation: oap-stroke-work 1.8s ease-in-out infinite;
+.collegium-stroke[data-state="working"]::before {
+  animation: collegium-stroke-work 1.8s ease-in-out infinite;
 }
-@keyframes oap-stroke-work {
+@keyframes collegium-stroke-work {
   50% {
     opacity: 0.4;
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .oap-stroke[data-state="working"]::before {
+  .collegium-stroke[data-state="working"]::before {
     animation: none;
   }
-  .oap-stroke::before {
+  .collegium-stroke::before {
     transition: none;
   }
 }
@@ -272,112 +272,112 @@ button.oap-tick:focus-visible {
  * Motion classes. Each moves only transform and opacity, runs once, and never
  * holds up the next click: nothing here blocks input while it plays.
  *
- * - oap-press: a control gives a little under the pointer.
- * - oap-enter: a row or a panel that has just appeared rises into place.
- * - oap-fade: a page or a pane that replaced another fades in.
- * - oap-pop: a menu or a popover grows from the control that opened it.
- * - oap-drawer: a panel slides in from the edge it lives on.
- * - oap-note: a brief confirmation beside a control.
+ * - collegium-press: a control gives a little under the pointer.
+ * - collegium-enter: a row or a panel that has just appeared rises into place.
+ * - collegium-fade: a page or a pane that replaced another fades in.
+ * - collegium-pop: a menu or a popover grows from the control that opened it.
+ * - collegium-drawer: a panel slides in from the edge it lives on.
+ * - collegium-note: a brief confirmation beside a control.
  *
- * oap-pop, oap-drawer and oap-note also leave: set data-leaving="true" for as
+ * collegium-pop, collegium-drawer and collegium-note also leave: set data-leaving="true" for as
  * long as the leaving takes, then unmount. `usePresence` in ui.tsx does this.
  */
-.oap-press {
+.collegium-press {
   transition-property: color, background-color, border-color, opacity, transform;
-  transition-duration: var(--oap-dur-fast);
-  transition-timing-function: var(--oap-ease-out);
+  transition-duration: var(--collegium-dur-fast);
+  transition-timing-function: var(--collegium-ease-out);
 }
-.oap-press:active:not(:disabled) {
+.collegium-press:active:not(:disabled) {
   transform: scale(0.98);
 }
 
-.oap-enter {
-  animation: oap-enter var(--oap-dur) var(--oap-ease-out) both;
+.collegium-enter {
+  animation: collegium-enter var(--collegium-dur) var(--collegium-ease-out) both;
 }
-@keyframes oap-enter {
+@keyframes collegium-enter {
   from {
     opacity: 0;
     transform: translateY(4px);
   }
 }
 
-.oap-fade {
-  animation: oap-fade var(--oap-dur) var(--oap-ease-out) both;
+.collegium-fade {
+  animation: collegium-fade var(--collegium-dur) var(--collegium-ease-out) both;
 }
-@keyframes oap-fade {
+@keyframes collegium-fade {
   from {
     opacity: 0;
   }
 }
-@keyframes oap-fade-out {
+@keyframes collegium-fade-out {
   to {
     opacity: 0;
   }
 }
 
-.oap-pop {
-  transform-origin: var(--oap-pop-origin, top left);
-  animation: oap-pop var(--oap-dur) var(--oap-ease-out) both;
+.collegium-pop {
+  transform-origin: var(--collegium-pop-origin, top left);
+  animation: collegium-pop var(--collegium-dur) var(--collegium-ease-out) both;
 }
-@keyframes oap-pop {
+@keyframes collegium-pop {
   from {
     opacity: 0;
     transform: scale(0.96);
   }
 }
-.oap-pop[data-leaving="true"] {
+.collegium-pop[data-leaving="true"] {
   pointer-events: none;
-  animation: oap-pop-out var(--oap-dur-fast) var(--oap-ease-in) both;
+  animation: collegium-pop-out var(--collegium-dur-fast) var(--collegium-ease-in) both;
 }
-@keyframes oap-pop-out {
+@keyframes collegium-pop-out {
   to {
     opacity: 0;
     transform: scale(0.98);
   }
 }
 
-.oap-drawer {
-  animation: oap-drawer var(--oap-dur-slow) var(--oap-ease-out) both;
+.collegium-drawer {
+  animation: collegium-drawer var(--collegium-dur-slow) var(--collegium-ease-out) both;
 }
-@keyframes oap-drawer {
+@keyframes collegium-drawer {
   from {
     opacity: 0;
     transform: translateX(24px);
   }
 }
-.oap-drawer[data-leaving="true"] {
+.collegium-drawer[data-leaving="true"] {
   pointer-events: none;
-  animation: oap-drawer-out var(--oap-dur) var(--oap-ease-in) both;
+  animation: collegium-drawer-out var(--collegium-dur) var(--collegium-ease-in) both;
 }
-@keyframes oap-drawer-out {
+@keyframes collegium-drawer-out {
   to {
     opacity: 0;
     transform: translateX(24px);
   }
 }
 
-.oap-note {
-  animation: oap-enter var(--oap-dur) var(--oap-ease-out) both;
+.collegium-note {
+  animation: collegium-enter var(--collegium-dur) var(--collegium-ease-out) both;
 }
-.oap-note[data-leaving="true"] {
-  animation: oap-fade-out var(--oap-dur-fast) var(--oap-ease-in) both;
+.collegium-note[data-leaving="true"] {
+  animation: collegium-fade-out var(--collegium-dur-fast) var(--collegium-ease-in) both;
 }
 
 /* With motion reduced, nothing travels. Things that arrive or leave only fade, briefly. */
 @media (prefers-reduced-motion: reduce) {
-  .oap-press:active:not(:disabled) {
+  .collegium-press:active:not(:disabled) {
     transform: none;
   }
-  .oap-enter,
-  .oap-pop,
-  .oap-drawer,
-  .oap-note {
-    animation: oap-fade var(--oap-dur-fast) linear both;
+  .collegium-enter,
+  .collegium-pop,
+  .collegium-drawer,
+  .collegium-note {
+    animation: collegium-fade var(--collegium-dur-fast) linear both;
   }
-  .oap-pop[data-leaving="true"],
-  .oap-drawer[data-leaving="true"],
-  .oap-note[data-leaving="true"] {
-    animation: oap-fade-out var(--oap-dur-fast) linear both;
+  .collegium-pop[data-leaving="true"],
+  .collegium-drawer[data-leaving="true"],
+  .collegium-note[data-leaving="true"] {
+    animation: collegium-fade-out var(--collegium-dur-fast) linear both;
   }
 }
 
@@ -386,50 +386,50 @@ button.oap-tick:focus-visible {
  * and what is projected, so going over is drawn past the limit mark rather
  * than clipped at it.
  */
-.oap-meter-track {
+.collegium-meter-track {
   position: relative;
-  height: var(--oap-meter-h, 6px);
+  height: var(--collegium-meter-h, 6px);
   border-radius: 2px;
-  background: var(--oap-ink-faint);
+  background: var(--collegium-ink-faint);
 }
-.oap-meter-fill,
-.oap-meter-projected {
+.collegium-meter-fill,
+.collegium-meter-projected {
   position: absolute;
   inset: 0 auto 0 0;
   border-radius: 2px;
 }
-.oap-meter-fill {
+.collegium-meter-fill {
   background: var(--aui-fg);
 }
 /* What the period is heading for: hatched, so it is not read as money already spent. */
-.oap-meter-projected {
-  background: repeating-linear-gradient(135deg, var(--oap-ink) 0 2px, transparent 2px 5px);
+.collegium-meter-projected {
+  background: repeating-linear-gradient(135deg, var(--collegium-ink) 0 2px, transparent 2px 5px);
 }
-[data-usage="warning"] .oap-meter-fill {
+[data-usage="warning"] .collegium-meter-fill {
   background: var(--aui-warn);
 }
-[data-usage="over"] .oap-meter-fill {
+[data-usage="over"] .collegium-meter-fill {
   background: var(--aui-bad);
 }
 /* The warn threshold is a short notch. The limit is a full-height line that overhangs the track. */
-.oap-meter-warn,
-.oap-meter-limit {
+.collegium-meter-warn,
+.collegium-meter-limit {
   position: absolute;
   width: 0;
   border-left: 1px solid var(--aui-bg);
 }
-.oap-meter-warn {
+.collegium-meter-warn {
   inset: 0 auto 0 auto;
   border-left-style: dotted;
   border-left-color: var(--aui-muted);
 }
-.oap-meter-limit {
+.collegium-meter-limit {
   inset: -3px auto -3px auto;
   border-left: 2px solid var(--aui-fg);
 }
 
 /* A switch is a checkbox drawn as a track and a thumb. */
-.oap-switch {
+.collegium-switch {
   appearance: none;
   position: relative;
   width: 2rem;
@@ -440,7 +440,7 @@ button.oap-tick:focus-visible {
   cursor: pointer;
   transition: background 0.15s ease;
 }
-.oap-switch::after {
+.collegium-switch::after {
   content: "";
   position: absolute;
   top: 2px;
@@ -451,23 +451,23 @@ button.oap-tick:focus-visible {
   background: white;
   transition: transform 0.15s ease;
 }
-.oap-switch:checked {
+.collegium-switch:checked {
   background: var(--aui-accent);
 }
-.oap-switch:checked::after {
+.collegium-switch:checked::after {
   transform: translateX(0.875rem);
 }
-.oap-switch:focus-visible {
+.collegium-switch:focus-visible {
   outline: 2px solid var(--aui-accent);
   outline-offset: 2px;
 }
-.oap-switch:disabled {
+.collegium-switch:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
 @media (prefers-reduced-motion: reduce) {
-  .oap-switch,
-  .oap-switch::after {
+  .collegium-switch,
+  .collegium-switch::after {
     transition: none;
   }
 }

@@ -1,4 +1,4 @@
-// Command open-agent-platform runs the platform: API, sign-in, event stream,
+// Command collegium runs the platform: API, sign-in, event stream,
 // schedules and agent execution, in one process.
 package main
 
@@ -20,11 +20,11 @@ import (
 	"github.com/urmzd/opentag/pkg/envelope"
 	"github.com/urmzd/opentag/pkg/registry"
 
-	"github.com/urmzd/open-agent-platform/internal/httpapi"
-	"github.com/urmzd/open-agent-platform/internal/platform"
-	"github.com/urmzd/open-agent-platform/pkg/alerts"
-	"github.com/urmzd/open-agent-platform/pkg/auth"
-	"github.com/urmzd/open-agent-platform/pkg/call"
+	"github.com/urmzd/collegium/internal/httpapi"
+	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/call"
 )
 
 // Set at release time with -ldflags.
@@ -36,7 +36,7 @@ var (
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "open-agent-platform:", err)
+		fmt.Fprintln(os.Stderr, "collegium:", err)
 		os.Exit(1)
 	}
 }
@@ -47,7 +47,7 @@ func run(args []string) error {
 			fmt.Printf("%s (%s, %s)\n", version, commit, date)
 			return nil
 		}
-		return errors.New("usage: open-agent-platform serve [flags] | version")
+		return errors.New("usage: collegium serve [flags] | version")
 	}
 
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
@@ -56,9 +56,9 @@ func run(args []string) error {
 	tenant := fs.String("tenant", "default", "tenant every caller is confined to, unless -tenant-claim is set")
 	tenantClaim := fs.String("tenant-claim", "", "token claim that carries the caller's tenant")
 	groupsClaim := fs.String("groups-claim", "groups", "token claim that lists a person's groups")
-	adminGroup := fs.String("admin-group", "oap-admins", "identity provider group granted the admin role")
-	operatorGroup := fs.String("operator-group", "oap-operators", "identity provider group granted the operator role")
-	viewerGroup := fs.String("viewer-group", "oap-viewers", "identity provider group granted the viewer role")
+	adminGroup := fs.String("admin-group", "collegium-admins", "identity provider group granted the admin role")
+	operatorGroup := fs.String("operator-group", "collegium-operators", "identity provider group granted the operator role")
+	viewerGroup := fs.String("viewer-group", "collegium-viewers", "identity provider group granted the viewer role")
 	publicURL := fs.String("public-url", "http://localhost:8080", "where browsers reach this server")
 	webDir := fs.String("web", "", "directory of a built web console to serve")
 	maxDepth := fs.Int("max-depth", 4, "deepest an agent-to-agent call may land")
@@ -88,9 +88,9 @@ func run(args []string) error {
 		}}
 	case "oidc":
 		v, err := auth.NewVerifier(ctx, auth.OIDCConfig{
-			Issuer:      os.Getenv("OAP_OIDC_ISSUER"),
-			ClientID:    os.Getenv("OAP_OIDC_CLIENT_ID"),
-			Audience:    os.Getenv("OAP_OIDC_AUDIENCE"),
+			Issuer:      os.Getenv("COLLEGIUM_OIDC_ISSUER"),
+			ClientID:    os.Getenv("COLLEGIUM_OIDC_CLIENT_ID"),
+			Audience:    os.Getenv("COLLEGIUM_OIDC_AUDIENCE"),
 			Tenant:      *tenant,
 			TenantClaim: *tenantClaim,
 			GroupsClaim: *groupsClaim,
@@ -99,9 +99,9 @@ func run(args []string) error {
 			},
 		})
 		if err != nil {
-			return fmt.Errorf("%w (set OAP_OIDC_ISSUER, OAP_OIDC_CLIENT_ID, OAP_OIDC_CLIENT_SECRET and OAP_OIDC_AUDIENCE, or use -auth=dev locally)", err)
+			return fmt.Errorf("%w (set COLLEGIUM_OIDC_ISSUER, COLLEGIUM_OIDC_CLIENT_ID, COLLEGIUM_OIDC_CLIENT_SECRET and COLLEGIUM_OIDC_AUDIENCE, or use -auth=dev locally)", err)
 		}
-		authn, err = httpapi.NewAuthn(v, os.Getenv("OAP_OIDC_CLIENT_ID"), os.Getenv("OAP_OIDC_CLIENT_SECRET"), *publicURL,
+		authn, err = httpapi.NewAuthn(v, os.Getenv("COLLEGIUM_OIDC_CLIENT_ID"), os.Getenv("COLLEGIUM_OIDC_CLIENT_SECRET"), *publicURL,
 			[]string{"openid", "profile", "email", *groupsClaim})
 		if err != nil {
 			return err

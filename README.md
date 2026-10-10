@@ -1,9 +1,11 @@
 <p align="center">
-  <h1 align="center">open-agent-platform</h1>
+  <h1 align="center">collegium</h1>
   <p align="center">
     Spec-defined agents in sandboxes that call each other over one bus, with governance, human approvals, evals and telemetry built in.
   </p>
 </p>
+
+> Formerly `open-agent-platform`.
 
 > ## Status
 >

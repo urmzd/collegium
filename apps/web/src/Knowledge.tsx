@@ -353,7 +353,7 @@ function SourceDetail({
                       Searchable
                       <input
                         type="checkbox"
-                        className="oap-switch"
+                        className="collegium-switch"
                         checked={!d.excluded}
                         onChange={(e) =>
                           api

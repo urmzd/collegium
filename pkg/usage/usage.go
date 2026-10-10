@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/urmzd/open-agent-platform/pkg/policy"
+	"github.com/urmzd/collegium/pkg/policy"
 )
 
 // Kind is what a ledger entry records.

@@ -14,7 +14,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/urmzd/open-agent-platform/pkg/blob"
+	"github.com/urmzd/collegium/pkg/blob"
 )
 
 func body(t *testing.T, s blob.Store, tenant, key string) string {
