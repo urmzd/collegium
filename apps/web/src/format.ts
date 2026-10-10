@@ -21,8 +21,12 @@ export function cause(error: string | undefined): string {
   return lines[lines.length - 1]?.trim() ?? "";
 }
 
+/** A run that is over, however it ended: it finished, it failed, or it was stopped from outside. */
+export function isEnded(run: Pick<Run, "status">): boolean {
+  return run.status === "completed" || run.status === "failed" || run.status === "stopped";
+}
+
 /** How long a run took, or has taken so far. */
 export function elapsed(run: Run): number {
-  const ended = run.status === "completed" || run.status === "failed";
-  return Math.max((ended ? Date.parse(run.updated_at) : Date.now()) - Date.parse(run.created_at), 0);
+  return Math.max((isEnded(run) ? Date.parse(run.updated_at) : Date.now()) - Date.parse(run.created_at), 0);
 }

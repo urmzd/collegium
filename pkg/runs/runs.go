@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"slices"
 	"strconv"
 	"strings"
@@ -72,10 +73,38 @@ const (
 	Parked    Status = "parked"
 	Completed Status = "completed"
 	Failed    Status = "failed"
+	// Stopped is a run that was ended from outside: by a person, or because
+	// the run it was attached to ended. It did not fail. Its cause says which.
+	Stopped Status = "stopped"
 )
 
 // Terminal reports whether the run has ended.
-func (s Status) Terminal() bool { return s == Completed || s == Failed }
+func (s Status) Terminal() bool { return s == Completed || s == Failed || s == Stopped }
+
+// Lifecycle says whose lifetime a called run lives in.
+type Lifecycle string
+
+const (
+	// Attached runs live inside their caller's lifetime. The caller is not
+	// done until they are, and if the caller fails or is stopped, so are they.
+	Attached Lifecycle = "attached"
+	// Delegated runs have a lifetime of their own. They carry on whatever
+	// becomes of the run that started them.
+	Delegated Lifecycle = "delegated"
+)
+
+// lifecycleOf maps how a run was called to how long it lives. A subagent is
+// attached: its caller waits on it. A delegate is independent by definition,
+// and so is the receiver of a handoff, whose caller ends by handing over.
+func lifecycleOf(parent string, mode call.Mode) Lifecycle {
+	switch {
+	case parent == "":
+		return ""
+	case mode == call.Subagent:
+		return Attached
+	}
+	return Delegated
+}
 
 // Run is one run and its place in the tree.
 type Run struct {
@@ -92,6 +121,8 @@ type Run struct {
 	Parent string    `json:"parent,omitempty"`
 	Depth  int       `json:"depth"`
 	Mode   call.Mode `json:"mode,omitempty"`
+	// Lifecycle is set on a run another run called.
+	Lifecycle Lifecycle `json:"lifecycle,omitempty"`
 	// Schedule names the schedule that raised the run, if one did.
 	Schedule string `json:"schedule,omitempty"`
 
@@ -118,8 +149,14 @@ type Run struct {
 	// Answer is the final text of a completed run.
 	Answer string `json:"answer,omitempty"`
 	Error  string `json:"error,omitempty"`
-	// Reason says what a parked run is waiting for.
+	// Reason says what a parked run is waiting for, or that a run which has
+	// answered is waiting for the agents attached to it.
 	Reason string `json:"reason,omitempty"`
+	// Cause says why a stopped run was stopped.
+	Cause string `json:"cause,omitempty"`
+	// Finishing is true for a run that has its answer and is held open by
+	// attached runs that are still working.
+	Finishing bool `json:"finishing,omitempty"`
 
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
@@ -203,7 +240,8 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 	x.runs[runID] = &Run{
 		ID: runID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
 		Text: text, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project,
-		Root: runtime.RunID(edge.Root), Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lease: edge.Lease, Schedule: schedule,
+		Root: runtime.RunID(edge.Root), Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
+		Lease: edge.Lease, Schedule: schedule,
 		Status: Accepted, CreatedAt: tag.At, UpdatedAt: tag.At,
 		tag: tag,
 	}
@@ -246,7 +284,11 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 	case envelope.KindParked:
 		r.Status, r.Reason = Parked, body.Reason
 	case envelope.KindCompleted:
-		r.Status, r.Answer = Completed, body.Text
+		r.Answer = body.Text
+		if x.hold(r) {
+			return *r, false
+		}
+		r.Status = Completed
 	case envelope.KindFailed:
 		// A failed attempt may still be retried. Only a terminal failure
 		// ends the run.
@@ -284,14 +326,81 @@ func (x *Index) End(runID string, status Status, answer, failure string, at time
 	if !ok || r.Status.Terminal() || !status.Terminal() {
 		return Run{}, false
 	}
-	r.Status, r.UpdatedAt = status, at
 	if answer != "" {
 		r.Answer = answer
 	}
 	if failure != "" {
 		r.Error = failure
 	}
+	if status == Completed && x.hold(r) {
+		return Run{}, false
+	}
+	r.Status, r.UpdatedAt, r.Finishing, r.Reason = status, at, false, ""
 	return *r, true
+}
+
+// openAttached counts the runs attached to a run that have not ended. The
+// caller holds the lock.
+func (x *Index) openAttached(runID string) int {
+	n := 0
+	for _, c := range x.runs {
+		if c.Parent == runID && c.Lifecycle == Attached && !c.Status.Terminal() {
+			n++
+		}
+	}
+	return n
+}
+
+// hold keeps a run that has answered open while runs attached to it are still
+// working, and reports whether it did. The caller holds the lock.
+func (x *Index) hold(r *Run) bool {
+	n := x.openAttached(r.ID)
+	if n == 0 {
+		return false
+	}
+	r.Status, r.Finishing = Running, true
+	r.Reason = fmt.Sprintf("Waiting for %d attached agent(s) to finish", n)
+	return true
+}
+
+// Settle completes a run that was held open by attached runs, once none of
+// them is still working. It returns the run and whether this call ended it.
+func (x *Index) Settle(runID string, at time.Time) (Run, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r, ok := x.runs[runID]
+	if !ok || !r.Finishing || r.Status.Terminal() || x.openAttached(runID) > 0 {
+		return Run{}, false
+	}
+	r.Status, r.UpdatedAt, r.Finishing, r.Reason = Completed, at, false, ""
+	return *r, true
+}
+
+// Stop ends a run from outside and records why. It returns the run and whether
+// this call is what ended it. A stopped run ignores whatever its own events
+// say afterwards: the work may finish, and the answer is not taken.
+func (x *Index) Stop(runID, cause string, at time.Time) (Run, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r, ok := x.runs[runID]
+	if !ok || r.Status.Terminal() {
+		return Run{}, false
+	}
+	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason = Stopped, cause, at, false, ""
+	return *r, true
+}
+
+// AttachedTo returns the runs attached to a run that have not ended.
+func (x *Index) AttachedTo(runID string) []Run {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	var out []Run
+	for _, id := range x.order {
+		if c := x.runs[id]; c.Parent == runID && c.Lifecycle == Attached && !c.Status.Terminal() {
+			out = append(out, *c)
+		}
+	}
+	return out
 }
 
 // Recent counts an agent's runs that started since a time, and how many of

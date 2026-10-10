@@ -49,6 +49,7 @@ func (p *Platform) ended(ctx context.Context, run runs.Run) {
 		p.Usage.Append(usage.Entry{Kind: usage.Ended, Tenant: run.Tenant, RunID: run.ID, At: p.now()})
 	}
 	p.raise(run)
+	p.cascade(ctx, run)
 	switch {
 	case run.Origin == runs.OriginSystem:
 		p.fileHook(run)

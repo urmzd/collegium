@@ -26,3 +26,5 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace github.com/urmzd/opentag => ../opentag

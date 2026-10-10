@@ -2,7 +2,7 @@ import { emptyTurn, reduce, type Turn } from "@agent-ui/core";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { adapter, type BusEvent, type Run, turnOf } from "./adapter.ts";
 import { api, subscribe } from "./api.ts";
-import { AgentMark, agentOptions, ago, Chip, elapsed, Empty, hueOf, Menu, Page, rows, SearchField, Segmented, Status, Tape, took } from "./ui.tsx";
+import { AgentMark, agentOptions, ago, Chip, elapsed, Empty, hueOf, isEnded, Menu, Page, rows, SearchField, Segmented, Status, Tape, took } from "./ui.tsx";
 
 type Action = { type: "seed"; turn: Turn } | { type: "open" } | { type: "event"; event: BusEvent };
 
@@ -48,7 +48,7 @@ export function useRunTurn(run: Run | undefined): Turn | undefined {
     // A run that has ended is read from the journal, which still has its reasoning
     // and tool calls after the stream has let them go. Its record stands in until
     // then, and stays if the journal holds nothing.
-    if (run.status === "completed" || run.status === "failed") {
+    if (isEnded(run)) {
       let on = true;
       api
         .runEvents(id)
@@ -72,7 +72,7 @@ export function useRunTurn(run: Run | undefined): Turn | undefined {
 
 type Show = "all" | "live" | "failed" | "done";
 
-const live = (r: Run) => r.status !== "completed" && r.status !== "failed";
+const live = (r: Run) => !isEnded(r);
 
 /** Every word typed must appear somewhere a person would look for it. */
 function matches(r: Run, words: string[]): boolean {
@@ -199,7 +199,15 @@ export function RunList({ runs: all, onSelect }: { runs: Run[]; onSelect: (id: s
                       name={r.agent}
                       size={14}
                       state={
-                        r.status === "failed" ? "error" : r.status === "completed" ? "done" : r.status === "parked" ? "waiting" : "thinking"
+                        r.status === "failed"
+                          ? "error"
+                          : r.status === "completed"
+                            ? "done"
+                            : r.status === "stopped"
+                              ? "stopped"
+                              : r.status === "parked"
+                                ? "waiting"
+                                : "thinking"
                       }
                     />
                     <span className="w-28 shrink-0 truncate text-aui-sm font-medium text-aui-fg">{r.agent}</span>

@@ -47,6 +47,8 @@ const statusTone: Record<Run["status"], string> = {
   parked: "bg-aui-warn",
   completed: "bg-[var(--oap-ink)]",
   failed: "bg-aui-bad",
+  // Stopped from outside is not a failure, so it is not red.
+  stopped: "bg-[var(--oap-ink-faint)]",
 };
 
 const statusWord: Record<Run["status"], string> = {
@@ -55,6 +57,7 @@ const statusWord: Record<Run["status"], string> = {
   parked: "Waiting",
   completed: "Done",
   failed: "Failed",
+  stopped: "Stopped",
 };
 
 /** Status as a dot plus a word, so it never depends on color alone. */
@@ -91,7 +94,7 @@ export function ago(iso: string): string {
 }
 
 // Formatting with no React in it lives in format.ts, so plain modules and their tests can use it too.
-export { cause, elapsed, took, usd } from "./format.ts";
+export { cause, elapsed, isEnded, took, usd } from "./format.ts";
 
 /**
  * Every page sits in the same left-aligned column, so the title and the first
@@ -849,7 +852,8 @@ export function Stroke({
 
 /** Which stroke state a run's status is. */
 export function strokeOf(status: Run["status"]): StrokeState {
-  return status === "failed" ? "failed" : status === "parked" ? "waiting" : status === "completed" ? "done" : "working";
+  // A stopped run is at rest: it is neither working nor a failure.
+  return status === "failed" ? "failed" : status === "parked" ? "waiting" : status === "completed" ? "done" : status === "stopped" ? "idle" : "working";
 }
 
 /** Micro-USD as dollars, with zero shown as $0.00. For budgets, where zero is a real amount. */

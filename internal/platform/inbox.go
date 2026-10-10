@@ -70,7 +70,7 @@ func reads(k inbox.Kind) auth.Permission {
 	switch k {
 	case inbox.KindMemory:
 		return auth.AgentsRead
-	case inbox.KindFailure, inbox.KindApproval, inbox.KindClarification:
+	case inbox.KindFailure, inbox.KindApproval, inbox.KindClarification, inbox.KindResult:
 		return auth.RunsRead
 	}
 	return auth.AlertsRead
@@ -81,7 +81,7 @@ func writes(k inbox.Kind) auth.Permission {
 	switch k {
 	case inbox.KindMemory:
 		return auth.AgentsWrite
-	case inbox.KindFailure, inbox.KindApproval, inbox.KindClarification:
+	case inbox.KindFailure, inbox.KindApproval, inbox.KindClarification, inbox.KindResult:
 		return auth.RunsWrite
 	}
 	return auth.AlertsWrite

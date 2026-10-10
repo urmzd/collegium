@@ -7,12 +7,12 @@ import { CopyAs } from "./CopyAs.tsx";
 import { itemActions } from "./itemActions.tsx";
 import { toolOf } from "./copyas.ts";
 import { useRunTurn } from "./Runs.tsx";
-import { AgentMark, AgentTint, button, cause, elapsed, Empty, SkeletonRows, Status, Stroke, strokeOf, took } from "./ui.tsx";
+import { AgentMark, AgentTint, button, cause, elapsed, Empty, isEnded, SkeletonRows, Status, Stroke, strokeOf, took } from "./ui.tsx";
 
 /** One turn of the conversation and everything it called: the runs, and what each did. */
 export type Tree = { root: string; runs: Run[]; spans: Span[] };
 
-const live = (r: Run) => r.status !== "completed" && r.status !== "failed";
+const live = (r: Run) => !isEnded(r);
 
 /** How a run came to be, as a tag on its row and as a sentence in its detail. */
 const modeWord: Record<NonNullable<Run["mode"]>, string> = { subagent: "Subagent", handoff: "Handoff", delegate: "Delegated" };
@@ -112,6 +112,7 @@ function Row({ run, nth, tools, base, onOpen }: { run: Run; nth: number; tools: 
               {run.mode && run.depth > 0 && <span>{modeWord[run.mode]}</span>}
               {tools > 0 && <span>{tools === 1 ? "1 tool call" : `${tools} tool calls`}</span>}
               {run.status === "failed" && <span className="font-medium text-aui-fg">Failed</span>}
+              {run.status === "stopped" && <span className="font-medium text-aui-fg">Stopped</span>}
               {run.status === "parked" && <span className="font-medium text-aui-fg">Waiting on a person</span>}
             </span>
           </span>

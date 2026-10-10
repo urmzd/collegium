@@ -43,6 +43,8 @@ const (
 	KindBudget        Kind = "budget"
 	KindApproval      Kind = "approval"
 	KindClarification Kind = "clarification"
+	// KindResult is the answer of a run nobody was waiting on.
+	KindResult Kind = "result"
 )
 
 // State is where a message stands.

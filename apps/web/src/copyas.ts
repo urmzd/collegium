@@ -53,6 +53,8 @@ export function statusWord(run: Run): string {
       return run.reason ? `Waiting: ${run.reason}` : "Waiting on you";
     case "failed":
       return "Failed";
+    case "stopped":
+      return "Stopped";
     case "completed":
       return "Done";
   }
@@ -146,6 +148,7 @@ export function runMarkdown(run: Run, data: RunData): string {
     out.push("", "**Asked**", "", quote(r.text || "No request text"), "");
     if (r.answer) out.push("**Answered**", "", r.answer.trim(), "");
     if (r.status === "failed") out.push("**Failed**", "", cause(r.error) || "The run failed without saying why.", "");
+    if (r.status === "stopped") out.push("**Stopped**", "", r.cause || "The run was stopped before it finished.", "");
     const tools = toolsOf(data, r.id);
     if (tools.length > 0) {
       out.push("**Tools**", "");

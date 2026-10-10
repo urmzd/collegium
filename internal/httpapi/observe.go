@@ -153,7 +153,7 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request, who auth.Princ
 	type entry struct {
 		Run runs.Run `json:"run"`
 		// State is where the run stands, as the platform knows it:
-		// queued, running, waiting, failed or done.
+		// queued, running, waiting, failed, stopped or done.
 		State string `json:"state"`
 		// Cause is why a failed run failed, in one line.
 		Cause string `json:"cause,omitempty"`
@@ -165,13 +165,16 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request, who auth.Princ
 		Complete bool `json:"complete"`
 	}
 	states := map[runs.Status]string{
-		runs.Accepted: "queued", runs.Running: "running", runs.Parked: "waiting", runs.Failed: "failed", runs.Completed: "done",
+		runs.Accepted: "queued", runs.Running: "running", runs.Parked: "waiting", runs.Failed: "failed", runs.Completed: "done", runs.Stopped: "stopped",
 	}
 	out := make([]entry, 0, len(tree))
 	for _, run := range tree {
 		e := entry{Run: run, State: states[run.Status], DurationMs: run.UpdatedAt.Sub(run.CreatedAt).Milliseconds(), Events: []event{}}
 		if run.Status == runs.Failed {
 			e.Cause = journal.Cause(run.Error)
+		}
+		if run.Status == runs.Stopped {
+			e.Cause = run.Cause
 		}
 		if rev, err := s.P.Agents.Get(r.Context(), who.Tenant, run.Agent, run.Rev); err == nil {
 			e.Definition = &rev

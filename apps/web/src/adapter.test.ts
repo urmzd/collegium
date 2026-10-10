@@ -90,7 +90,7 @@ test("a call to another agent is that agent, not a tool", () => {
   const done = to(ev("delta.tool.done", { id: "t1", result: "Three tests fail." })).find((e) => e.type === "task.upserted");
   if (done?.type === "task.upserted") {
     assert.equal(done.task.status, "complete");
-    assert.deepEqual(done.task.subagent, { name: "helper", summary: "Three tests fail.", hue: undefined });
+    assert.deepEqual(done.task.subagent, { name: "helper", runId: undefined, summary: "Three tests fail.", hue: undefined });
   }
   const [, tinted] = adapter({ hue: () => 210 })(ev("delta.tool.call", { id: "t3", name: "tag_helper" }));
   if (tinted?.type === "task.upserted") {
@@ -142,4 +142,36 @@ test("a publish that is refused shows a failed file with the reason", () => {
   }
   // Another connector's action is not a file.
   assert.deepEqual(to(ev("action.taken", { name: "jira_transition" })), []);
+});
+
+test("a call to another agent learns which run it started", () => {
+  const to = adapter();
+  to(ev("delta.tool.call", { id: "t1", name: "tag_helper" }));
+  const [named] = to(ev("action.taken", { name: "tag_helper", data: { run: "run-9", agent: "helper", lifecycle: "attached" } }));
+  assert.equal(named?.type, "task.upserted");
+  if (named?.type === "task.upserted") {
+    assert.equal(named.task.id, "t1");
+    assert.equal(named.task.subagent?.runId, "run-9");
+    assert.equal(named.task.status, "in_progress");
+  }
+  // The run is still known when the answer comes back.
+  const done = to(ev("delta.tool.done", { id: "t1", result: "Three tests fail." })).find((e) => e.type === "task.upserted");
+  if (done?.type === "task.upserted") {
+    assert.equal(done.task.status, "complete");
+    assert.equal(done.task.subagent?.runId, "run-9");
+    assert.equal(done.task.subagent?.summary, "Three tests fail.");
+  }
+});
+
+test("work handed on without waiting is drawn as the agent it went to", () => {
+  const to = adapter();
+  const first = to(ev("delta.tool.call", { id: "t1", name: "delegate_task" })).find((e) => e.type === "task.upserted");
+  assert.equal(first?.type === "task.upserted" && first.task.subagent, undefined);
+  const [named] = to(ev("action.taken", { name: "delegate_task", data: { run: "run-4", agent: "worker", lifecycle: "delegated" } }));
+  if (named?.type === "task.upserted") {
+    assert.equal(named.task.title, "worker");
+    assert.deepEqual(named.task.subagent, { name: "worker", runId: "run-4", summary: undefined, hue: undefined });
+  } else {
+    assert.fail("no task for the run that was started");
+  }
 });

@@ -38,7 +38,21 @@ A subagent, a handoff and a delegation are the same call with a different mode.
 |------|----------------|-----------------------|----------------|
 | Subagent | Brief | Parks, then resumes | The caller |
 | Handoff | Compacted history | Ends | The original surface |
-| Delegate | Brief | Keeps working | The caller's inbox, later |
+| Delegate | Brief | Keeps working | The inbox, later |
+
+### One origin, two lifetimes
+
+Every run belongs to one origin: the run a person, a schedule or a trigger
+started. Runs nest under it as deep as the limits allow, and each records its
+origin, its caller and how it was called.
+
+| Lifetime | How it is started | If the caller fails or is stopped | When the caller answers first |
+|----------|-------------------|-----------------------------------|-------------------------------|
+| Attached | Tagging an agent, or a subagent call | It is stopped, and so is all that is attached to it | The caller is held open until it ends |
+| Delegated | `delegate_task`, or a delegate or handoff call | Nothing. It carries on | Nothing. The caller is done |
+
+What a delegated run attaches dies with it, not with whoever delegated to it.
+A run stopped this way is `stopped`, not `failed`, and says why.
 
 ### Detached branches
 
@@ -148,7 +162,10 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Storage limits per workspace, project and agent, as `max_storage` on a policy | Built. A refusal raises a message in the inbox |
 | Downloads: tenant and right checked on every request, always an attachment unless an inert type is asked for inline, never HTML or SVG inline | Built, tested |
 | Built-in agents: `oap-writer` writes a document and publishes it. Provided by the platform, not editable, present only when the server is given `-builtin-provider` and `-builtin-model` | Built. One agent. Not run against a real model here: no provider key was available |
-| Files for a turn delegated inside another agent's turn | Not built. opentag gives such a turn no run id, so the platform cannot tell which conversation it belongs to. An agent with the file tools must be the one answering |
+| Called agents are runs: an agent that tags another starts a run with its own id, events and record, in the caller's conversation and sandbox | Built, on opentag's `WithDelegator` hook. Needs the opentag branch `feat/delegated-runs`, pinned by a `replace` in `go.mod` until it is tagged |
+| Two lifetimes for a called run. Attached (tagged, the caller waits): ends with its caller, and the caller is not done until it is. Delegated (`delegate_task`, the caller carries on): independent, and its answer goes to the inbox | Built, tested three levels deep under the race detector |
+| Stopping a run: `POST /api/runs/{id}/stop` stops it and everything attached to it, with the cause recorded. What it delegated keeps running | Built. A stop is taken at the platform's edge: the run can start nothing more and its answer is discarded, but a model call in flight is not interrupted, because the runtime has no cancel |
+| A place is always kept for work that waits on nobody, so runs waiting on each other cannot fill every place and hang | Built. With `Concurrency` 4 by default, three runs may wait at once and a fourth is told no |
 | Publishing that waits for approval | Not built. A run cannot be parked on a person |
 | Run manifest: one JSON document of a run, every run under it, each pinned definition and every event with its body | Built, from the journal. A run older than the journal's ring comes back marked incomplete |
 | Token counts, context window and cost per run | Not available. The runtime reports none |
@@ -159,8 +176,8 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Connections: MCP servers, OAuth to third parties, stored credentials | Not built |
 | Schedule delivery to Slack, email or another system | Not built. Needs connections |
 | Call tool inside the sandbox | Not built. Calls are made through the API |
-| Returning a subagent's answer to a parked caller | Not built |
-| Cancel propagation down a tree | Not built |
+| Returning a subagent's answer to its caller | Built for a call made by tagging: the answer is the tool's result. A call made through the API is not returned to the caller's model |
+| Cancel propagation down a tree | Built through attached runs, as a stop at the platform's edge. See above |
 | Access intersection across a call | Not built |
 | `pkg/inbox`: one server inbox of messages with typed parts, per-person read state, paging, and a record of changes that rebuilds it | Built, in memory |
 | What lands in the inbox: fired alert rules, failed runs no rule caught, proposed memories, reached limits | Built. An alert and its message are one state: settling either settles both |
