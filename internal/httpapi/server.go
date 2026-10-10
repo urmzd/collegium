@@ -85,6 +85,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/{id}", s.authed(auth.RunsRead, s.getRun))
 	mux.HandleFunc("GET /api/runs/{id}/tree", s.authed(auth.RunsRead, s.runTree))
 	mux.HandleFunc("POST /api/runs/{id}/calls", s.authed(auth.RunsWrite, s.createCall))
+	mux.HandleFunc("POST /api/runs/{id}/stop", s.authed(auth.RunsWrite, s.stopRun))
 	mux.HandleFunc("GET /api/schedules", s.authed(auth.SchedulesRead, s.listSchedules))
 	mux.HandleFunc("POST /api/schedules", s.authed(auth.SchedulesWrite, s.createSchedule))
 	mux.HandleFunc("DELETE /api/schedules/{name}", s.authed(auth.SchedulesWrite, s.deleteSchedule))
@@ -459,6 +460,17 @@ func (s *Server) createCall(w http.ResponseWriter, r *http.Request, who auth.Pri
 	ok(w, http.StatusAccepted, run)
 }
 
+// stopRun stops a run and everything attached to it. Runs it delegated keep
+// going. Stopping a run that has ended changes nothing.
+func (s *Server) stopRun(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	run, err := s.P.StopRun(r.Context(), who, r.PathValue("id"))
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, run)
+}
+
 // events streams the caller's tenant's events as server-sent events.
 //
 // topic narrows it: "agent" is everything, "agent:<name>" one agent,
@@ -588,7 +600,8 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 		fail(w, http.StatusConflict, "that suite is already running")
 	case errors.Is(err, registry.ErrConflict):
 		fail(w, http.StatusConflict, "the agent was revised by someone else, reload and try again")
-	case errors.Is(err, platform.ErrForbidden), errors.Is(err, call.ErrDepth), errors.Is(err, call.ErrFanOut), errors.Is(err, call.ErrBudget):
+	case errors.Is(err, platform.ErrForbidden), errors.Is(err, call.ErrDepth), errors.Is(err, call.ErrFanOut), errors.Is(err, call.ErrBudget),
+		errors.Is(err, platform.ErrBusy):
 		fail(w, http.StatusForbidden, err.Error())
 	case errors.Is(err, call.ErrInvalid), errors.Is(err, registry.ErrInvalid), errors.Is(err, agentspec.ErrInvalid),
 		errors.Is(err, envelope.ErrInvalid), errors.Is(err, cron.ErrSchedule),

@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urmzd/dispatch/pkg/controlplane"
@@ -29,6 +30,7 @@ import (
 	dqueue "github.com/urmzd/duraturo/pkg/queue"
 	drun "github.com/urmzd/duraturo/pkg/run"
 	"github.com/urmzd/duraturo/pkg/worker"
+	"github.com/urmzd/opentag/pkg/agentrt"
 	"github.com/urmzd/opentag/pkg/bus"
 	"github.com/urmzd/opentag/pkg/connector"
 	"github.com/urmzd/opentag/pkg/connectors/cron"
@@ -73,7 +75,10 @@ type Config struct {
 	// run on. With either empty there are no built-in agents.
 	BuiltinProvider string
 	BuiltinModel    string
-	Log             *slog.Logger
+	// AgentOptions are passed to every agent the sandbox builds. A test
+	// uses them to script a model.
+	AgentOptions []agentrt.Option
+	Log          *slog.Logger
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 }
@@ -102,6 +107,8 @@ type Platform struct {
 
 	// dir is the workspace directory, resolved once.
 	dir string
+	// waiting counts runs that are waiting on a run attached to them.
+	waiting atomic.Int64
 	// publishing makes a storage check and the write it allows one step.
 	publishing sync.Mutex
 
@@ -212,6 +219,11 @@ func (p *Platform) executor() (runtime.Executor, error) {
 	plane := controlplane.NewMemory(inproc.NewFactory(tools, ws), metrics.Nop())
 	exec, err := runtime.NewSandbox(plane, tools, registry.NewSpecs(p.Agents),
 		runtime.WithCatalog(p.fileTools(runtime.Connectors(p.sinks))),
+		runtime.WithDelegator(p.attach),
+		// A run waiting on an attached run of the same agent holds one of
+		// that agent's nodes, so there are as many as there are places.
+		runtime.WithReplicas(p.slots()),
+		runtime.WithAgentOptions(p.cfg.AgentOptions...),
 		runtime.WithSandboxLogger(p.log),
 	)
 	if err != nil {
@@ -443,7 +455,7 @@ func (p *Platform) Run(ctx context.Context) error {
 	loop("worker", func() error {
 		return worker.New(p.ledger, p.queue,
 			worker.WithRegistry(p.rt.Registry()),
-			worker.WithConcurrency(max(p.cfg.Concurrency, 1)),
+			worker.WithConcurrency(p.slots()),
 			worker.WithLogger(p.log),
 		).Run(ctx)
 	})

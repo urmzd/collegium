@@ -45,7 +45,14 @@ export interface Run {
   lease: number;
   granted: number;
   calls: number;
-  status: "accepted" | "running" | "parked" | "completed" | "failed";
+  /** Stopped is ended from outside: by a person, or because the run it was attached to ended. */
+  status: "accepted" | "running" | "parked" | "completed" | "failed" | "stopped";
+  /** Set on a run another run called. Attached runs end with their caller, delegated ones do not. */
+  lifecycle?: "attached" | "delegated";
+  /** Why a stopped run was stopped. */
+  cause?: string;
+  /** The run has its answer and is waiting for runs attached to it. */
+  finishing?: boolean;
   answer?: string;
   error?: string;
   reason?: string;
@@ -95,6 +102,8 @@ interface Published {
 }
 /** The tool an agent publishes a file with. */
 const PUBLISH = "publish_artifact";
+/** The tool an agent hands work to another agent with, without waiting for it. */
+const HAND_ON = "delegate_task";
 /** opentag names the tool that hands work to another agent after that agent. */
 const DELEGATE = /^tag_(.+)$/;
 
@@ -127,11 +136,29 @@ export function adapter(opts: { /** An agent's colour, 0 to 360, so a call to it
 
   // A call to another agent is that agent doing a step, not a tool. The
   // called agent runs inside this turn and has no run of its own to open.
+  // The run each call to another agent started, by tool call. The platform
+  // says which run it was on the caller's stream, after the call opens.
+  const started = new Map<string, { run: string; agent: string }>();
+  // Calls to another agent that have not been told their run yet, per tool.
+  const calling = new Map<string, string[]>();
+  // What each task last looked like, so a later fact adds to it.
+  const shown = new Map<string, Partial<Task>>();
+
   const task = (id: string, name: string | undefined, rest: Partial<Task>): Task => {
-    const to = delegateOf(name);
+    const all = { ...shown.get(id), ...rest };
+    shown.set(id, all);
+    const run = started.get(id);
+    const to = delegateOf(name) ?? run?.agent;
     return to
-      ? { id, title: to, status: "in_progress", tool: name, ...rest, subagent: { name: to, summary: rest.output, hue: opts.hue?.(to) } }
-      : { id, title: title(name), status: "in_progress", tool: name, ...rest };
+      ? {
+          id,
+          title: to,
+          status: "in_progress",
+          tool: name,
+          ...all,
+          subagent: { name: to, runId: run?.run, summary: all.output, hue: opts.hue?.(to) },
+        }
+      : { id, title: title(name), status: "in_progress", tool: name, ...all };
   };
 
   return (e) => {
@@ -139,6 +166,9 @@ export function adapter(opts: { /** An agent's colour, 0 to 360, so a call to it
       case "lifecycle.accepted":
         streamed = false;
         tools.clear();
+        started.clear();
+        calling.clear();
+        shown.clear();
         return [{ type: "turn.started", turnId: e.run_id, agent: { name: e.agent } }];
       case "lifecycle.started":
       case "lifecycle.resumed":
@@ -171,6 +201,9 @@ export function adapter(opts: { /** An agent's colour, 0 to 360, so a call to it
           { type: "activity", activity: doing(t.name) },
           { type: "task.upserted", task: task(t.id, t.name, {}) },
         ];
+        if (t.name && (delegateOf(t.name) || t.name === HAND_ON)) {
+          calling.set(t.name, [...(calling.get(t.name) ?? []), t.id]);
+        }
         if (t.name === PUBLISH) {
           publishing.push(t.id);
           out.push({
@@ -191,6 +224,15 @@ export function adapter(opts: { /** An agent's colour, 0 to 360, so a call to it
       }
       case "action.taken": {
         const p = body<Published>(e);
+        const called = p.data as unknown as { run?: string; agent?: string } | undefined;
+        if (p.name && called?.run && (delegateOf(p.name) || p.name === HAND_ON)) {
+          // Which run a call to another agent started. From here the step
+          // can be opened as that run.
+          const id = calling.get(p.name)?.shift();
+          if (!id) return [];
+          started.set(id, { run: called.run, agent: called.agent ?? delegateOf(p.name) ?? "" });
+          return [{ type: "task.upserted", task: task(id, p.name, {}) }];
+        }
         if (p.name !== PUBLISH) return [];
         // The card the call opened, or a new one if this is all that is left
         // of the run's record.
@@ -304,6 +346,8 @@ export function turnOf(run: Run): Turn {
       ? "done"
       : run.status === "failed"
         ? "failed"
+        : run.status === "stopped"
+          ? "stopped"
         : run.status === "parked"
           ? "waiting"
           : run.status === "running"

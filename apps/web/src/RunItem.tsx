@@ -2,7 +2,7 @@ import type { Run } from "./adapter.ts";
 import { api } from "./api.ts";
 import { deliver, download } from "./CopyAs.tsx";
 import { COPY_LIMIT, type Format, fileName, formats, type Item, type RunData, redact, runManifest, statusWord } from "./copyas.ts";
-import { elapsed, FlashNote, Menu, type Option, Stroke, type StrokeState, strokeOf, took, UsageMeter, useFlash } from "./ui.tsx";
+import { elapsed, FlashNote, isEnded, Menu, type Option, Stroke, type StrokeState, strokeOf, took, UsageMeter, useFlash } from "./ui.tsx";
 
 export { runManifest, runMarkdown } from "./copyas.ts";
 
@@ -43,7 +43,7 @@ export function RunItem({
 }) {
   const { flash, say } = useFlash();
   const status = statusOf(run);
-  const ended = run.status === "completed" || run.status === "failed";
+  const ended = isEnded(run);
 
   // The menu is built from the run's formats before its call tree is fetched. Only the text needs the tree.
   const shape = formats({ kind: "run", run, data: { runs: [run], spans: [] } });

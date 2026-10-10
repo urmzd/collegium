@@ -5,6 +5,7 @@ import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { Run } from "./adapter.ts";
 import { ActivityPanel, ordered, ordinals, trailOf } from "./Activity.tsx";
+import { isEnded } from "./format.ts";
 import { sampleTrees } from "./activity.fixtures.ts";
 import { Alerts } from "./Alerts.tsx";
 import { StorageUsed, StoredDetail, StoredList } from "./Storage.tsx";
@@ -119,6 +120,8 @@ test("strokeOf: every run status has a stroke state", () => {
     parked: "waiting",
     completed: "done",
     failed: "failed",
+    // Stopped from outside: at rest, not working and not a failure.
+    stopped: "idle",
   };
   for (const [status, state] of Object.entries(want)) assert.equal(strokeOf(status as Run["status"]), state);
 });
@@ -939,4 +942,26 @@ test("an answer has exactly one copy control: the console's Copy as, in place of
   const plain = draw(false);
   assert.equal(plain.match(/aria-label="Copy answer"/g)?.length, 1, "with no host control, agent-ui's button is the one");
   assert.doesNotMatch(plain, /data-testid="item-copy"/);
+});
+
+test("a stopped run is over, is not a failure, and says why when the platform does", () => {
+  const stopped = runOf({ status: "stopped", cause: "Stopped by Ada" });
+  assert.equal(isEnded(stopped), true);
+  assert.equal(isEnded(runOf({ status: "running" })), false);
+  assert.deepEqual(statusOf(stopped), { word: "Stopped", state: "idle" });
+  const item = html(<RunItem run={stopped} />);
+  assert.match(item, /data-state="idle"/);
+  assert.match(item, />Stopped</);
+  assert.match(item, /1m 00s/, "it has a duration, because it ended");
+  const md = runMarkdown(stopped, { runs: [stopped], spans: [] });
+  assert.match(md, /- Status: Stopped/);
+  assert.match(md, /\*\*Stopped\*\*\n\nStopped by Ada/);
+  assert.doesNotMatch(md, /\*\*Failed\*\*/);
+
+  const [tree] = sampleTrees().slice(1);
+  assert.ok(tree);
+  const trees = [{ ...tree, runs: tree.runs.map((r) => (r.id === "r2b" ? { ...r, status: "stopped" as const } : r)) }];
+  const out = html(<ActivityPanel trees={trees} selected={null} onSelect={() => {}} onClose={() => {}} />);
+  assert.doesNotMatch(out, /data-testid="activity-running"/, "a stopped run does not count as running");
+  assert.match(out, /data-run="r2b"[^>]*data-status="stopped"/);
 });

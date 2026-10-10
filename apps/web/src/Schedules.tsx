@@ -44,6 +44,7 @@ function when(iso: string): string {
 const outcome: Record<Run["status"], { fill: string; word: string }> = {
   completed: { fill: "bg-aui-ok", word: "done" },
   failed: { fill: "bg-aui-bad", word: "failed" },
+  stopped: { fill: "bg-aui-neutral", word: "stopped" },
   parked: { fill: "bg-aui-warn", word: "waiting" },
   running: { fill: "bg-aui-neutral", word: "running" },
   accepted: { fill: "bg-aui-neutral", word: "queued" },
