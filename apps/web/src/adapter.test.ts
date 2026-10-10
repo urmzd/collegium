@@ -34,7 +34,7 @@ test("a streamed answer is not repeated on completion", () => {
   ].flatMap(to);
   assert.deepEqual(
     out.map((e) => e.type),
-    ["turn.started", "text.delta", "turn.completed"],
+    ["turn.started", "activity", "text.delta", "turn.completed"],
   );
 });
 
@@ -54,7 +54,7 @@ test("a retried attempt is not a failed turn", () => {
 test("a tool call keeps its name when the done event omits it", () => {
   const to = adapter();
   to(ev("delta.tool.call", { id: "t1", name: "github.comment", phase: "requested" }));
-  const [done] = to(ev("delta.tool.done", { id: "t1", result: "ok" }));
+  const done = to(ev("delta.tool.done", { id: "t1", result: "ok" })).find((e) => e.type === "task.upserted");
   assert.equal(done?.type, "task.upserted");
   if (done?.type === "task.upserted") {
     assert.equal(done.task.title, "Github comment");
@@ -66,4 +66,14 @@ test("parked means waiting, which must not animate", () => {
   assert.deepEqual(adapter()(ev("lifecycle.parked", { reason: "approval" })), [
     { type: "activity", activity: "waiting" },
   ]);
+});
+
+test("the orb is told what kind of work a tool call is", () => {
+  const activity = (name: string) => {
+    const [first] = adapter()(ev("delta.tool.call", { id: "t", name, phase: "requested" }));
+    return first?.type === "activity" ? first.activity : undefined;
+  };
+  assert.equal(activity("knowledge.search"), "searching");
+  assert.equal(activity("delegate_helper"), "delegating");
+  assert.equal(activity("github.comment"), "calling");
 });

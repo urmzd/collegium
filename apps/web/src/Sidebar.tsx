@@ -1,7 +1,8 @@
 import { BotIcon, ClockIcon, MessageIcon } from "@agent-ui/render-web";
-import type { ReactNode, SVGProps } from "react";
+import { type ReactNode, type SVGProps, useEffect, useRef, useState } from "react";
 import type { Me, Preferences, ThreadSummary } from "./api.ts";
 import { Avatar } from "./Settings.tsx";
+import { AgentMark, Menu, SearchField } from "./ui.tsx";
 
 export type View =
   | "chat"
@@ -164,19 +165,41 @@ export function Sidebar({
   const name = prefs?.display_name || who.name || who.email || who.subject;
   // Recents is what people asked for. Scheduled and eval runs live on their own
   // pages, so a timer cannot push a person's work off the list.
-  const recents = threads
-    .filter((t) => t.origin === "api" && (!project || t.project === project))
-    .slice(0, 40);
+  const [query, setQuery] = useState("");
+  const search = useRef<HTMLInputElement>(null);
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
+  const mine = threads.filter((t) => t.origin === "api" && (!project || t.project === project));
+  // A search looks through every conversation, not only the newest few.
+  const recents = (
+    words.length > 0
+      ? mine.filter((t) => {
+          const hay = `${t.title} ${t.agents.join(" ")} ${t.project ?? ""}`.toLowerCase();
+          return words.every((w) => hay.includes(w));
+        })
+      : mine
+  ).slice(0, 40);
+
+  // Cmd+K, or Ctrl+K, finds a conversation from anywhere, opening the sidebar if it is closed.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key.toLowerCase() !== "k" || !(e.metaKey || e.ctrlKey)) return;
+      e.preventDefault();
+      if (!open) onToggle();
+      window.setTimeout(() => search.current?.focus(), 0);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onToggle]);
 
   return (
     <aside
       aria-label="Navigation"
-      className={`oap-glass-bar flex shrink-0 flex-col border-aui-border border-r transition-[width] duration-200 motion-reduce:transition-none ${
+      className={`oap-glass-bar flex shrink-0 flex-col border-[var(--oap-rule)] border-r transition-[width] duration-200 motion-reduce:transition-none ${
         open ? "w-64" : "w-12"
       }`}
     >
       <div className={`flex h-12 items-center ${open ? "justify-between pr-2 pl-3.5" : "justify-center"}`}>
-        {open && <span className="truncate text-aui-sm font-semibold text-aui-fg">Open Agent Platform</span>}
+        {open && <span className="oap-display truncate text-aui-base font-semibold text-aui-fg">Open Agent Platform</span>}
         <button
           type="button"
           onClick={onToggle}
@@ -262,23 +285,33 @@ export function Sidebar({
           <div className="flex items-center justify-between gap-2 px-4 pb-1">
             <p className="text-aui-xs text-aui-muted">Recents</p>
             {projects.length > 0 && (
-              <select
-                aria-label="Show conversations in"
+              <Menu
+                quiet
+                align="right"
+                label="Show conversations in"
                 value={project}
-                onChange={(e) => onProject(e.target.value)}
-                className="h-6 max-w-28 cursor-pointer rounded-aui bg-transparent px-1 text-aui-xs text-aui-muted outline-none transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent"
-              >
-                <option value="">All projects</option>
-                {projects.map((p) => (
-                  <option key={p}>{p}</option>
-                ))}
-              </select>
+                options={[{ value: "", label: "All projects" }, ...projects.map((p) => ({ value: p, label: p }))]}
+                onChange={onProject}
+                className="-mr-1.5 [&>button]:h-6 [&>button]:text-aui-xs"
+              />
             )}
           </div>
-          <ul className="aui-scroll min-h-0 flex-1 overflow-y-auto px-2">
+          <SearchField
+            label="Search conversations"
+            hint="⌘K"
+            value={query}
+            onChange={setQuery}
+            inputRef={search}
+            className="mx-2 mb-1.5"
+          />
+          <ul className="aui-scroll min-h-0 flex-1 overflow-y-auto px-2" aria-label="Conversations">
             {recents.length === 0 && (
               <li className="px-2.5 py-1.5 text-aui-xs text-aui-muted">
-                {project ? "Nothing filed here yet." : "Your conversations appear here."}
+                {words.length > 0
+                  ? "No conversation matches. Search looks at titles, agents and projects."
+                  : project
+                    ? "Nothing filed here yet."
+                    : "Your conversations appear here."}
               </li>
             )}
             {recents.map((t) => (
@@ -289,13 +322,11 @@ export function Sidebar({
                   aria-current={view === "chat" && t.id === selected ? "page" : undefined}
                   className="flex h-8 w-full items-center gap-2 rounded-aui px-2 text-left text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg"
                 >
-                  {/* Color says how the conversation stands. The word is there for anyone who cannot see it. */}
-                  <span
-                    aria-hidden
-                    title={t.active > 0 ? "Running" : t.failed > 0 ? "A reply failed" : undefined}
-                    className={`size-1.5 shrink-0 rounded-full ${
-                      t.active > 0 ? "bg-aui-info" : t.failed > 0 ? "bg-aui-bad" : "bg-aui-neutral/50"
-                    }`}
+                  {/* The orb of the agent that last answered: moving while it works, red when a reply failed. */}
+                  <AgentMark
+                    name={t.agents[t.agents.length - 1] ?? "?"}
+                    size={12}
+                    state={t.active > 0 ? "thinking" : t.failed > 0 ? "error" : "idle"}
                   />
                   <span className="min-w-0 flex-1 truncate">{t.title}</span>
                   {t.active > 0 && <span className="sr-only">, running</span>}

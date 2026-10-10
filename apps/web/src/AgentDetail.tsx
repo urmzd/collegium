@@ -12,7 +12,7 @@ import {
   type SuiteView,
 } from "./api.ts";
 import { Evals } from "./Evals.tsx";
-import { AgentMark, ago, button, card, Chip, field, Label, Problem, primary, Switch, Tabs, took } from "./ui.tsx";
+import { AgentMark, ago, button, card, Chip, field, Label, Menu, Problem, primary, Switch, Tabs, took } from "./ui.tsx";
 
 type Tab = "prompt" | "setup" | "memory" | "evals" | "alerts" | "revisions";
 
@@ -87,6 +87,7 @@ const presets: { label: string; rule: (agent: string) => AlertRule }[] = [
 /** One agent: its prompt, its setup, how it is measured, and its history. */
 export function AgentDetail({
   revision,
+  startOn,
   agents,
   sources,
   suites,
@@ -106,6 +107,8 @@ export function AgentDetail({
 }: {
   /** null creates a new agent. */
   revision: Revision | null;
+  /** Open on the Memory tab, for someone arriving to review proposals. */
+  startOn?: "memory";
   agents: Revision[];
   sources: Source[];
   suites: SuiteView[];
@@ -132,12 +135,13 @@ export function AgentDetail({
     access: { spawn: [] },
   };
   const [spec, setSpec] = useState<AgentSpec>(saved);
-  const [tab, setTab] = useState<Tab>("prompt");
+  const [tab, setTab] = useState<Tab>(startOn === "memory" && revision ? "memory" : "prompt");
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState<Revision[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [note, setNote] = useState("");
+  const [picked, setPicked] = useState<Set<string>>(() => new Set());
   const set = (patch: Partial<AgentSpec>) => setSpec((s) => ({ ...s, ...patch }));
   const name = revision?.spec.name ?? "";
 
@@ -166,6 +170,9 @@ export function AgentDetail({
   };
   // biome-ignore lint/correctness/useExhaustiveDependencies: reload when the agent changes or its tab is opened
   useEffect(loadNotes, [name, tab]);
+
+  const kept = notes.filter((n) => n.status === "approved");
+  const proposed = notes.filter((n) => n.status === "pending");
 
   const dirty = useMemo(() => JSON.stringify(spec) !== JSON.stringify(saved), [spec, saved]);
   const myRules = rules.filter((r) => r.agent === name);
@@ -285,7 +292,7 @@ export function AgentDetail({
             { id: "setup", label: "Setup" },
             ...(revision
               ? ([
-                  { id: "memory", label: "Memory", count: notes.length },
+                  { id: "memory", label: "Memory", count: proposed.length },
                   { id: "evals", label: "Evals", count: mySuites.length },
                   { id: "alerts", label: "Alerts", count: myRules.length },
                   { id: "revisions", label: "Revisions", count: history.length },
@@ -354,16 +361,17 @@ export function AgentDetail({
           <section className="flex flex-col gap-3">
             <div className={`${card} grid grid-cols-1 gap-3 sm:grid-cols-2`}>
               <Label text="Provider" hint="Offline calls no model and needs no key.">
-                <select
-                  className={field}
+                <Menu
+                  label="Provider"
                   value={spec.provider}
                   disabled={!canWrite}
-                  onChange={(e) => set({ provider: e.target.value, model: models[e.target.value] ?? spec.model })}
-                >
-                  <option value="offline">offline</option>
-                  <option value="anthropic">anthropic</option>
-                  <option value="ollama">ollama</option>
-                </select>
+                  options={[
+                    { value: "offline", label: "offline", hint: "Calls no model. For trying the platform out." },
+                    { value: "anthropic", label: "anthropic" },
+                    { value: "ollama", label: "ollama", hint: "A model running on this machine." },
+                  ]}
+                  onChange={(provider) => set({ provider, model: models[provider] ?? spec.model })}
+                />
               </Label>
               <Label text="Model">
                 <input className={field} value={spec.model} disabled={!canWrite} onChange={(e) => set({ model: e.target.value })} />
@@ -467,19 +475,89 @@ export function AgentDetail({
                 </button>
               </form>
             )}
-            {notes.length === 0 ? (
+            {proposed.length > 0 && (
+              <div className={`${card} flex flex-col gap-2`}>
+                <h3 className="text-aui-sm font-medium text-aui-fg">Proposed by the memory agent ({proposed.length})</h3>
+                <p className="text-aui-xs text-aui-muted">
+                  Not in use yet. Tick what {name} should remember, then keep it. Discard the rest.
+                </p>
+                <ul>
+                  {proposed.map((n) => (
+                    <li key={n.id} className="border-aui-border border-t py-2 first:border-t-0">
+                      <label className="flex items-start gap-2.5 text-aui-sm text-aui-fg">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          disabled={!canWrite}
+                          checked={picked.has(n.id)}
+                          onChange={(e) =>
+                            setPicked((p) => {
+                              const next = new Set(p);
+                              if (e.target.checked) next.add(n.id);
+                              else next.delete(n.id);
+                              return next;
+                            })
+                          }
+                        />
+                        <span className="min-w-0">
+                          <span className="block">{n.text}</span>
+                          <span className="block text-aui-xs text-aui-muted">Proposed {ago(n.at)}</span>
+                        </span>
+                      </label>
+                    </li>
+                  ))}
+                </ul>
+                {canWrite && (
+                  <div className="flex flex-wrap justify-end gap-2">
+                    <button
+                      type="button"
+                      className={button}
+                      onClick={() =>
+                        Promise.all(
+                          proposed.filter((n) => picked.size === 0 || picked.has(n.id)).map((n) => api.removeMemory(name, n.id)),
+                        )
+                          .then(() => {
+                            setPicked(new Set());
+                            loadNotes();
+                          })
+                          .catch(() => {})
+                      }
+                    >
+                      {picked.size > 0 ? `Discard ${picked.size} Selected` : "Discard All"}
+                    </button>
+                    <button
+                      type="button"
+                      className={primary}
+                      disabled={picked.size === 0}
+                      onClick={() =>
+                        api
+                          .approveMemory(name, [...picked])
+                          .then(() => {
+                            setPicked(new Set());
+                            loadNotes();
+                          })
+                          .catch((err) => setProblem(err instanceof ApiError ? err.message : "Those could not be kept."))
+                      }
+                    >
+                      Keep {picked.size > 0 ? `${picked.size} Selected` : "Selected"}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+            {kept.length === 0 ? (
               <p className={`${card} text-aui-sm text-aui-muted`}>
-                Nothing yet. Write a note here, or choose a memory agent under Settings to have notes written after each
-                turn.
+                {name} remembers nothing yet. Write a note here, or choose a memory agent under Settings to have notes
+                proposed after each turn.
               </p>
             ) : (
               <ul className="oap-glass overflow-hidden rounded-aui-lg">
-                {notes.map((n) => (
+                {kept.map((n) => (
                   <li key={n.id} className="flex items-start justify-between gap-3 border-aui-border border-b px-4 py-2.5 last:border-b-0">
                     <span className="min-w-0">
                       <span className="block text-aui-sm text-aui-fg">{n.text}</span>
                       <span className="block text-aui-xs text-aui-muted">
-                        {n.source === "person" ? `Written by ${n.by}` : "Written by the memory agent"}, {ago(n.at)}
+                        {n.source === "person" ? `Written by ${n.by}` : "Proposed by the memory agent and approved"}, {ago(n.at)}
                       </span>
                     </span>
                     {canWrite && (

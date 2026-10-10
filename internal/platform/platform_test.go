@@ -312,7 +312,8 @@ func TestHousekeepingTitlesAndRemembers(t *testing.T) {
 		}
 		notes := p.Memory.List(tenant, "lead")
 		if named && len(notes) > 0 {
-			if notes[0].Source != "consolidated" || len(notes) > 3 {
+			// What the memory agent wrote is a proposal, not yet a memory.
+			if notes[0].Source != "consolidated" || notes[0].Status != "pending" || len(notes) > 3 {
 				t.Fatalf("notes = %+v", notes)
 			}
 			break
@@ -337,8 +338,22 @@ func TestHousekeepingTitlesAndRemembers(t *testing.T) {
 		t.Fatalf("%d system runs, want one title and one memory", system)
 	}
 
-	// The next turn is sent what the agent remembers.
-	second, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-2", Agent: "lead", Text: "And then?", After: first.ID})
+	// Until a person approves it, the next turn is sent none of it.
+	unapproved, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-2", Agent: "lead", Text: "And then?", After: first.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := unapproved.Tag().Text; strings.Contains(got, "What you remember") {
+		t.Fatalf("an unapproved proposal reached the agent: %q", got)
+	}
+	var ids []string
+	for _, n := range p.Memory.List(tenant, "lead") {
+		ids = append(ids, n.ID)
+	}
+	if n, err := p.Memory.Approve(tenant, "lead", ids); err != nil || n == 0 {
+		t.Fatalf("approved %d, %v", n, err)
+	}
+	second, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-3", Agent: "lead", Text: "And then?", After: first.ID})
 	if err != nil {
 		t.Fatal(err)
 	}

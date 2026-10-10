@@ -199,12 +199,20 @@ export interface Settings {
   projects: Project[];
   title_agent: string;
   memory_agent: string;
+  memory_auto_approve: boolean;
+}
+
+export interface Proposal {
+  agent: string;
+  note: Note;
 }
 
 export interface Note {
   id: string;
   text: string;
   source: "person" | "consolidated";
+  /** Pending notes are proposals: not used until a person approves them. */
+  status: "approved" | "pending";
   by?: string;
   at: string;
 }
@@ -316,6 +324,9 @@ export const api = {
     call<{ notes: Note[] }>("GET", `/api/agents/${encodeURIComponent(agent)}/memory`).then((r) => r.notes),
   addMemory: (agent: string, text: string) =>
     call<Note>("POST", `/api/agents/${encodeURIComponent(agent)}/memory`, { text }),
+  approveMemory: (agent: string, ids: string[]) =>
+    call<{ approved: number }>("POST", `/api/agents/${encodeURIComponent(agent)}/memory/approve`, { ids }),
+  pendingMemory: () => call<{ proposals: Proposal[] }>("GET", "/api/memory/pending").then((r) => r.proposals),
   removeMemory: (agent: string, id: string) =>
     call<void>("DELETE", `/api/agents/${encodeURIComponent(agent)}/memory/${encodeURIComponent(id)}`),
 

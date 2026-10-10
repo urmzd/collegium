@@ -14,6 +14,7 @@ import {
   api,
   type Me,
   type Preferences,
+  type Proposal,
   type Revision,
   type ScheduleView,
   type Settings as Workspace,
@@ -149,6 +150,8 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [view, setView] = useState<View>(can("runs:read") ? "chat" : "agents");
   const [thread, setThread] = useState<string | null>(null);
   const [agentName, setAgentName] = useState<string | null>(null);
+  const [agentTab, setAgentTab] = useState<"memory" | undefined>(undefined);
+  const [proposals, setProposals] = useState<Proposal[]>([]);
   const [open, setOpen] = useState(() => stored(SIDEBAR_KEY, window.innerWidth >= 768));
   const [project, setProject] = useState("");
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
@@ -184,6 +187,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     api.agents().then(setAgents).catch(() => {});
     api.settings().then(setWorkspace).catch(() => {});
   }, [can]);
+  const loadProposals = useCallback(() => {
+    if (can("agents:read")) api.pendingMemory().then(setProposals).catch(() => {});
+  }, [can]);
   const loadSources = useCallback(() => {
     if (can("knowledge:read")) api.sources().then(setSources).catch(() => {});
   }, [can]);
@@ -207,8 +213,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     loadAlerts();
     loadSchedules();
     loadSuites();
+    loadProposals();
     setTick((t) => t + 1);
-  }, [can, loadAlerts, loadSchedules, loadSuites]);
+  }, [can, loadAlerts, loadSchedules, loadSuites, loadProposals]);
 
   useEffect(() => {
     loadRuns();
@@ -260,13 +267,19 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     setThread(null);
     setView("chat");
   };
-  const openAgent = (name: string | null) => {
+  const openAgent = (name: string | null, tab?: "memory") => {
     setAgentName(name);
+    setAgentTab(tab);
     setView("agent");
   };
+  // Proposed memories, counted per agent, for the inbox.
+  const toReview = [...new Set(proposals.map((p) => p.agent))].map((agent) => ({
+    agent,
+    count: proposals.filter((p) => p.agent === agent).length,
+  }));
 
   const inbox = useMemo(() => inboxOf(runs, alerts, dismissed), [runs, alerts, dismissed]);
-  const waiting = inbox.filter((i) => i.state === "open").length;
+  const waiting = inbox.filter((i) => i.state === "open").length + proposals.length;
   const openAlerts = alerts.filter((a) => !a.acked_by).length;
   const stats = useMemo(() => new Map((day?.by_agent ?? []).map((g) => [g.name, g])), [day]);
   const editing = agents.find((a) => a.spec.name === agentName) ?? null;
@@ -338,6 +351,33 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
           {view === "inbox" && (
             <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
               <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-6">
+                {toReview.length > 0 && (
+                  <section className="oap-glass flex flex-col rounded-aui-lg p-4" aria-label="Memory to review">
+                    <h2 className="text-aui-sm font-medium text-aui-fg">Memory to review</h2>
+                    <p className="pb-2 text-aui-xs text-aui-muted">
+                      The memory agent proposed these. Nothing is remembered until you choose what to keep.
+                    </p>
+                    <ul>
+                      {toReview.map((r) => (
+                        <li key={r.agent} className="flex items-center justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
+                          <span className="text-aui-sm text-aui-fg">
+                            {r.agent}
+                            <span className="pl-2 text-aui-xs text-aui-muted">
+                              {r.count} {r.count === 1 ? "note" : "notes"} proposed
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            className="inline-flex h-8 items-center rounded-aui border border-aui-border px-3 text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+                            onClick={() => openAgent(r.agent, "memory")}
+                          >
+                            Review
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                )}
                 <WebSurface onAction={onInbox}>
                   <Inbox items={inbox} onAction={onInbox} viewer={shownName} />
                 </WebSurface>
@@ -352,6 +392,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
           {view === "agents" && (
             <Agents
               agents={agents}
+              runs={runs}
               stats={stats}
               baseline={workspace?.baseline ?? ""}
               canWrite={can("agents:write")}
@@ -361,8 +402,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
           )}
           {view === "agent" && (
             <AgentDetail
-              key={agentName ?? "new"}
+              key={`${agentName ?? "new"}:${agentTab ?? ""}`}
               revision={editing}
+              startOn={agentTab}
               agents={agents}
               sources={sources}
               suites={suites}

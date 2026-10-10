@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { type Alert, type AlertRule, ApiError, api, type Revision } from "./api.ts";
-import { ago, button, card, cause, Chip, Empty, field, Label, Page, Problem, primary } from "./ui.tsx";
+import { agentOptions, ago, button, card, cause, Chip, Empty, field, Label, Menu, Page, Problem, primary } from "./ui.tsx";
 
 const kindLabel: Record<AlertRule["kind"], string> = {
   run_failed: "A run fails",
@@ -209,42 +209,37 @@ function RuleForm({ agents, onClose, onSaved }: { agents: Revision[]; onClose: (
           <input className={field} value={rule.name} required onChange={(e) => set({ name: e.target.value })} />
         </Label>
         <Label text="Raise an alert when">
-          <select
-            className={field}
+          <Menu
+            label="Raise an alert when"
             value={rule.kind}
-            onChange={(e) => {
-              const kind = e.target.value as AlertRule["kind"];
+            options={Object.entries(kindLabel).map(([k, label]) => ({ value: k as AlertRule["kind"], label }))}
+            onChange={(kind) =>
               set({
                 kind,
                 threshold: kind === "failure_rate" ? 50 : kind === "slow_run" ? 60 : kind === "eval_below" ? 80 : undefined,
                 min_runs: kind === "failure_rate" ? 5 : undefined,
-              });
-            }}
-          >
-            {Object.entries(kindLabel).map(([k, label]) => (
-              <option key={k} value={k}>
-                {label}
-              </option>
-            ))}
-          </select>
+              })
+            }
+          />
         </Label>
         <Label text="For">
-          <select className={field} value={rule.agent ?? ""} onChange={(e) => set({ agent: e.target.value })}>
-            <option value="">Any agent</option>
-            {agents.map((a) => (
-              <option key={a.spec.name}>{a.spec.name}</option>
-            ))}
-          </select>
+          <Menu
+            label="For"
+            value={rule.agent ?? ""}
+            options={agentOptions(agents.map((a) => a.spec.name), "Any agent")}
+            onChange={(agent) => set({ agent })}
+          />
         </Label>
         <Label text="Severity">
-          <select
-            className={field}
+          <Menu
+            label="Severity"
             value={rule.severity}
-            onChange={(e) => set({ severity: e.target.value as AlertRule["severity"] })}
-          >
-            <option value="critical">Critical</option>
-            <option value="warning">Warning</option>
-          </select>
+            options={[
+              { value: "critical", label: "Critical" },
+              { value: "warning", label: "Warning" },
+            ]}
+            onChange={(severity) => set({ severity })}
+          />
         </Label>
         {rule.kind === "slow_run" && (
           <Label text="Longer than (seconds)">

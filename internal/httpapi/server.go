@@ -69,6 +69,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/agents/{name}/memory", s.authed(auth.AgentsRead, s.listMemory))
 	mux.HandleFunc("POST /api/agents/{name}/memory", s.authed(auth.AgentsWrite, s.addMemory))
 	mux.HandleFunc("DELETE /api/agents/{name}/memory/{id}", s.authed(auth.AgentsWrite, s.removeMemory))
+	mux.HandleFunc("POST /api/agents/{name}/memory/approve", s.authed(auth.AgentsWrite, s.approveMemory))
+	mux.HandleFunc("GET /api/memory/pending", s.authed(auth.AgentsRead, s.pendingMemory))
 	mux.HandleFunc("GET /api/runs", s.authed(auth.RunsRead, s.listRuns))
 	mux.HandleFunc("POST /api/runs", s.authed(auth.RunsWrite, s.createRun))
 	mux.HandleFunc("GET /api/threads", s.authed(auth.RunsRead, s.listThreads))
@@ -225,12 +227,38 @@ func (s *Server) addMemory(w http.ResponseWriter, r *http.Request, who auth.Prin
 		s.problem(w, err)
 		return
 	}
-	note, err := s.P.Memory.Add(who.Tenant, r.PathValue("name"), body.Text, memory.Person, who.Subject, time.Now())
+	// A person writing a note is the approval.
+	note, err := s.P.Memory.Add(who.Tenant, r.PathValue("name"), body.Text, memory.Person, memory.Approved, who.Subject, time.Now())
 	if err != nil {
 		s.problem(w, err)
 		return
 	}
 	ok(w, http.StatusCreated, note)
+}
+
+// approveMemory keeps the proposals a person selected. The rest stay pending
+// until they are approved or discarded.
+func (s *Server) approveMemory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	var body struct {
+		IDs []string `json:"ids"`
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if _, err := s.P.Agents.Get(r.Context(), who.Tenant, r.PathValue("name"), 0); err != nil {
+		s.problem(w, err)
+		return
+	}
+	n, err := s.P.Memory.Approve(who.Tenant, r.PathValue("name"), body.IDs)
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	ok(w, http.StatusOK, map[string]int{"approved": n})
+}
+
+func (s *Server) pendingMemory(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
+	ok(w, http.StatusOK, map[string]any{"proposals": orEmpty(s.P.Memory.Pending(who.Tenant))})
 }
 
 func (s *Server) removeMemory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
@@ -468,6 +496,8 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 		errors.Is(err, alerts.ErrInvalid), errors.Is(err, knowledge.ErrInvalid), errors.Is(err, evals.ErrInvalid),
 		errors.Is(err, prefs.ErrInvalid), errors.Is(err, memory.ErrInvalid):
 		fail(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, memory.ErrSensitive):
+		fail(w, http.StatusBadRequest, "that note carries personal data, such as an email address or a card number, so it was not stored")
 	case errors.As(err, &tooBig):
 		fail(w, http.StatusRequestEntityTooLarge, "request is too large")
 	default:

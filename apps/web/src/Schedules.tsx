@@ -1,7 +1,7 @@
 import { type FormEvent, useState } from "react";
 import type { Run } from "./adapter.ts";
 import { ApiError, api, type Revision, type Schedule, type ScheduleView } from "./api.ts";
-import { ago, button, card, Chip, Empty, field, Label, Page, Problem, primary } from "./ui.tsx";
+import { agentOptions, ago, button, card, Chip, Empty, field, Label, Menu, Page, Problem, primary } from "./ui.tsx";
 
 const presets: { label: string; expression: string }[] = [
   { label: "Every minute", expression: "* * * * *" },
@@ -141,13 +141,12 @@ export function Schedules({
               <input className={field} value={draft.name} required onChange={(e) => set({ name: e.target.value })} />
             </Label>
             <Label text="Send to agent">
-              <select className={field} value={agent} onChange={(e) => set({ agent: e.target.value })}>
-                {agents.map((a) => (
-                  <option key={a.spec.name} value={a.spec.name}>
-                    {a.spec.name}
-                  </option>
-                ))}
-              </select>
+              <Menu
+                label="Send to agent"
+                value={agent}
+                options={agentOptions(agents.map((a) => a.spec.name))}
+                onChange={(next) => set({ agent: next })}
+              />
             </Label>
             <Label text="How often" hint={`${inWords(draft.expression)}. Fields: minute hour day month weekday.`}>
               <input

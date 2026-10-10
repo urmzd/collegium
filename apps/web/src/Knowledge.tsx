@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { ApiError, api, type Doc, type Hit, type Revision, type Source, type SuiteView } from "./api.ts";
 import { Evals } from "./Evals.tsx";
-import { ago, button, card, Chip, Empty, field, Label, Page, Problem, primary } from "./ui.tsx";
+import { ago, button, card, Chip, Empty, field, Label, Menu, Page, Problem, primary } from "./ui.tsx";
 
 export function Knowledge({
   sources,
@@ -242,22 +242,19 @@ function SourceDetail({
             onChange={(e) => setQuery(e.target.value)}
           />
           {source.variants.length > 0 && (
-            <select
-              aria-label="Search in"
-              className={`${field} w-auto shrink-0`}
+            <Menu
+              label="Search in"
+              className="w-44 shrink-0"
               value={variant}
-              onChange={(e) => {
-                setVariant(e.target.value);
+              options={[
+                { value: "", label: "Current view" },
+                ...source.variants.map((v) => ({ value: v.name, label: v.name })),
+              ]}
+              onChange={(next) => {
+                setVariant(next);
                 setHits(null);
               }}
-            >
-              <option value="">Current view</option>
-              {source.variants.map((v) => (
-                <option key={v.name} value={v.name}>
-                  {v.name}
-                </option>
-              ))}
-            </select>
+            />
           )}
           <button type="submit" className={button}>
             Search

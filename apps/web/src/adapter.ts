@@ -108,8 +108,15 @@ export function adapter(): (e: BusEvent) => TurnEvent[] {
       case "delta.text": {
         const text = body<{ text: string }>(e).text ?? "";
         if (!text) return [];
+        // The first words of an answer are the moment it starts composing.
+        const first = !streamed;
         streamed = true;
-        return [{ type: "text.delta", text }];
+        return first
+          ? [
+              { type: "activity", activity: "composing" },
+              { type: "text.delta", text },
+            ]
+          : [{ type: "text.delta", text }];
       }
       case "delta.thinking": {
         const text = body<{ text: string }>(e).text ?? "";
@@ -120,7 +127,7 @@ export function adapter(): (e: BusEvent) => TurnEvent[] {
         if (!t.id) return [];
         tools.set(t.id, t.name ?? "tool");
         return [
-          { type: "activity", activity: "calling" },
+          { type: "activity", activity: doing(t.name) },
           {
             type: "task.upserted",
             task: { id: t.id, title: title(t.name), status: "in_progress", tool: t.name },
@@ -132,6 +139,7 @@ export function adapter(): (e: BusEvent) => TurnEvent[] {
         if (!t.id) return [];
         const name = t.name ?? tools.get(t.id);
         return [
+          { type: "activity", activity: "thinking" },
           {
             type: "task.upserted",
             task: {
@@ -181,6 +189,14 @@ export function adapter(): (e: BusEvent) => TurnEvent[] {
         return [];
     }
   };
+}
+
+/** What a tool call looks like from outside: looking something up, handing work on, or acting. */
+function doing(tool?: string): "searching" | "delegating" | "calling" {
+  const name = (tool ?? "").toLowerCase();
+  if (/^(delegate|call|agent)[_:.]|subagent|handoff/.test(name)) return "delegating";
+  if (/search|recall|retriev|lookup|find|read|fetch|get/.test(name)) return "searching";
+  return "calling";
 }
 
 /** Runtime errors nest one per line, and the cause is the last. */

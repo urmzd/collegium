@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { api, type Bucket, type Entry, type Group, type Revision, type Summary } from "./api.ts";
-import { button, card, Chip, Empty, field, Page, Stat, took } from "./ui.tsx";
+import { agentOptions, button, card, Chip, Empty, field, figures, Menu, Page, Stat, took } from "./ui.tsx";
 
 const windows = [
   { id: "15m", label: "15 minutes" },
@@ -9,13 +9,13 @@ const windows = [
   { id: "168h", label: "7 days" },
 ];
 
-// How a run ended is a state, so these are the design system's status colors,
-// each paired with a label wherever it appears. Failed sits on top of the
-// stack and completed at the base, so the two are told apart by position as
-// well as hue.
+// Finished work is ink, as it is on the run tape. Only what is in flight or
+// failed takes a color, each paired with a label wherever it appears. Failed
+// sits on top of the stack and completed at the base, so the two are told
+// apart by position as well as hue.
 const series = [
-  { key: "completed", label: "Completed", fill: "var(--aui-ok)" },
-  { key: "active", label: "In flight", fill: "var(--aui-neutral)" },
+  { key: "completed", label: "Completed", fill: "var(--oap-ink)" },
+  { key: "active", label: "In flight", fill: "var(--aui-accent)" },
   { key: "failed", label: "Failed", fill: "var(--aui-bad)" },
 ] as const;
 
@@ -193,7 +193,7 @@ function Breakdown({ title, groups, onPick }: { title: string; groups: Group[]; 
                   <span className="flex items-center gap-2">
                     <span
                       aria-hidden
-                      className="h-2 rounded-r-aui-sm bg-aui-accent"
+                      className="h-2 rounded-r-aui-sm bg-[var(--oap-ink)]"
                       style={{ width: `${Math.max((100 * g.runs) / max, 1.5)}%`, maxWidth: "calc(100% - 2.5rem)" }}
                     />
                     <span className="tabular-nums text-aui-fg">{g.runs}</span>
@@ -260,19 +260,20 @@ function Journal({
         Every event agents published in this window, newest first. Held in memory, so it starts empty after a restart.
       </p>
       <form onSubmit={submit} className="flex flex-wrap items-center gap-2 pb-3">
-        <select aria-label="Agent" className={`${field} w-auto`} value={agent} onChange={(e) => onAgent(e.target.value)}>
-          <option value="">All agents</option>
-          {agents.map((a) => (
-            <option key={a.spec.name}>{a.spec.name}</option>
-          ))}
-        </select>
-        <select aria-label="Event kind" className={`${field} w-auto`} value={kind} onChange={(e) => setKind(e.target.value)}>
-          {kinds.map((k) => (
-            <option key={k} value={k}>
-              {k || "All events"}
-            </option>
-          ))}
-        </select>
+        <Menu
+          label="Agent"
+          className="w-44"
+          value={agent}
+          options={agentOptions(agents.map((a) => a.spec.name), "All agents")}
+          onChange={onAgent}
+        />
+        <Menu
+          label="Event kind"
+          className="w-48"
+          value={kind}
+          options={kinds.map((k) => ({ value: k, label: k || "All events" }))}
+          onChange={setKind}
+        />
         <input
           aria-label="Contains"
           className={`${field} min-w-40 flex-1`}
@@ -386,7 +387,7 @@ export function Analytics({
         <Empty title="Loading" />
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-3 md:grid-cols-5">
+          <div className={figures}>
             <Stat label="Runs" value={String(t.runs)} note={`${summary.delegated} called by another agent`} />
             <Stat label="Success rate" value={rate(t)} note={`${t.failed} failed, ${t.active} in flight`} />
             <Stat label="Median duration" value={t.p50_ms ? took(t.p50_ms) : "–"} note="Of runs that ended" />

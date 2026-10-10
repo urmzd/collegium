@@ -1,5 +1,6 @@
-import { BotIcon } from "@agent-ui/render-web";
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { CheckIcon, ChevronDownIcon, XIcon } from "@agent-ui/render-web";
+import { AgentOrb, type OrbSize, type OrbState } from "@agent-ui/web";
+import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
 
 export const field =
@@ -32,9 +33,9 @@ export function Problem({ message }: { message: string | null }) {
 
 export function Empty({ title, children }: { title: string; children?: ReactNode }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-1 px-6 py-16 text-center">
-      <p className="text-aui-sm font-medium text-aui-fg">{title}</p>
-      {children && <p className="max-w-sm text-aui-sm text-aui-muted">{children}</p>}
+    <div className="flex flex-col gap-1 py-10">
+      <p className="oap-display text-aui-lg font-medium text-aui-fg">{title}</p>
+      {children && <p className="max-w-md text-aui-sm text-aui-muted">{children}</p>}
     </div>
   );
 }
@@ -43,7 +44,7 @@ const statusTone: Record<Run["status"], string> = {
   accepted: "bg-aui-neutral",
   running: "bg-aui-info",
   parked: "bg-aui-warn",
-  completed: "bg-aui-ok",
+  completed: "bg-[var(--oap-ink)]",
   failed: "bg-aui-bad",
 };
 
@@ -109,29 +110,33 @@ export function cause(error: string | undefined): string {
   return lines[lines.length - 1]?.trim() ?? "";
 }
 
+/**
+ * Every page sits in the same left-aligned column, so the title and the first
+ * row of content start at the same place wherever a person goes.
+ */
 export function Page({
   title,
   lede,
   actions,
-  wide,
   children,
 }: {
   title: string;
   lede: string;
   actions?: ReactNode;
+  /** Kept for callers. Pages share one width now. */
   wide?: boolean;
   children: ReactNode;
 }) {
   return (
     <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
-      <div className={`mx-auto flex w-full flex-col gap-4 px-4 py-6 ${wide ? "max-w-5xl" : "max-w-3xl"}`}>
-        <div className="flex flex-wrap items-start justify-between gap-3">
+      <div className="flex w-full max-w-[68rem] flex-col gap-6 px-5 pt-8 pb-12 md:px-10">
+        <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <div className="min-w-0">
-            <h1 className="text-aui-xl font-semibold text-aui-fg">{title}</h1>
-            <p className="max-w-2xl text-aui-sm text-aui-muted">{lede}</p>
+            <h1 className="oap-display text-[1.875rem] leading-[1.15] font-semibold text-aui-fg">{title}</h1>
+            <p className="max-w-[62ch] pt-1.5 text-aui-sm text-aui-muted">{lede}</p>
           </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
-        </div>
+        </header>
         {children}
       </div>
     </div>
@@ -140,13 +145,104 @@ export function Page({
 
 export const card = "oap-glass rounded-aui-lg p-4";
 
+/** A list of rows on hairlines, with no box around it. */
+export const rows = "divide-y divide-[var(--oap-rule)] border-[var(--oap-rule)] border-y";
+
+/** Figures side by side on one rule. Wrap a row of `Stat`s in it. */
+export const figures =
+  "grid grid-cols-2 gap-x-8 gap-y-5 border-[var(--oap-rule)] border-y py-5 sm:grid-cols-3 lg:grid-cols-5";
+
 /** A figure with its label. The value is ink, never a status color. */
 export function Stat({ label, value, note }: { label: string; value: string; note?: string }) {
   return (
-    <div className={`${card} flex flex-col gap-1`}>
+    <div className="flex min-w-0 flex-col">
       <span className="text-aui-xs text-aui-muted">{label}</span>
-      <span className="text-aui-xl font-semibold text-aui-fg">{value}</span>
+      <span className="oap-display pt-0.5 text-[1.75rem] leading-9 font-semibold text-aui-fg">{value}</span>
       {note && <span className="text-aui-2xs text-aui-muted">{note}</span>}
+    </div>
+  );
+}
+
+/** How long a run took, or has taken so far. */
+export function elapsed(run: Run): number {
+  const ended = run.status === "completed" || run.status === "failed";
+  return Math.max((ended ? Date.parse(run.updated_at) : Date.now()) - Date.parse(run.created_at), 0);
+}
+
+/** The longest run in a set, as the scale a tape is drawn against. */
+export function longest(runs: Run[]): number {
+  return runs.reduce((max, r) => Math.max(max, elapsed(r)), 0);
+}
+
+/** What a tape says, for anyone who cannot see it. */
+function tally(runs: Run[]): string {
+  if (runs.length === 0) return "No runs yet";
+  const count = (s: Run["status"]) => runs.filter((r) => r.status === s).length;
+  const parts = [`${runs.length} ${runs.length === 1 ? "run" : "runs"}`];
+  for (const [status, word] of [
+    ["failed", "failed"],
+    ["running", "running"],
+    ["parked", "waiting"],
+  ] as const) {
+    if (count(status) > 0) parts.push(`${count(status)} ${word}`);
+  }
+  return parts.join(", ");
+}
+
+/**
+ * The run tape: the most recent runs, oldest on the left, one tick each. A
+ * tick's height is how long the run took, on a log scale so a slow run stands
+ * out without flattening the rest. Pass `onOpen` to make each tick open its run.
+ */
+export function Tape({
+  runs,
+  slots = 40,
+  scale,
+  tall,
+  onOpen,
+  className = "",
+}: {
+  /** Any order. The newest `slots` are drawn. */
+  runs: Run[];
+  slots?: number;
+  /** The duration, in ms, that fills the tape. Share one across tapes to compare them. */
+  scale?: number;
+  tall?: boolean;
+  onOpen?: (id: string) => void;
+  className?: string;
+}) {
+  const shown = [...runs].sort((a, b) => a.created_at.localeCompare(b.created_at)).slice(-slots);
+  const top = Math.log1p(Math.max(scale ?? longest(shown), 1));
+  const blanks = Array.from({ length: Math.max(slots - shown.length, 0) }, (_, i) => i);
+  const style = tall ? ({ "--oap-tape-h": "2.75rem" } as React.CSSProperties) : undefined;
+  return (
+    <div
+      role={onOpen ? "group" : "img"}
+      aria-label={`Recent runs. ${tally(shown)}.`}
+      className={`oap-tape ${className}`}
+      style={style}
+    >
+      {blanks.map((i) => (
+        <span key={i} aria-hidden className="oap-tick" data-status="none" />
+      ))}
+      {shown.map((r) => {
+        const t = { "--t": Math.min(Math.log1p(elapsed(r)) / top, 1).toFixed(3) } as React.CSSProperties;
+        const label = `${r.agent}, ${statusWord[r.status].toLowerCase()}, ${took(elapsed(r))}, ${ago(r.created_at)}`;
+        return onOpen ? (
+          <button
+            key={r.id}
+            type="button"
+            className="oap-tick"
+            data-status={r.status}
+            style={t}
+            title={label}
+            aria-label={`Open run: ${label}`}
+            onClick={() => onOpen(r.id)}
+          />
+        ) : (
+          <span key={r.id} aria-hidden className="oap-tick" data-status={r.status} style={t} title={label} />
+        );
+      })}
     </div>
   );
 }
@@ -159,11 +255,31 @@ export function hueOf(name: string): number {
 }
 
 /**
- * An agent's mark: one glyph, drawn in the agent's own color. The color is what
- * tells agents apart at a glance, and the name beside it is what identifies it.
+ * Gives everything inside it an agent's color. agent-ui draws its accent from
+ * one hue, so setting that hue here recolors the orb, and any accent, for this
+ * agent alone.
  */
-export function AgentMark({ name, size = 18 }: { name: string; size?: number }) {
-  return <BotIcon size={size} style={{ color: `oklch(var(--oap-mark-l) 0.15 ${hueOf(name)})` }} />;
+export function AgentTint({ name, className, children }: { name: string; className?: string; children: ReactNode }) {
+  return (
+    <div data-accent="agent" className={className} style={{ "--aui-accent-h": hueOf(name) } as CSSProperties}>
+      {children}
+    </div>
+  );
+}
+
+const orbSize = (px: number): OrbSize => (px <= 14 ? "xs" : px <= 22 ? "sm" : px <= 36 ? "md" : "lg");
+
+/**
+ * An agent's mark is its orb, in its own color. The same orb sits beside its
+ * answers, where it moves with what the agent is doing, so the mark in a list
+ * and the presence in a conversation are one thing. At rest it is still.
+ */
+export function AgentMark({ name, size = 18, state = "idle" }: { name: string; size?: number; state?: OrbState }) {
+  return (
+    <span data-accent="agent" className="inline-flex shrink-0" style={{ "--aui-accent-h": hueOf(name) } as CSSProperties}>
+      <AgentOrb state={state} size={orbSize(size)} label="" />
+    </span>
+  );
 }
 
 /** A labelled on/off choice. */
@@ -329,4 +445,283 @@ export function Popover({
       )}
     </div>
   );
+}
+
+function SearchIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg
+      aria-hidden="true"
+      focusable="false"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className="shrink-0"
+    >
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.5-3.5" />
+    </svg>
+  );
+}
+
+/** A search box that filters what is on the page as a person types. */
+export function SearchField({
+  label,
+  value,
+  onChange,
+  placeholder,
+  hint,
+  inputRef,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+  placeholder?: string;
+  /** A shortcut shown while the box is empty, such as ⌘K. */
+  hint?: string;
+  inputRef?: React.Ref<HTMLInputElement>;
+  className?: string;
+}) {
+  return (
+    <div
+      className={`flex h-8 items-center gap-2 rounded-aui border border-[var(--oap-rule)] bg-aui-bg px-2.5 text-aui-muted transition-colors focus-within:border-aui-accent focus-within:text-aui-fg ${className}`}
+    >
+      <SearchIcon />
+      <input
+        ref={inputRef}
+        type="search"
+        aria-label={label}
+        value={value}
+        placeholder={placeholder ?? label}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape" && value) {
+            e.stopPropagation();
+            onChange("");
+          }
+        }}
+        className="min-w-0 flex-1 bg-transparent text-aui-sm text-aui-fg outline-none placeholder:text-aui-muted [&::-webkit-search-cancel-button]:hidden"
+      />
+      {value ? (
+        <button
+          type="button"
+          aria-label="Clear search"
+          onClick={() => onChange("")}
+          className="-mr-1 inline-flex size-5 items-center justify-center rounded-aui-sm text-aui-muted hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent"
+        >
+          <XIcon size={12} />
+        </button>
+      ) : (
+        hint && <kbd className="font-aui-sans text-aui-2xs text-aui-muted">{hint}</kbd>
+      )}
+    </div>
+  );
+}
+
+export type Option<T extends string = string> = {
+  value: T;
+  label: string;
+  /** A second line that says what choosing this does. */
+  hint?: string;
+  /** Drawn before the label, such as an agent's mark. */
+  mark?: ReactNode;
+};
+
+/**
+ * A menu of choices, used wherever a person picks one thing from a list. It
+ * opens toward the side with more room, moves with the arrow keys, jumps to a
+ * choice as its name is typed, and grows a filter when the list is long.
+ */
+export function Menu<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+  disabled,
+  quiet,
+  shows,
+  align = "left",
+  className = "",
+}: {
+  label: string;
+  value: T;
+  options: Option<T>[];
+  onChange: (next: T) => void;
+  disabled?: boolean;
+  /** Text only, for a menu that sits in a line of other controls. */
+  quiet?: boolean;
+  /** What the button says, when it is not the chosen option's label. */
+  shows?: ReactNode;
+  align?: "left" | "right";
+  className?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [up, setUp] = useState(false);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+  const root = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLUListElement>(null);
+  const filter = useRef<HTMLInputElement>(null);
+  const typed = useRef({ text: "", at: 0 });
+  const id = useId();
+
+  const searchable = options.length > 8;
+  const q = query.trim().toLowerCase();
+  const shown = q ? options.filter((o) => `${o.label} ${o.hint ?? ""}`.toLowerCase().includes(q)) : options;
+  const chosen = options.find((o) => o.value === value);
+
+  const show = () => {
+    const box = root.current?.getBoundingClientRect();
+    if (box) {
+      const below = window.innerHeight - box.bottom;
+      setUp(below < 300 && box.top > below);
+    }
+    setQuery("");
+    setActive(Math.max(options.findIndex((o) => o.value === value), 0));
+    setOpen(true);
+  };
+  const hide = (refocus = true) => {
+    setOpen(false);
+    if (refocus) root.current?.querySelector<HTMLButtonElement>("button")?.focus();
+  };
+  const pick = (o: Option<T> | undefined) => {
+    if (!o) return;
+    hide();
+    if (o.value !== value || shows !== undefined) onChange(o.value);
+  };
+
+  useEffect(() => {
+    if (!open) return;
+    (searchable ? filter.current : list.current)?.focus();
+    const away = (e: MouseEvent) => {
+      if (root.current && !root.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", away);
+    return () => document.removeEventListener("mousedown", away);
+  }, [open, searchable]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll follows the highlighted row
+  useEffect(() => {
+    if (open) list.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest" });
+  }, [open, active]);
+
+  const onKey = (e: React.KeyboardEvent) => {
+    const last = shown.length - 1;
+    if (e.key === "ArrowDown") setActive((a) => Math.min(a + 1, last));
+    else if (e.key === "ArrowUp") setActive((a) => Math.max(a - 1, 0));
+    else if (e.key === "Home") setActive(0);
+    else if (e.key === "End") setActive(last);
+    else if (e.key === "Enter" || (e.key === " " && !searchable)) pick(shown[active]);
+    else if (e.key === "Escape") {
+      e.stopPropagation();
+      hide();
+    } else if (e.key === "Tab") {
+      hide(false);
+      return;
+    } else {
+      // Typing a name jumps to it, as a native menu does.
+      if (!searchable && e.key.length === 1 && !e.metaKey && !e.ctrlKey) {
+        const now = Date.now();
+        typed.current = { text: (now - typed.current.at > 600 ? "" : typed.current.text) + e.key.toLowerCase(), at: now };
+        const hit = shown.findIndex((o) => o.label.toLowerCase().startsWith(typed.current.text));
+        if (hit >= 0) setActive(hit);
+      }
+      return;
+    }
+    e.preventDefault();
+  };
+
+  return (
+    <div ref={root} className={`relative ${quiet ? "inline-flex" : "flex"} ${className}`}>
+      <button
+        type="button"
+        aria-label={`${label}: ${chosen?.label ?? "none"}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        disabled={disabled}
+        onClick={() => (open ? hide() : show())}
+        onKeyDown={(e) => {
+          if (!open && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+            e.preventDefault();
+            show();
+          }
+        }}
+        className={
+          quiet
+            ? "inline-flex h-7 max-w-60 items-center gap-1 rounded-aui px-1.5 text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50 aria-expanded:bg-aui-hover aria-expanded:text-aui-fg"
+            : "flex h-8 w-full min-w-0 items-center gap-2 rounded-aui border border-aui-border bg-aui-bg px-2.5 text-left text-aui-sm text-aui-fg transition-colors hover:border-aui-ring focus-visible:border-aui-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-aui-ring disabled:cursor-not-allowed disabled:opacity-50 aria-expanded:border-aui-accent"
+        }
+      >
+        {shows === undefined && chosen?.mark}
+        <span className="min-w-0 flex-1 truncate">{shows ?? chosen?.label ?? "Choose"}</span>
+        <ChevronDownIcon size={14} className={`text-aui-muted transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        // biome-ignore lint/a11y/noStaticElementInteractions: keys are handled here for the filter and the list together
+        <div
+          onKeyDown={onKey}
+          className={`oap-glass-pop aui-pop-in absolute z-40 flex max-h-80 min-w-full max-w-[min(22rem,calc(100vw-2rem))] flex-col rounded-aui-lg p-1 ${
+            quiet ? "w-max min-w-44" : ""
+          } ${align === "right" ? "right-0" : "left-0"} ${up ? "bottom-full mb-1.5" : "top-full mt-1.5"}`}
+        >
+          {searchable && (
+            <SearchField
+              label={`Filter ${label.toLowerCase()}`}
+              placeholder="Filter"
+              value={query}
+              inputRef={filter}
+              onChange={(next) => {
+                setQuery(next);
+                setActive(0);
+              }}
+              className="mb-1 shrink-0"
+            />
+          )}
+          <ul
+            ref={list}
+            id={id}
+            role="listbox"
+            aria-label={label}
+            aria-activedescendant={shown[active] ? `${id}-${active}` : undefined}
+            tabIndex={-1}
+            className="aui-scroll min-h-0 overflow-y-auto outline-none"
+          >
+            {shown.length === 0 && <li className="px-2.5 py-2 text-aui-sm text-aui-muted">Nothing matches.</li>}
+            {shown.map((o, i) => (
+              // biome-ignore lint/a11y/useKeyWithClickEvents: the listbox handles keys for its options
+              <li
+                key={o.value}
+                id={`${id}-${i}`}
+                role="option"
+                aria-selected={o.value === value}
+                data-active={i === active}
+                onMouseMove={() => setActive(i)}
+                onClick={() => pick(o)}
+                className="flex cursor-pointer items-center gap-2.5 rounded-aui px-2.5 py-1.5 text-aui-sm text-aui-fg data-[active=true]:bg-aui-hover"
+              >
+                {o.mark}
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{o.label}</span>
+                  {o.hint && <span className="block text-aui-xs text-aui-muted">{o.hint}</span>}
+                </span>
+                {o.value === value && shows === undefined && <CheckIcon size={14} className="text-aui-fg" />}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The choices for a menu of agents, each with its mark. */
+export function agentOptions(names: string[], none?: string): Option[] {
+  const list: Option[] = names.map((n) => ({ value: n, label: n, mark: <AgentMark name={n} size={16} /> }));
+  return none === undefined ? list : [{ value: "", label: none }, ...list];
 }

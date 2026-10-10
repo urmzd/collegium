@@ -2,14 +2,26 @@
 //
 // Each agent has its own short list of notes. They are sent to the agent with
 // every conversation turn, the way a person brings what they know to a meeting.
-// A note is written by a person, or by the workspace's memory agent after a
-// turn. Either way it is plain text that anyone with access can read, correct
-// and remove: nothing an agent remembers is hidden from the people it works for.
+// A note is written by a person, or proposed by the workspace's memory agent
+// after a turn. Either way it is plain text that anyone with access can read,
+// correct and remove: nothing an agent remembers is hidden from the people it
+// works for.
+//
+// # A person decides what is kept
+//
+// What the memory agent writes is a proposal. It is held as pending, it is not
+// sent to the agent, and it becomes a memory only when a person approves it.
+// That is saige's own default for memory writes: its Policy asks a human before
+// every write unless AutoApprove is set, and a workspace can choose the same.
+//
+// What may be stored at all is also saige's rule. Every note passes through
+// saige's memory Policy, which refuses text that carries personal data.
 //
 // The store is in memory and is lost on restart.
 package memory
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -17,18 +29,35 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	saigememory "github.com/urmzd/saige/agent/memory"
 )
 
 // Errors.
 var (
 	ErrInvalid  = errors.New("memory: invalid")
 	ErrNotFound = errors.New("memory: not found")
+	// ErrSensitive reports a note that carries personal data.
+	ErrSensitive = errors.New("memory: the note carries personal data")
 )
 
 // Bounds. Memory rides along on every turn, so it is kept small.
 const (
 	MaxNotes = 50
 	MaxChars = 300
+	// MaxPending bounds proposals waiting for a person. When it is full the
+	// oldest proposal is dropped, so an unattended queue cannot grow.
+	MaxPending = 20
+)
+
+// Status says whether a note is in use.
+type Status string
+
+const (
+	// Approved notes are sent to the agent.
+	Approved Status = "approved"
+	// Pending notes are proposals. They are not sent to the agent.
+	Pending Status = "pending"
 )
 
 // Source says who wrote a note.
@@ -46,6 +75,7 @@ type Note struct {
 	ID     string `json:"id"`
 	Text   string `json:"text"`
 	Source Source `json:"source"`
+	Status Status `json:"status"`
 	// By is the person who wrote it, or the run it was drawn from.
 	By string    `json:"by,omitempty"`
 	At time.Time `json:"at"`
@@ -73,14 +103,25 @@ func clean(text string) (string, error) {
 	case len(text) > MaxChars:
 		return "", fmt.Errorf("%w: a note is at most %d characters", ErrInvalid, MaxChars)
 	}
+	// saige's memory policy decides what may be stored. With no redactor
+	// configured it refuses text its detector finds personal data in.
+	if _, err := (saigememory.Policy{}).CheckContent(context.Background(), saigememory.Scope{}, text); err != nil {
+		if errors.Is(err, saigememory.ErrSensitive) {
+			return "", fmt.Errorf("%w: %v", ErrSensitive, err)
+		}
+		return "", err
+	}
 	return text, nil
 }
 
-// Add stores a note for an agent. A note the agent already holds is not stored
-// twice. When the list is full, the oldest consolidated note makes room, and a
-// list full of notes people wrote refuses the new one: a person's note is never
-// pushed out by an automatic one.
-func (s *Store) Add(tenant, agent, text string, source Source, by string, at time.Time) (Note, error) {
+// Add stores a note for an agent, approved or pending. A note the agent already
+// holds, in either state, is not stored twice.
+//
+// When the approved list is full, the oldest consolidated note makes room, and
+// a list full of notes people wrote refuses the new one: a person's note is
+// never pushed out by an automatic one. When the pending list is full, the
+// oldest proposal is dropped.
+func (s *Store) Add(tenant, agent, text string, source Source, status Status, by string, at time.Time) (Note, error) {
 	text, err := clean(text)
 	if err != nil {
 		return Note{}, err
@@ -94,17 +135,97 @@ func (s *Store) Add(tenant, agent, text string, source Source, by string, at tim
 			return n, nil
 		}
 	}
-	if len(notes) >= MaxNotes {
-		i := slices.IndexFunc(notes, func(n Note) bool { return n.Source == Consolidated })
-		if i < 0 {
-			return Note{}, fmt.Errorf("%w: an agent holds at most %d notes", ErrInvalid, MaxNotes)
-		}
-		notes = slices.Delete(notes, i, i+1)
+	notes, err = makeRoom(notes, status)
+	if err != nil {
+		return Note{}, err
 	}
 	s.next++
-	note := Note{ID: "m" + strconv.Itoa(s.next), Text: text, Source: source, By: by, At: at}
+	note := Note{ID: "m" + strconv.Itoa(s.next), Text: text, Source: source, Status: status, By: by, At: at}
 	s.by[k] = append(notes, note)
 	return note, nil
+}
+
+func count(notes []Note, status Status) int {
+	n := 0
+	for _, x := range notes {
+		if x.Status == status {
+			n++
+		}
+	}
+	return n
+}
+
+// makeRoom frees a place for one more note of a status, or refuses.
+func makeRoom(notes []Note, status Status) ([]Note, error) {
+	if status == Pending {
+		if count(notes, Pending) >= MaxPending {
+			i := slices.IndexFunc(notes, func(n Note) bool { return n.Status == Pending })
+			notes = slices.Delete(notes, i, i+1)
+		}
+		return notes, nil
+	}
+	if count(notes, Approved) < MaxNotes {
+		return notes, nil
+	}
+	i := slices.IndexFunc(notes, func(n Note) bool { return n.Status == Approved && n.Source == Consolidated })
+	if i < 0 {
+		return nil, fmt.Errorf("%w: an agent holds at most %d notes", ErrInvalid, MaxNotes)
+	}
+	return slices.Delete(notes, i, i+1), nil
+}
+
+// Approve turns the named proposals into memories. Ids that are not pending
+// proposals of this agent are ignored. It returns how many were approved.
+func (s *Store) Approve(tenant, agent string, ids []string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	k := key(tenant, agent)
+	notes := s.by[k]
+	approved := 0
+	for _, id := range ids {
+		i := slices.IndexFunc(notes, func(n Note) bool { return n.ID == id && n.Status == Pending })
+		if i < 0 {
+			continue
+		}
+		note := notes[i]
+		rest, err := makeRoom(slices.Delete(slices.Clone(notes), i, i+1), Approved)
+		if err != nil {
+			s.by[k] = notes
+			return approved, err
+		}
+		note.Status = Approved
+		notes = append(rest, note)
+		approved++
+	}
+	s.by[k] = notes
+	return approved, nil
+}
+
+// Proposal is a pending note and the agent it is for.
+type Proposal struct {
+	Agent string `json:"agent"`
+	Note  Note   `json:"note"`
+}
+
+// Pending returns every proposal waiting in a tenant, oldest first.
+func (s *Store) Pending(tenant string) []Proposal {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var out []Proposal
+	prefix := tenant + "\x00"
+	for k, notes := range s.by {
+		agent, ok := strings.CutPrefix(k, prefix)
+		if !ok {
+			continue
+		}
+		for _, n := range notes {
+			if n.Status == Pending {
+				out = append(out, Proposal{Agent: agent, Note: n})
+			}
+		}
+	}
+	slices.SortStableFunc(out, func(a, b Proposal) int { return a.Note.At.Compare(b.Note.At) })
+	return out
 }
 
 // List returns an agent's notes, oldest first.
@@ -129,13 +250,15 @@ func (s *Store) Remove(tenant, agent, id string) error {
 
 // Prompt renders an agent's notes for the start of a turn, or "" for none.
 func (s *Store) Prompt(tenant, agent string) string {
-	notes := s.List(tenant, agent)
-	if len(notes) == 0 {
-		return ""
-	}
 	var b strings.Builder
-	b.WriteString("What you remember from earlier conversations:")
-	for _, n := range notes {
+	for _, n := range s.List(tenant, agent) {
+		// A proposal nobody has approved is not a memory yet.
+		if n.Status != Approved {
+			continue
+		}
+		if b.Len() == 0 {
+			b.WriteString("What you remember from earlier conversations:")
+		}
 		b.WriteString("\n- ")
 		b.WriteString(n.Text)
 	}

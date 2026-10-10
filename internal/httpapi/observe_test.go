@@ -423,7 +423,19 @@ func TestAgentMemory(t *testing.T) {
 			t.Errorf("other tenant %s %s = %d, want 404", tc.method, tc.path, res.StatusCode)
 		}
 	}
+	if res, out := f.do(t, nil, "POST", "/api/agents/helper/memory", acme, `{"text":"Reach Ada at ada@example.com."}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a note with an email address = %d %v", res.StatusCode, out)
+	}
+	if _, out := f.do(t, nil, "GET", "/api/memory/pending", globex, ""); len(out["proposals"].([]any)) != 0 {
+		t.Errorf("other tenant sees proposals: %v", out)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/agents/helper/memory/approve", globex, `{"ids":["m1"]}`); res.StatusCode != http.StatusNotFound {
+		t.Errorf("other tenant approved memory: %d", res.StatusCode)
+	}
 	reader := f.machine(t, "acme", "oap:agents:read")
+	if res, _ := f.do(t, nil, "POST", "/api/agents/helper/memory/approve", reader, `{"ids":["m1"]}`); res.StatusCode != http.StatusForbidden {
+		t.Errorf("a reader approved memory: %d", res.StatusCode)
+	}
 	if res, _ := f.do(t, nil, "POST", "/api/agents/helper/memory", reader, `{"text":"x"}`); res.StatusCode != http.StatusForbidden {
 		t.Errorf("a reader wrote memory: %d", res.StatusCode)
 	}

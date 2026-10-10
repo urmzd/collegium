@@ -7,14 +7,11 @@ import { Composer } from "./Composer.tsx";
 import { ApiError, api, type Choice, type Revision, type Settings, type ThreadSummary } from "./api.ts";
 import { useRunTurn } from "./Runs.tsx";
 import { Trace } from "./Trace.tsx";
-import { AgentMark, cause, Popover, Problem } from "./ui.tsx";
+import { AgentMark, AgentTint, agentOptions, cause, Menu, Popover, Problem } from "./ui.tsx";
 
 const AUTO = "auto";
 // Controls in the dock are text, not boxes: they sit under the composer and
 // should not compete with it.
-const select =
-  "h-7 max-w-60 cursor-pointer rounded-aui bg-transparent px-1.5 text-aui-sm text-aui-muted outline-none transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:opacity-50";
-
 /** The answers to one point in the conversation, oldest first. */
 function siblingsOf(turns: Run[], run: Run): Run[] {
   return turns.filter((t) => (t.prev ?? "") === (run.prev ?? ""));
@@ -91,7 +88,9 @@ function TurnView({
         </p>
       </div>
 
-      <AgentMessage turn={shown} />
+      <AgentTint name={run.agent}>
+        <AgentMessage turn={shown} />
+      </AgentTint>
 
       <div className="flex flex-wrap items-center gap-2 pl-11 text-aui-xs text-aui-muted">
         {siblings.length > 1 && (
@@ -120,23 +119,14 @@ function TurnView({
           </span>
         )}
         {canRun && ended && (
-          <label className="inline-flex items-center gap-1.5">
-            <span className="sr-only">Answer this again with another agent</span>
-            <select
-              className={select}
-              value=""
-              onChange={(e) => {
-                if (e.target.value) onBranch(e.target.value);
-              }}
-            >
-              <option value="">Branch: answer again with…</option>
-              {agents.map((a) => (
-                <option key={a.spec.name} value={a.spec.name}>
-                  {a.spec.name}
-                </option>
-              ))}
-            </select>
-          </label>
+          <Menu
+            quiet
+            label="Answer this again with another agent"
+            shows="Answer again with"
+            value=""
+            options={agentOptions(agents.map((a) => a.spec.name))}
+            onChange={onBranch}
+          />
         )}
         <button
           type="button"
@@ -298,15 +288,13 @@ export function Chat({
         {threadId ? (
           tail?.project && <span className="px-1.5 text-aui-sm">In {tail.project}</span>
         ) : (
-          <label className="inline-flex items-center gap-1.5">
-            <span className="sr-only">Project</span>
-            <select className={select} value={project} onChange={(e) => setProject(e.target.value)}>
-              <option value="">No project</option>
-              {(settings?.projects ?? []).map((p) => (
-                <option key={p.name}>{p.name}</option>
-              ))}
-            </select>
-          </label>
+          <Menu
+            quiet
+            label="Project"
+            value={project}
+            options={[{ value: "", label: "No project" }, ...(settings?.projects ?? []).map((p) => ({ value: p.name, label: p.name }))]}
+            onChange={setProject}
+          />
         )}
         <span className="flex-1" />
         {/* The reason for a pick is one hover away, and announced, without taking a line. */}

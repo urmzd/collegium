@@ -72,6 +72,9 @@ type Settings struct {
 	// MemoryAgent reads each finished turn and writes what the answering
 	// agent should remember. Empty leaves memory to people.
 	MemoryAgent string `json:"memory_agent"`
+	// MemoryAutoApprove keeps what the memory agent writes without asking.
+	// Off, which is the default, every note it writes waits for a person.
+	MemoryAutoApprove bool `json:"memory_auto_approve"`
 }
 
 func (s Settings) withDefaults() Settings {

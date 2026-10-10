@@ -1,6 +1,6 @@
 import { type FormEvent, useRef, useState } from "react";
 import { ApiError, api, type Me, type Preferences, type Revision, type Settings as Workspace } from "./api.ts";
-import { button, card, field, Label, Problem, primary, Segmented, Switch } from "./ui.tsx";
+import { agentOptions, button, card, field, Label, Menu, Problem, primary, Segmented, Switch } from "./ui.tsx";
 
 type Section = "profile" | "appearance" | "workspace" | "connections" | "access";
 
@@ -106,7 +106,7 @@ export function Settings({
       </nav>
 
       <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-2xl flex-col gap-4 px-4 py-6">
+        <div className="flex w-full max-w-2xl flex-col gap-4 px-5 pt-8 pb-6 md:px-10">
           <Problem message={problem} />
 
           {section === "profile" && (
@@ -218,17 +218,13 @@ export function Settings({
                       text="Baseline agent"
                       hint="Answers when Auto finds no agent that fits a message, or more than one fits equally."
                     >
-                      <select
-                        className={field}
+                      <Menu
+                        label="Baseline agent"
                         value={workspace.baseline}
                         disabled={!canAdmin}
-                        onChange={(e) => saveWorkspace({ baseline: e.target.value })}
-                      >
-                        <option value="">None. Auto fails when nothing fits.</option>
-                        {agents.map((a) => (
-                          <option key={a.spec.name}>{a.spec.name}</option>
-                        ))}
-                      </select>
+                        options={agentOptions(agents.map((a) => a.spec.name), "None")}
+                        onChange={(next) => saveWorkspace({ baseline: next })}
+                      />
                     </Label>
                   </section>
 
@@ -237,34 +233,33 @@ export function Settings({
                       text="Title agent"
                       hint="After a conversation's first turn, this agent is asked to name it. It needs a real model: nothing happens on the offline provider."
                     >
-                      <select
-                        className={field}
+                      <Menu
+                        label="Naming agent"
                         value={workspace.title_agent}
                         disabled={!canAdmin}
-                        onChange={(e) => saveWorkspace({ title_agent: e.target.value })}
-                      >
-                        <option value="">None. Conversations are shown by their first message.</option>
-                        {agents.map((a) => (
-                          <option key={a.spec.name}>{a.spec.name}</option>
-                        ))}
-                      </select>
+                        options={agentOptions(agents.map((a) => a.spec.name), "None")}
+                        onChange={(next) => saveWorkspace({ title_agent: next })}
+                      />
                     </Label>
                     <Label
                       text="Memory agent"
                       hint="After each turn, this agent is asked what the answering agent should remember. What it writes is shown on that agent's Memory tab, where anyone who can edit the agent can remove it."
                     >
-                      <select
-                        className={field}
+                      <Menu
+                        label="Memory agent"
                         value={workspace.memory_agent}
                         disabled={!canAdmin}
-                        onChange={(e) => saveWorkspace({ memory_agent: e.target.value })}
-                      >
-                        <option value="">None. Agents remember only what people write down.</option>
-                        {agents.map((a) => (
-                          <option key={a.spec.name}>{a.spec.name}</option>
-                        ))}
-                      </select>
+                        options={agentOptions(agents.map((a) => a.spec.name), "None")}
+                        onChange={(next) => saveWorkspace({ memory_agent: next })}
+                      />
                     </Label>
+                    <Switch
+                      label="Keep what the memory agent writes without asking"
+                      hint="Off, every note it writes waits for a person to approve it. Notes that carry personal data are refused either way."
+                      checked={workspace.memory_auto_approve}
+                      disabled={!canAdmin || !workspace.memory_agent}
+                      onChange={(on) => saveWorkspace({ memory_auto_approve: on })}
+                    />
                   </section>
 
                   <section className={`${card} flex flex-col gap-3`}>

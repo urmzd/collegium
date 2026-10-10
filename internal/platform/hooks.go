@@ -112,8 +112,16 @@ func (p *Platform) fileHook(run runs.Run) {
 			if len(line) > memory.MaxChars {
 				continue
 			}
-			if _, err := p.Memory.Add(run.Tenant, target, line, memory.Consolidated, run.ID, run.UpdatedAt); err == nil {
+			// A proposal waits for a person unless the workspace chose
+			// otherwise. Text that carries personal data is not kept at all.
+			status := memory.Pending
+			if p.Settings(run.Tenant).MemoryAutoApprove {
+				status = memory.Approved
+			}
+			if _, err := p.Memory.Add(run.Tenant, target, line, memory.Consolidated, status, run.ID, run.UpdatedAt); err == nil {
 				kept++
+			} else {
+				p.log.Info("platform: a proposed memory was not kept", "agent", target, "reason", err)
 			}
 		}
 	}

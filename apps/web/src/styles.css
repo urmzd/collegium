@@ -19,61 +19,74 @@ body,
 }
 
 /*
- * The console's own surfaces. agent-ui owns the tokens for what it renders;
- * these add the frosted layer the shell sits on: a soft two-color glow behind
- * everything, and panels that let it through.
+ * The console's own layer. agent-ui owns the tokens for what it renders. The
+ * console adds three things: a display face for titles and figures, flat
+ * planes for its chrome and panels, and the run tape.
  */
+@theme inline {
+  --font-oap-display: "Bricolage Grotesque Variable", "Figtree Variable", ui-sans-serif, system-ui, sans-serif;
+}
+
 :root {
   /* agent-ui names Figtree. The console ships it, so it is never a fallback. */
   --font-aui-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
-  --oap-warm: oklch(0.6 0.23 29);
-  --oap-glass: oklch(1 0 0 / 68%);
+  /* The sidebar's plane and a panel's plane, each one step off the page. */
+  --oap-plane: oklch(0.975 0 0);
+  --oap-panel: oklch(1 0 0);
+  --oap-rule: oklch(0.07 0 0 / 9%);
+  /* Finished work is drawn in ink. Color is kept for what needs a look. */
+  --oap-ink: oklch(0.07 0 0 / 42%);
+  --oap-ink-faint: oklch(0.07 0 0 / 14%);
   --oap-glass-strong: oklch(1 0 0 / 86%);
   --oap-glass-border: oklch(0.2 0.02 250 / 12%);
   --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 60%);
-  --oap-shadow: 0 8px 28px oklch(0.2 0.02 250 / 0.08);
-  --oap-glow: 7%;
   /* Lightness of an agent's color, set so it reads on either surface. */
   --oap-mark-l: 0.5;
 }
 html[data-theme="dark"] {
-  --oap-glass: oklch(0.17 0 0 / 52%);
+  --oap-plane: oklch(0.105 0 0);
+  --oap-panel: oklch(0.115 0 0);
+  --oap-rule: oklch(1 0 0 / 9%);
+  --oap-ink: oklch(1 0 0 / 46%);
+  --oap-ink-faint: oklch(1 0 0 / 13%);
   --oap-glass-strong: oklch(0.14 0 0 / 82%);
   --oap-glass-border: oklch(1 0 0 / 9%);
   --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 7%);
-  --oap-shadow: 0 8px 32px oklch(0 0 0 / 0.3);
-  --oap-glow: 12%;
   --oap-mark-l: 0.78;
 }
 
 body {
   margin: 0;
   background-color: var(--aui-bg);
-  background-image:
-    radial-gradient(1100px 600px at 6% -12%, oklch(from var(--aui-accent) l c h / var(--oap-glow)), transparent 60%),
-    radial-gradient(1000px 560px at 100% -8%, oklch(from var(--oap-warm) l c h / calc(var(--oap-glow) * 0.75)), transparent 62%);
-  background-attachment: fixed;
   color: var(--aui-fg);
   font-family: var(--font-aui-sans);
   -webkit-font-smoothing: antialiased;
 }
 
+/*
+ * Titles and figures. The face is narrowed a little so a long title and a
+ * column of numbers both sit tight, and figures line up in columns.
+ */
+.oap-display {
+  font-family: var(--font-oap-display);
+  font-variation-settings: "wdth" 86;
+  font-optical-sizing: auto;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.012em;
+}
+
+/* A panel groups things that belong together. It is flat: one plane, one rule. */
 .oap-glass {
-  background: var(--oap-glass);
-  -webkit-backdrop-filter: blur(16px) saturate(170%);
-  backdrop-filter: blur(16px) saturate(170%);
-  border: 1px solid var(--oap-glass-border);
-  box-shadow: var(--oap-shadow), var(--oap-bevel);
+  background: var(--oap-panel);
+  border: 1px solid var(--oap-rule);
 }
 
-/* Chrome that content scrolls under: no outer shadow, one hairline edge. */
+/* Chrome beside the page: its own plane, no blur. */
 .oap-glass-bar {
-  background: var(--oap-glass-strong);
-  -webkit-backdrop-filter: blur(16px) saturate(170%);
-  backdrop-filter: blur(16px) saturate(170%);
-  box-shadow: var(--oap-bevel);
+  background: var(--oap-plane);
 }
 
+/* Only what floats above the page is glass. */
 .oap-glass-pop {
   background: var(--oap-glass-strong);
   -webkit-backdrop-filter: blur(24px) saturate(180%);
@@ -84,19 +97,77 @@ body {
 
 /* Without backdrop blur, glass is unreadable. Fall back to a solid surface. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .oap-glass,
-  .oap-glass-bar,
   .oap-glass-pop {
-    background: var(--aui-surface);
+    background: var(--aui-pop);
   }
 }
 @media (prefers-reduced-transparency: reduce) {
-  .oap-glass,
-  .oap-glass-bar,
   .oap-glass-pop {
-    background: var(--aui-surface);
+    background: var(--aui-pop);
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
+  }
+}
+
+/*
+ * The run tape. One tick per run, oldest on the left, standing on a rule.
+ * Height is how long the run took. A finished run is ink, and only a run that
+ * failed, is running, or is waiting on a person takes a color.
+ */
+.oap-tape {
+  --oap-tape-h: 1.75rem;
+  display: flex;
+  align-items: flex-end;
+  justify-content: flex-end;
+  gap: 2px;
+  height: var(--oap-tape-h);
+  border-bottom: 1px solid var(--oap-rule);
+  overflow: hidden;
+}
+.oap-tick {
+  flex: 0 0 auto;
+  width: 4px;
+  height: calc(3px + (var(--oap-tape-h) - 3px) * var(--t, 0));
+  padding: 0;
+  border: 0;
+  border-radius: 1px 1px 0 0;
+  background: var(--oap-ink);
+}
+.oap-tick[data-status="failed"] {
+  background: var(--aui-bad);
+}
+.oap-tick[data-status="running"] {
+  background: var(--aui-accent);
+  animation: oap-tick-live 1.6s ease-in-out infinite;
+}
+/* Waiting on a person: colored, and still. */
+.oap-tick[data-status="parked"] {
+  background: var(--aui-warn);
+}
+.oap-tick[data-status="accepted"] {
+  background: var(--oap-ink-faint);
+}
+/* A slot no run has filled yet keeps the ruler's rhythm. */
+.oap-tick[data-status="none"] {
+  height: 2px;
+  background: var(--oap-ink-faint);
+}
+button.oap-tick {
+  cursor: pointer;
+}
+button.oap-tick:hover,
+button.oap-tick:focus-visible {
+  outline: 2px solid var(--aui-fg);
+  outline-offset: 1px;
+}
+@keyframes oap-tick-live {
+  50% {
+    opacity: 0.45;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oap-tick[data-status="running"] {
+    animation: none;
   }
 }
 

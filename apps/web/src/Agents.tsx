@@ -1,10 +1,16 @@
+import type { Run } from "./adapter.ts";
 import type { Group, Revision } from "./api.ts";
-import { AgentMark, card, Chip, Empty, Page, primary, took } from "./ui.tsx";
+import { AgentMark, Chip, Empty, longest, Page, primary, rows, Tape, took } from "./ui.tsx";
 
-/** Every agent in the tenant. Opening one shows its editor. */
+/**
+ * Every agent in the tenant, one lane each: who it is, its recent runs on a
+ * tape, and how the last day went. The tapes share one scale, so a slow agent
+ * reads as slow next to the others. Opening a lane shows the agent's editor.
+ */
 export function Agents({
   agents,
   stats,
+  runs = [],
   baseline,
   canWrite,
   onOpen,
@@ -13,14 +19,16 @@ export function Agents({
   agents: Revision[];
   /** The last 24 hours, by agent name. */
   stats: Map<string, Group>;
+  /** Recent runs across the tenant, drawn on each agent's tape. */
+  runs?: Run[];
   baseline: string;
   canWrite: boolean;
   onOpen: (name: string) => void;
   onNew: () => void;
 }) {
+  const scale = longest(runs);
   return (
     <Page
-      wide
       title="Agents"
       lede="An agent is a prompt with a setup around it. Open one to edit its prompt, measure it, and watch it."
       actions={
@@ -32,52 +40,62 @@ export function Agents({
       }
     >
       {agents.length === 0 ? (
-        <div className={card}>
-          <Empty title="No agents yet">{canWrite ? "Create one to start running work." : "Ask an admin to define one."}</Empty>
-        </div>
+        <Empty title="No agents yet">{canWrite ? "Create one to start running work." : "Ask an admin to define one."}</Empty>
       ) : (
-        <ul className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        <ul className={rows}>
           {agents.map((a) => {
-            const g = stats.get(a.spec.name);
+            const name = a.spec.name;
+            const g = stats.get(name);
             const ended = g ? g.completed + g.failed : 0;
+            const own = runs.filter((r) => r.agent === name);
+            const busy = own.some((r) => r.status === "running" || r.status === "accepted");
+            const figures: [string, string][] =
+              g && g.runs > 0
+                ? [
+                    ["Runs, 24h", String(g.runs)],
+                    ["Success", ended ? `${Math.round((100 * g.completed) / ended)}%` : "No data"],
+                    ["Median", g.p50_ms ? took(g.p50_ms) : "–"],
+                  ]
+                : [];
             return (
-              <li key={a.spec.name}>
+              <li key={name}>
                 <button
                   type="button"
-                  onClick={() => onOpen(a.spec.name)}
-                  className={`${card} flex h-full w-full flex-col gap-3 text-left transition-colors hover:border-aui-accent/50 focus-visible:outline-2 focus-visible:outline-aui-accent`}
+                  onClick={() => onOpen(name)}
+                  className="grid w-full grid-cols-1 items-center gap-x-8 gap-y-3 px-1 py-4 text-left transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent focus-visible:-outline-offset-2 md:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_15rem]"
                 >
-                  <span className="flex items-center gap-3">
-                    <AgentMark name={a.spec.name} size={24} />
+                  <span className="flex min-w-0 items-start gap-3">
+                    <span className="pt-0.5">
+                      <AgentMark name={name} size={24} state={busy ? "thinking" : "idle"} />
+                    </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex items-center gap-2">
-                        <span className="truncate text-aui-base font-medium text-aui-fg">{a.spec.name}</span>
-                        {a.spec.name === baseline && <Chip>Baseline</Chip>}
+                        <span className="oap-display truncate text-aui-lg font-semibold text-aui-fg">{name}</span>
+                        {name === baseline && <Chip>Baseline</Chip>}
                       </span>
-                      <span className="block text-aui-xs text-aui-muted">
+                      <span className="line-clamp-1 text-aui-sm text-aui-muted">
+                        {a.spec.description || a.spec.system_prompt || "No description or prompt yet."}
+                      </span>
+                      <span className="block pt-0.5 text-aui-xs text-aui-muted">
                         Revision {a.rev}, {a.spec.provider} / {a.spec.model}
                       </span>
                     </span>
                   </span>
-                  <span className="line-clamp-2 min-h-[2.5rem] text-aui-sm text-aui-muted">
-                    {a.spec.description || a.spec.system_prompt || "No description or prompt yet."}
-                  </span>
-                  <span className="flex flex-wrap gap-x-5 gap-y-1 text-aui-xs">
-                    {g && g.runs > 0 ? (
-                      [
-                        ["Runs, 24h", String(g.runs)],
-                        ["Success", ended ? `${Math.round((100 * g.completed) / ended)}%` : "No data"],
-                        ["Median", g.p50_ms ? took(g.p50_ms) : "–"],
-                      ].map(([label, value]) => (
-                        <span key={label} className="flex items-baseline gap-1.5">
-                          <span className="text-aui-muted">{label}</span>
-                          <span className="tabular-nums text-aui-fg">{value}</span>
+
+                  <Tape runs={own} slots={36} scale={scale} />
+
+                  {figures.length > 0 ? (
+                    <span className="grid grid-cols-3 gap-4">
+                      {figures.map(([label, value]) => (
+                        <span key={label} className="flex min-w-0 flex-col">
+                          <span className="oap-display text-aui-lg font-semibold text-aui-fg">{value}</span>
+                          <span className="truncate text-aui-2xs text-aui-muted">{label}</span>
                         </span>
-                      ))
-                    ) : (
-                      <span className="text-aui-muted">No runs in the last 24 hours</span>
-                    )}
-                  </span>
+                      ))}
+                    </span>
+                  ) : (
+                    <span className="text-aui-xs text-aui-muted">No runs in the last 24 hours</span>
+                  )}
                 </button>
               </li>
             );

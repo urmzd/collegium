@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { ApiError, api, type Check, type EvalCase, type EvalRun, type Suite, type SuiteView } from "./api.ts";
-import { ago, button, card, Chip, field, Label, Problem, primary, took } from "./ui.tsx";
+import { ago, button, card, Chip, field, Label, Menu, Problem, primary, took } from "./ui.tsx";
 
 const checkLabel: Record<Check["kind"], string> = {
   contains: "Contains",
@@ -233,24 +233,17 @@ function SuiteForm({
                 {(c.checks ?? []).map((ch, n) => (
                   // biome-ignore lint/suspicious/noArrayIndexKey: checks have no identity beyond their position
                   <div key={n} className="flex gap-2">
-                    <select
-                      aria-label="Check"
-                      className={`${field} w-48 shrink-0`}
+                    <Menu
+                      label="Check"
+                      className="w-48 shrink-0"
                       value={ch.kind}
-                      onChange={(e) =>
+                      options={Object.entries(checkLabel).map(([k, l]) => ({ value: k as Check["kind"], label: l }))}
+                      onChange={(kind) =>
                         setCase(i, {
-                          checks: (c.checks ?? []).map((x, m) =>
-                            m === n ? { ...x, kind: e.target.value as Check["kind"] } : x,
-                          ),
+                          checks: (c.checks ?? []).map((x, m) => (m === n ? { ...x, kind } : x)),
                         })
                       }
-                    >
-                      {Object.entries(checkLabel).map(([k, l]) => (
-                        <option key={k} value={k}>
-                          {l}
-                        </option>
-                      ))}
-                    </select>
+                    />
                     <input
                       aria-label="Value"
                       className={field}
