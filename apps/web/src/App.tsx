@@ -1,6 +1,3 @@
-import { ActionId, type InboxItem, sortInbox, type UiAction } from "@agent-ui/core";
-import { WebSurface } from "@agent-ui/render-web";
-import { Inbox } from "@agent-ui/web";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgentDetail } from "./AgentDetail.tsx";
 import { Agents } from "./Agents.tsx";
@@ -15,7 +12,6 @@ import {
   type Me,
   type Preferences,
   type ProjectView,
-  type Proposal,
   type Revision,
   type ScheduleView,
   type Settings as Workspace,
@@ -26,14 +22,16 @@ import {
   type ThreadSummary,
 } from "./api.ts";
 import { Chat } from "./Chat.tsx";
+import { InboxPage } from "./InboxPage.tsx";
 import { Knowledge } from "./Knowledge.tsx";
 import { Onboarding } from "./Onboarding.tsx";
 import { ProjectNav, ProjectPage } from "./Projects.tsx";
 import { RunList } from "./Runs.tsx";
 import { Schedules } from "./Schedules.tsx";
 import { Settings } from "./Settings.tsx";
+import { Storage } from "./Storage.tsx";
 import { Sidebar, type View } from "./Sidebar.tsx";
-import { cause, primary } from "./ui.tsx";
+import { primary } from "./ui.tsx";
 
 type Session = { state: "loading" } | { state: "signed-out" } | { state: "error"; message: string } | { state: "ready"; me: Me };
 
@@ -90,42 +88,6 @@ function stored(key: string, fallback: boolean): boolean {
   }
 }
 
-/**
- * What is waiting on a person: failed runs and open alerts. Approvals and
- * budget requests join it when the platform can park a run on a person.
- */
-function inboxOf(runs: Run[], alerts: Alert[], dismissed: Set<string>): InboxItem[] {
-  // A failed run that already raised an alert appears once, as the alert.
-  const alerted = new Set(alerts.map((a) => a.run_id));
-  const failures: InboxItem[] = runs
-    .filter((r) => r.status === "failed" && !alerted.has(r.id) && r.origin !== "eval")
-    .map((r) => ({
-      id: r.id,
-      kind: "failure",
-      state: dismissed.has(r.id) ? "dismissed" : "open",
-      source: { label: `${r.agent}: ${r.text || "run"}`, turnId: r.id },
-      at: r.updated_at,
-      failure: { kind: "internal", message: cause(r.error) || "The run failed.", reference: r.id },
-    }));
-  const raised: InboxItem[] = alerts.map((a) => ({
-    id: a.id,
-    kind: "alert",
-    state: a.acked_by ? "resolved" : "open",
-    source: { label: `Rule: ${a.rule}`, turnId: a.run_id },
-    at: a.at,
-    alert: {
-      id: a.id,
-      service: a.agent ?? "Platform",
-      status: a.acked_by ? "resolved" : a.severity === "critical" ? "down" : "degraded",
-      title: a.title,
-      body: cause(a.body) || undefined,
-      startedAt: a.at,
-      updatedAt: a.acked_at ?? a.at,
-    },
-  }));
-  return sortInbox([...failures, ...raised]);
-}
-
 function greeting(name: string): string {
   const h = new Date().getHours();
   const part = h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
@@ -154,16 +116,21 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [thread, setThread] = useState<string | null>(null);
   const [agentName, setAgentName] = useState<string | null>(null);
   const [agentTab, setAgentTab] = useState<"memory" | undefined>(undefined);
-  const [proposals, setProposals] = useState<Proposal[]>([]);
+  // The inbox is the server's. This holds only its totals for the badge, a
+  // counter that tells the page to look again, and a message to open first.
+  const [inboxCounts, setInboxCounts] = useState({ open: 0, unread: 0 });
+  const [inboxTick, setInboxTick] = useState(0);
+  const [inboxMessage, setInboxMessage] = useState<string | null>(null);
   const [projects, setProjects] = useState<ProjectView[]>([]);
   const [projectName, setProjectName] = useState<string | null>(null);
   // The project a new chat was started from, so it is filed there.
   const [startIn, setStartIn] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState(() => stored(SIDEBAR_KEY, window.innerWidth >= 768));
-  const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [runs, setRuns] = useState<Run[]>([]);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
   const [agents, setAgents] = useState<Revision[]>([]);
+  // The agents the platform provides. They run like any other and cannot be edited.
+  const [builtin, setBuiltin] = useState<string[]>([]);
   const [schedules, setSchedules] = useState<ScheduleView[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [rules, setRules] = useState<AlertRule[]>([]);
@@ -193,11 +160,21 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
 
   const loadAgents = useCallback(() => {
     if (!can("agents:read")) return;
-    api.agents().then(setAgents).catch(() => {});
+    api
+      .agentList()
+      .then((r) => {
+        setAgents(r.agents);
+        setBuiltin(r.builtin ?? []);
+      })
+      .catch(() => {});
     api.settings().then(setWorkspace).catch(() => {});
   }, [can]);
-  const loadProposals = useCallback(() => {
-    if (can("agents:read")) api.pendingMemory().then(setProposals).catch(() => {});
+  const loadInbox = useCallback(() => {
+    if (!can("runs:read")) return;
+    api.inboxCount().then(setInboxCounts).catch(() => {});
+    setInboxTick((t) => t + 1);
+    // Settling a message settles its alert, which the Alerts badge counts.
+    if (can("alerts:read")) api.alerts().then(setAlerts).catch(() => {});
   }, [can]);
   const loadProjects = useCallback(() => {
     if (can("runs:read")) api.projects().then(setProjects).catch(() => {});
@@ -225,10 +202,10 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     loadAlerts();
     loadSchedules();
     loadSuites();
-    loadProposals();
+    loadInbox();
     loadProjects();
     setTick((t) => t + 1);
-  }, [can, loadAlerts, loadSchedules, loadSuites, loadProposals, loadProjects]);
+  }, [can, loadAlerts, loadSchedules, loadSuites, loadInbox, loadProjects]);
 
   useEffect(() => {
     loadRuns();
@@ -260,6 +237,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     const close = subscribe("agent", {
       onOpen: loadRuns,
       onState: setLive,
+      onInbox: loadInbox,
       onEvent: (e) => {
         if (!e.kind.startsWith("lifecycle.") && !e.kind.startsWith("control.")) return;
         if (e.kind.startsWith("control.")) loadAgents();
@@ -271,7 +249,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
       window.clearTimeout(pending.current);
       close();
     };
-  }, [can, loadRuns, loadAgents]);
+  }, [can, loadRuns, loadAgents, loadInbox]);
 
   // An eval in flight reports progress on its own record, not on the bus.
   const evalRunning = suites.some((s) => s.runs[0]?.status === "running");
@@ -304,44 +282,10 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     setAgentTab(tab);
     setView("agent");
   };
-  // Proposed memories, counted per agent, for the inbox.
-  const reviewKey = (p: Proposal) => (p.project ? `project:${p.project}` : `agent:${p.agent ?? ""}`);
-  const toReview = [...new Set(proposals.map(reviewKey))].map((key) => {
-    const first = proposals.find((p) => reviewKey(p) === key);
-    return {
-      key,
-      project: first?.project,
-      agent: first?.agent,
-      count: proposals.filter((p) => reviewKey(p) === key).length,
-    };
-  });
-
-  const inbox = useMemo(() => inboxOf(runs, alerts, dismissed), [runs, alerts, dismissed]);
-  const waiting = inbox.filter((i) => i.state === "open").length + proposals.length;
   const openAlerts = alerts.filter((a) => !a.acked_by).length;
   const stats = useMemo(() => new Map((day?.by_agent ?? []).map((g) => [g.name, g])), [day]);
   const editing = agents.find((a) => a.spec.name === agentName) ?? null;
   const shownName = prefs?.display_name || me.principal.name || "";
-
-  const onInbox = (a: UiAction) => {
-    const item = inbox.find((i) => i.id === a.payload.target || i.source.turnId === a.payload.turnId);
-    const run = runs.find((r) => r.id === item?.source.turnId || r.id === a.payload.target);
-    if (a.id === ActionId.dismiss) {
-      // Dismissing an alert is acknowledging it, which the server records.
-      if (item?.kind === "alert" && can("alerts:write")) api.ackAlert(item.id).then(loadAlerts).catch(() => {});
-      else setDismissed((d) => new Set(d).add(a.payload.target));
-    } else if (a.id === ActionId.open && run) {
-      openRun(run.id);
-    } else if (a.id === ActionId.retry && run && can("runs:write")) {
-      api
-        .createRun(run.agent, run.text, run.prev ? { after: run.prev } : {})
-        .then((next) => {
-          loadRuns();
-          openThread(next.thread);
-        })
-        .catch(() => {});
-    }
-  };
 
   const setBaseline = (name: string) => {
     if (!workspace) return;
@@ -398,7 +342,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
         threads={threads}
         selected={view === "chat" ? thread : null}
         onSelect={openThread}
-        inboxCount={waiting}
+        inboxCount={inboxCounts.open}
         alertCount={openAlerts}
         live={live}
         onSignOut={() => api.logout().then(onSignedOut).catch(onSignedOut)}
@@ -420,44 +364,23 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
             />
           )}
           {view === "inbox" && (
-            <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
-              <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 py-6">
-                {toReview.length > 0 && (
-                  <section className="oap-glass flex flex-col rounded-aui-lg p-4" aria-label="Memory to review">
-                    <h2 className="text-aui-sm font-medium text-aui-fg">Memory to review</h2>
-                    <p className="pb-2 text-aui-xs text-aui-muted">
-                      The memory agent proposed these. Nothing is remembered until you choose what to keep.
-                    </p>
-                    <ul>
-                      {toReview.map((r) => (
-                        <li key={r.key} className="flex items-center justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
-                          <span className="text-aui-sm text-aui-fg">
-                            {r.project ? `Project ${r.project}` : r.agent}
-                            <span className="pl-2 text-aui-xs text-aui-muted">
-                              {r.count} {r.count === 1 ? "note" : "notes"} proposed
-                            </span>
-                          </span>
-                          <button
-                            type="button"
-                            className="inline-flex h-8 items-center rounded-aui border border-aui-border px-3 text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
-                            onClick={() => (r.project ? openProject(r.project) : openAgent(r.agent ?? null, "memory"))}
-                          >
-                            Review
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                )}
-                <WebSurface onAction={onInbox}>
-                  <Inbox items={inbox} onAction={onInbox} viewer={shownName} />
-                </WebSurface>
-                <p className="text-aui-xs text-aui-muted">
-                  Open alerts and failed runs appear here. Approvals and budget requests will too, once a run can wait
-                  on a person.
-                </p>
-              </div>
-            </div>
+            <InboxPage
+              signal={inboxTick}
+              viewer={shownName}
+              openId={inboxMessage}
+              onCounts={setInboxCounts}
+              onOpen={(source) =>
+                source.kind === "run"
+                  ? openRun(source.id)
+                  : source.kind === "thread"
+                    ? openThread(source.id)
+                    : source.kind === "agent"
+                      ? openAgent(source.id)
+                      : source.kind === "project"
+                        ? openProject(source.id)
+                        : setView("alerts")
+              }
+            />
           )}
           {view === "project" &&
             (() => {
@@ -471,11 +394,13 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
                   agents={agents}
                   canWrite={can("runs:write")}
                   canSchedule={can("schedules:write")}
+                  canLimit={can("billing:write")}
+                  tick={tick}
                   onNewChat={() => newChat(current.name)}
                   onOpenThread={openThread}
                   onChanged={() => {
                     loadProjects();
-                    loadProposals();
+                    loadInbox();
                   }}
                   onSchedulesChanged={loadSchedules}
                   onDeleted={() => {
@@ -487,8 +412,19 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
               ) : null;
             })()}
           {view === "runs" && <RunList runs={runs} onSelect={openRun} />}
+          {view === "storage" && (
+            <Storage
+              signal={tick}
+              agents={agents.map((a) => a.spec.name)}
+              projects={projects.map((p) => p.name)}
+              canDelete={can("artifacts:write")}
+              onOpenRun={openRun}
+              onOpenThread={openThread}
+            />
+          )}
           {view === "agents" && (
             <Agents
+              builtin={builtin}
               agents={agents}
               runs={runs}
               stats={stats}
@@ -552,7 +488,12 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
               agents={agents}
               canWrite={can("alerts:write")}
               onChanged={loadAlerts}
-              onOpenRun={openRun}
+              onOpenInbox={(alert) => {
+                setInboxMessage(null);
+                setView("inbox");
+                // The message about an alert is found by the alert, in whatever state it is.
+                if (alert) api.inboxFor(alert.id).then(setInboxMessage).catch(() => {});
+              }}
             />
           )}
           {view === "settings" && prefs && (

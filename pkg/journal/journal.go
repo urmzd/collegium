@@ -67,6 +67,21 @@ func (j *Journal) each(fn func(envelope.Event)) {
 	}
 }
 
+// Events returns the events of the named runs in a tenant, oldest first, as
+// they were published. It is what the journal still holds: a run whose first
+// events have left the ring comes back without them.
+func (j *Journal) Events(tenant string, runIDs []string) []envelope.Event {
+	j.mu.RLock()
+	defer j.mu.RUnlock()
+	var out []envelope.Event
+	j.each(func(e envelope.Event) {
+		if e.Tenant == tenant && slices.Contains(runIDs, e.RunID) {
+			out = append(out, e)
+		}
+	})
+	return out
+}
+
 // Query selects events. Tenant is required. Every other field narrows, and an
 // empty field matches everything.
 type Query struct {

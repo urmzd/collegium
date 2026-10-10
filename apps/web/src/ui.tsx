@@ -2,15 +2,16 @@ import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, XIcon } from "@agent-u
 import { AgentOrb, type OrbSize, type OrbState } from "@agent-ui/web";
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
+import { cause, elapsed, took } from "./format.ts";
 
 export const field =
   "w-full rounded-aui border border-aui-border bg-aui-bg px-2.5 py-1.5 text-aui-sm text-aui-fg outline-none placeholder:text-aui-muted focus-visible:border-aui-accent focus-visible:ring-2 focus-visible:ring-aui-ring";
 
 export const button =
-  "inline-flex h-8 items-center justify-center gap-1.5 rounded-aui border border-aui-border bg-aui-surface px-3 text-aui-sm text-aui-fg transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex h-8 items-center justify-center gap-1.5 oap-press rounded-aui border border-aui-border bg-aui-surface px-3 text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
 
 export const primary =
-  "inline-flex h-8 items-center justify-center gap-1.5 rounded-aui bg-aui-primary px-3 text-aui-sm font-medium text-aui-primary-fg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
+  "inline-flex h-8 items-center justify-center gap-1.5 oap-press rounded-aui bg-aui-primary px-3 text-aui-sm font-medium text-aui-primary-fg hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aui-accent disabled:cursor-not-allowed disabled:opacity-50";
 
 export function Label({ text, hint, children }: { text: string; hint?: string; children: ReactNode }) {
   return (
@@ -89,26 +90,8 @@ export function ago(iso: string): string {
   return "just now";
 }
 
-/** Micro-USD as dollars. Zero is an unmetered run, not a free one. */
-export function usd(micro: number): string {
-  if (micro === 0) return "Unmetered";
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(micro / 1_000_000);
-}
-
-/** A duration a person can read at a glance: 840ms, 4.2s, 3m 05s. */
-export function took(ms: number): string {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
-  const m = Math.floor(ms / 60_000);
-  const s = Math.round((ms % 60_000) / 1000);
-  return `${m}m ${String(s).padStart(2, "0")}s`;
-}
-
-/** The last line of an error. Runtime errors nest, and the cause is at the end. */
-export function cause(error: string | undefined): string {
-  const lines = (error ?? "").split("\n").filter((l) => l.trim());
-  return lines[lines.length - 1]?.trim() ?? "";
-}
+// Formatting with no React in it lives in format.ts, so plain modules and their tests can use it too.
+export { cause, elapsed, took, usd } from "./format.ts";
 
 /**
  * Every page sits in the same left-aligned column, so the title and the first
@@ -130,7 +113,7 @@ export function Page({
   return (
     <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
       {/* A container, so rows lay themselves out by the room the page has, not by the window. */}
-      <div className="@container flex w-full max-w-[68rem] flex-col gap-6 px-5 pt-8 pb-12 md:px-10">
+      <div className="@container oap-fade flex w-full max-w-[68rem] flex-col gap-6 px-5 pt-8 pb-12 md:px-10">
         <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <div className="min-w-0">
             <h1 className="oap-display text-[1.875rem] leading-[1.15] font-semibold text-aui-fg">{title}</h1>
@@ -162,12 +145,6 @@ export function Stat({ label, value, note }: { label: string; value: string; not
       {note && <span className="text-aui-2xs text-aui-muted">{note}</span>}
     </div>
   );
-}
-
-/** How long a run took, or has taken so far. */
-export function elapsed(run: Run): number {
-  const ended = run.status === "completed" || run.status === "failed";
-  return Math.max((ended ? Date.parse(run.updated_at) : Date.now()) - Date.parse(run.created_at), 0);
 }
 
 /** The longest run in a set, as the scale a tape is drawn against. */
@@ -400,6 +377,7 @@ export function Popover({
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
+  const present = usePresence(open);
   const root = useRef<HTMLDivElement>(null);
   const id = useId();
 
@@ -435,12 +413,14 @@ export function Popover({
       >
         {trigger}
       </button>
-      {open && (
+      {present.mounted && (
         <div
           id={id}
           role="dialog"
           aria-label={label}
-          className={`oap-glass-pop aui-pop-in absolute z-40 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${narrow ? "w-56" : "w-80"} ${
+          data-leaving={present.leaving}
+          style={{ "--oap-pop-origin": `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
+          className={`oap-glass-pop oap-pop absolute z-40 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${narrow ? "w-56" : "w-80"} ${
             align === "right" ? "right-0" : "left-0"
           } ${up ? "bottom-full mb-2" : "top-full mt-2"}`}
         >
@@ -527,6 +507,97 @@ export function SearchField({
   );
 }
 
+/**
+ * Keeps something on screen for as long as its leaving takes. `mounted` says
+ * whether to render it, and `leaving` is true for the moment between being
+ * closed and being gone: set it as data-leaving so the motion classes play out.
+ * The timer is cleared if the thing reopens or the component goes away.
+ */
+export function usePresence(open: boolean, ms = 110): { mounted: boolean; leaving: boolean } {
+  const [held, setHeld] = useState(open);
+  useEffect(() => {
+    if (open) {
+      setHeld(true);
+      return;
+    }
+    const timer = window.setTimeout(() => setHeld(false), ms);
+    return () => window.clearTimeout(timer);
+  }, [open, ms]);
+  return { mounted: open || held, leaving: !open && held };
+}
+
+/** Renders its children while `when` is true and for `ms` after, telling them when they are leaving. */
+export function Presence({ when, ms, children }: { when: boolean; ms?: number; children: (leaving: boolean) => ReactNode }) {
+  const { mounted, leaving } = usePresence(when, ms);
+  return mounted ? children(leaving) : null;
+}
+
+export type Flash = { text: string; bad: boolean };
+
+/**
+ * A brief confirmation that clears itself. `say("Copied")` shows for `ms` and
+ * goes. `say(text, true)` is a failure: it stays until the next `say` or
+ * `clear`, because a person needs time to read what went wrong. The timer is
+ * cleared when the component goes away.
+ */
+export function useFlash(ms = 1600): { flash: Flash | null; say: (text: string, bad?: boolean) => void; clear: () => void } {
+  const [flash, setFlash] = useState<Flash | null>(null);
+  useEffect(() => {
+    if (!flash || flash.bad) return;
+    const timer = window.setTimeout(() => setFlash(null), ms);
+    return () => window.clearTimeout(timer);
+  }, [flash, ms]);
+  return { flash, say: (text, bad = false) => setFlash({ text, bad }), clear: () => setFlash(null) };
+}
+
+/**
+ * The note a `useFlash` shows, floating just above the control it belongs to.
+ * It takes no room, so nothing beside the control moves, and the control keeps
+ * its own label. Put it inside a `relative` wrapper. It is a live region, so
+ * the confirmation is announced as well as seen.
+ */
+export function FlashNote({ flash, align = "center" }: { flash: Flash | null; align?: "center" | "left" | "right" }) {
+  const present = usePresence(flash !== null);
+  // Keep the words while the note leaves.
+  const last = useRef<Flash | null>(flash);
+  if (flash) last.current = flash;
+  const shown = flash ?? last.current;
+  const place = align === "center" ? "left-1/2 -translate-x-1/2" : align === "left" ? "left-0" : "right-0";
+  return (
+    <span role="status" aria-live="polite" className={`pointer-events-none absolute bottom-full z-50 mb-1.5 ${place}`}>
+      {present.mounted && shown && (
+        <span
+          data-testid="flash-note"
+          data-bad={shown.bad}
+          data-leaving={present.leaving}
+          className="oap-note oap-glass-pop flex items-center gap-1.5 whitespace-nowrap rounded-aui px-2 py-1 text-aui-xs text-aui-fg"
+        >
+          {/* A mark as well as the words, so a small notice beside a bare icon still reads as a result. */}
+          {shown.bad ? <XIcon size={12} className="text-aui-bad" /> : <CheckIcon size={12} className="text-aui-ok" />}
+          {shown.text}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * Rows that stand in for a list while it loads, at the height the real rows
+ * will have, so nothing jumps when they arrive. Says "Loading" to a screen
+ * reader. The shimmer stops when motion is reduced.
+ */
+export function SkeletonRows({ count = 4, height = "2rem", className = "" }: { count?: number; height?: string; className?: string }) {
+  return (
+    <div role="status" data-testid="skeleton" className={`flex flex-col gap-2 py-2 ${className}`}>
+      <span className="sr-only">Loading</span>
+      {Array.from({ length: count }, (_, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: placeholders have no identity
+        <span key={i} aria-hidden className="aui-skeleton block" style={{ height, width: `${92 - ((i * 17) % 40)}%` }} />
+      ))}
+    </div>
+  );
+}
+
 export type Option<T extends string = string> = {
   value: T;
   label: string;
@@ -549,11 +620,14 @@ export function Menu<T extends string>({
   disabled,
   quiet,
   shows,
+  header,
   align = "left",
   className = "",
 }: {
   label: string;
   value: T;
+  /** A line above the choices that says what they act on. */
+  header?: ReactNode;
   options: Option<T>[];
   onChange: (next: T) => void;
   disabled?: boolean;
@@ -565,6 +639,7 @@ export function Menu<T extends string>({
   className?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const present = usePresence(open);
   const [up, setUp] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
@@ -666,14 +741,17 @@ export function Menu<T extends string>({
         <span className="min-w-0 flex-1 truncate">{shows ?? chosen?.label ?? "Choose"}</span>
         <ChevronDownIcon size={14} className={`text-aui-muted transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`} />
       </button>
-      {open && (
+      {present.mounted && (
         // biome-ignore lint/a11y/noStaticElementInteractions: keys are handled here for the filter and the list together
         <div
           onKeyDown={onKey}
-          className={`oap-glass-pop aui-pop-in absolute z-40 flex max-h-80 min-w-full max-w-[min(22rem,calc(100vw-2rem))] flex-col rounded-aui-lg p-1 ${
+          data-leaving={present.leaving}
+          style={{ "--oap-pop-origin": `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
+          className={`oap-glass-pop oap-pop absolute z-40 flex max-h-80 min-w-full max-w-[min(22rem,calc(100vw-2rem))] flex-col rounded-aui-lg p-1 ${
             quiet ? "w-max min-w-44" : ""
           } ${align === "right" ? "right-0" : "left-0"} ${up ? "bottom-full mb-1.5" : "top-full mt-1.5"}`}
         >
+          {header && <div className="shrink-0 border-[var(--oap-rule)] border-b px-2.5 pt-1.5 pb-2 text-aui-xs text-aui-muted">{header}</div>}
           {searchable && (
             <SearchField
               label={`Filter ${label.toLowerCase()}`}
@@ -813,6 +891,7 @@ export function UsageMeter({
   projected,
   period,
   size = "row",
+  labelled = false,
   format: show = dollars,
   testId = "usage-meter",
 }: {
@@ -826,8 +905,10 @@ export function UsageMeter({
   /** What the period is expected to end at, drawn as a lighter extension. */
   projected?: number;
   period?: Period;
-  /** `row` fits a table cell. `header` leads a page. */
-  size?: "row" | "header";
+  /** `row` fits a table cell. `header` leads a page. `mini` is the track alone, to sit inside another control. */
+  size?: "row" | "header" | "mini";
+  /** Show the label above a row-size meter. The header size always shows it. */
+  labelled?: boolean;
   /** How an amount is written. Dollars from micro-USD unless given. Use `counted("runs")` for a plain count. */
   format?: (amount: number) => string;
   testId?: string;
@@ -838,15 +919,37 @@ export function UsageMeter({
   const scale = Math.max(cap, spent, ahead, 1);
   const pct = (v: number) => `${Math.min((100 * v) / scale, 100)}%`;
   const share = cap ? Math.round((100 * spent) / cap) : null;
+  // Exactly at the limit is still the warning state, but "near" would be wrong.
+  const word = cap > 0 && spent === cap ? "At limit" : usageWord[state];
   const each = period ? ` a ${period}` : "";
   const text = cap
-    ? `${show(spent)} of ${show(cap)}${each}, ${share}%. ${state === "over" ? `Over limit by ${show(spent - cap)}` : usageWord[state]}.${
+    ? `${show(spent)} of ${show(cap)}${each}, ${share}%. ${state === "over" ? `Over limit by ${show(spent - cap)}` : word}.${
         ahead ? ` Heading for ${show(ahead)}.` : ""
       }`
     : `${show(spent)} used. No limit.`;
   const note =
-    state === "over" ? `Over by ${show(spent - cap)}` : ahead && cap && ahead > cap ? `Heading for ${show(ahead)}` : usageWord[state];
+    state === "over" ? `Over by ${show(spent - cap)}` : ahead && cap && ahead > cap ? `Heading for ${show(ahead)}` : word;
   const header = size === "header";
+
+  if (size === "mini") {
+    return (
+      <span
+        data-testid={testId}
+        data-usage={state}
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={cap || Math.max(spent, 1)}
+        aria-valuenow={Math.min(spent, cap || spent)}
+        aria-valuetext={text}
+        title={text}
+        className="oap-meter-track inline-block w-10 shrink-0"
+        style={{ "--oap-meter-h": "4px" } as CSSProperties}
+      >
+        {cap > 0 && <span className="oap-meter-fill" style={{ width: pct(spent) }} />}
+      </span>
+    );
+  }
 
   return (
     <div data-testid={testId} data-usage={state} className={`flex min-w-0 flex-col ${header ? "gap-2" : "gap-1"}`}>
@@ -858,6 +961,7 @@ export function UsageMeter({
           </span>
         </div>
       )}
+      {!header && labelled && <span className="truncate text-aui-xs text-aui-muted">{label}</span>}
       <div className="flex items-baseline justify-between gap-3">
         <span className={`oap-display min-w-0 truncate font-semibold text-aui-fg ${header ? "text-[1.75rem] leading-9" : "text-aui-sm"}`}>
           {show(spent)}

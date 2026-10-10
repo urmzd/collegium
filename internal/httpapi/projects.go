@@ -138,7 +138,7 @@ func (s *Server) approveProjectMemory(w http.ResponseWriter, r *http.Request, wh
 	if !found {
 		return
 	}
-	n, err := s.P.Memory.Approve(who.Tenant, owner, body.IDs)
+	n, err := s.P.ApproveMemory(who.Tenant, owner, body.IDs)
 	if err != nil {
 		s.problem(w, err)
 		return
@@ -151,7 +151,7 @@ func (s *Server) removeProjectMemory(w http.ResponseWriter, r *http.Request, who
 	if !found {
 		return
 	}
-	if err := s.P.Memory.Remove(who.Tenant, owner, r.PathValue("id")); err != nil {
+	if err := s.P.RemoveMemory(who.Tenant, owner, r.PathValue("id")); err != nil {
 		s.problem(w, err)
 		return
 	}

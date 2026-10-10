@@ -1,8 +1,9 @@
 import { type FormEvent, useRef, useState } from "react";
 import { ApiError, api, type Me, type Preferences, type Revision, type Settings as Workspace } from "./api.ts";
+import { BillingSettings } from "./Billing.tsx";
 import { agentOptions, button, card, field, Label, Menu, Problem, primary, Segmented, Switch } from "./ui.tsx";
 
-type Section = "profile" | "appearance" | "workspace" | "connections" | "access";
+type Section = "profile" | "appearance" | "workspace" | "limits" | "connections" | "access";
 
 const accents: { id: string; label: string }[] = [
   { id: "purple", label: "Purple" },
@@ -82,12 +83,13 @@ export function Settings({
     { id: "profile", label: "Profile" },
     { id: "appearance", label: "Appearance" },
     { id: "workspace", label: "Workspace" },
+    { id: "limits", label: "Limits" },
     { id: "connections", label: "Connections" },
     { id: "access", label: "Access" },
   ];
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+    <div className="oap-fade flex min-h-0 flex-1 flex-col md:flex-row">
       <nav aria-label="Settings sections" className="flex shrink-0 gap-0.5 overflow-x-auto border-aui-border border-b p-2 md:w-52 md:flex-col md:border-r md:border-b-0 md:p-3">
         {sections.map((s) => (
           <button
@@ -349,6 +351,14 @@ export function Settings({
                 </>
               )}
             </>
+          )}
+
+          {section === "limits" && (
+            <BillingSettings
+              projects={workspace?.projects.map((p) => p.name) ?? []}
+              agents={agents.map((a) => a.spec.name)}
+              canWrite={me.permissions.includes("billing:write")}
+            />
           )}
 
           {section === "connections" && (

@@ -375,6 +375,8 @@ async function call<T>(method: string, path: string, json?: unknown): Promise<T>
 export const api = {
   me: () => call<Me>("GET", "/api/me"),
   agents: () => call<{ agents: Revision[] }>("GET", "/api/agents").then((r) => r.agents),
+  /** Every agent, and the names of those the platform provides, which cannot be edited. */
+  agentList: () => call<{ agents: Revision[]; builtin?: string[] }>("GET", "/api/agents"),
   createAgent: (spec: AgentSpec) => call<Revision>("POST", "/api/agents", spec),
   reviseAgent: (spec: AgentSpec, expectedRev: number) =>
     call<Revision>("PUT", `/api/agents/${encodeURIComponent(spec.name)}`, {
@@ -408,6 +410,15 @@ export const api = {
   approveMemory: (agent: string, ids: string[]) =>
     call<{ approved: number }>("POST", `/api/agents/${encodeURIComponent(agent)}/memory/approve`, { ids }),
   pendingMemory: () => call<{ proposals: Proposal[] }>("GET", "/api/memory/pending").then((r) => r.proposals),
+  /** A run's events as they were published, for a run that is no longer streaming. */
+  runEvents: (id: string) =>
+    call<{ events: BusEvent[]; complete: boolean }>("GET", `/api/runs/${encodeURIComponent(id)}/events`),
+  /** Everything recorded about a run and the runs under it, as one document. */
+  manifest: (id: string) => call<unknown>("GET", `/api/runs/${encodeURIComponent(id)}/manifest`),
+  inboxCount: () => call<{ open: number; unread: number }>("GET", "/api/inbox/count"),
+  /** The id of the message an alert raised, or null when it raised none. */
+  inboxFor: (alert: string) =>
+    call<{ messages: { id: string }[] }>("GET", `/api/inbox?alert=${encodeURIComponent(alert)}`).then((r) => r.messages[0]?.id ?? null),
   policies: () => call<{ policies: Policy[] }>("GET", "/api/policies").then((r) => r.policies),
   savePolicy: (p: Omit<Policy, "version" | "updated_at" | "updated_by" | "action"> & { action?: Policy["action"] }) =>
     call<Policy>("PUT", "/api/policies", p),
@@ -494,7 +505,13 @@ export const api = {
  */
 export function subscribe(
   topic: string,
-  handlers: { onOpen?: () => void; onEvent: (e: BusEvent) => void; onState?: (live: boolean) => void },
+  handlers: {
+    onOpen?: () => void;
+    onEvent: (e: BusEvent) => void;
+    onState?: (live: boolean) => void;
+    /** The inbox changed. It arrives as a named event, apart from run events. */
+    onInbox?: () => void;
+  },
 ): () => void {
   const source = new EventSource(`/api/events?topic=${encodeURIComponent(topic)}`);
   source.onopen = () => {
@@ -509,5 +526,6 @@ export function subscribe(
       // A frame that is not an event is ignored rather than fatal.
     }
   };
+  source.addEventListener("inbox", () => handlers.onInbox?.());
   return () => source.close();
 }

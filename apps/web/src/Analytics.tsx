@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { api, type Bucket, type Entry, type Group, type Revision, type Summary } from "./api.ts";
-import { agentOptions, button, card, Chip, Empty, field, figures, Menu, Page, Stat, took } from "./ui.tsx";
+import { Burn } from "./Billing.tsx";
+import { agentOptions, button, card, Chip, Empty, field, figures, Menu, Page, SkeletonRows, Stat, took } from "./ui.tsx";
 
 const windows = [
   { id: "15m", label: "15 minutes" },
@@ -384,7 +385,7 @@ export function Analytics({
       }
     >
       {!summary || !t ? (
-        <Empty title="Loading" />
+        <SkeletonRows count={5} height="3rem" />
       ) : (
         <>
           <div className={figures}>
@@ -394,6 +395,8 @@ export function Analytics({
             <Stat label="95th percentile" value={t.p95_ms ? took(t.p95_ms) : "–"} note="Of runs that ended" />
             <Stat label="Open alerts" value={String(openAlerts)} note="Across all time" />
           </div>
+
+          <Burn tick={tick} />
 
           <section className={card}>
             <div className="flex items-center justify-between pb-2">

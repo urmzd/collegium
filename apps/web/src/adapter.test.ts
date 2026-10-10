@@ -77,3 +77,69 @@ test("the orb is told what kind of work a tool call is", () => {
   assert.equal(activity("delegate_helper"), "delegating");
   assert.equal(activity("github.comment"), "calling");
 });
+
+test("a call to another agent is that agent, not a tool", () => {
+  const to = adapter();
+  const [doing, started] = to(ev("delta.tool.call", { id: "t1", name: "tag_helper", phase: "requested" }));
+  assert.deepEqual(doing, { type: "activity", activity: "delegating" });
+  assert.equal(started?.type, "task.upserted");
+  if (started?.type === "task.upserted") {
+    assert.equal(started.task.title, "helper");
+    assert.equal(started.task.subagent?.name, "helper");
+  }
+  const done = to(ev("delta.tool.done", { id: "t1", result: "Three tests fail." })).find((e) => e.type === "task.upserted");
+  if (done?.type === "task.upserted") {
+    assert.equal(done.task.status, "complete");
+    assert.deepEqual(done.task.subagent, { name: "helper", summary: "Three tests fail.", hue: undefined });
+  }
+  const [, tinted] = adapter({ hue: () => 210 })(ev("delta.tool.call", { id: "t3", name: "tag_helper" }));
+  if (tinted?.type === "task.upserted") {
+    assert.equal(tinted.task.subagent?.hue, 210);
+  }
+  // An ordinary tool is still a tool.
+  const plain = to(ev("delta.tool.call", { id: "t2", name: "github.comment" })).find((e) => e.type === "task.upserted");
+  assert.equal(plain?.type === "task.upserted" && plain.task.subagent, undefined);
+});
+
+test("a published file is one card that goes from generating to ready", () => {
+  const to = adapter();
+  const opened = to(ev("delta.tool.call", { id: "t1", name: "publish_artifact" })).find((e) => e.type === "attachment.upserted");
+  assert.equal(opened?.type === "attachment.upserted" && opened.attachment.type === "artifact" && opened.attachment.phase, "generating");
+  const [ready] = to(
+    ev("action.taken", {
+      name: "publish_artifact",
+      data: { id: "art-7", title: "report.md", kind: "document", mime: "text/markdown", size: 19, version: 2, preview: "# Q3" },
+    }),
+  );
+  assert.deepEqual(ready, {
+    type: "attachment.upserted",
+    attachment: {
+      type: "artifact",
+      id: "t1",
+      title: "report.md",
+      kind: "document",
+      phase: "ready",
+      mimeType: "text/markdown",
+      sizeBytes: 19,
+      version: 2,
+      url: "/api/artifacts/art-7/content?inline=1",
+      downloadUrl: "/api/artifacts/art-7/content",
+      description: undefined,
+      previewText: "# Q3",
+    },
+  });
+});
+
+test("a publish that is refused shows a failed file with the reason", () => {
+  const to = adapter();
+  to(ev("delta.tool.call", { id: "t1", name: "publish_artifact" }));
+  const [failed] = to(ev("action.taken", { name: "publish_artifact", summary: "report.md", error: "platform: storage limit reached: the workspace is full" }));
+  assert.equal(failed?.type, "attachment.upserted");
+  if (failed?.type === "attachment.upserted" && failed.attachment.type === "artifact") {
+    assert.equal(failed.attachment.id, "t1");
+    assert.equal(failed.attachment.phase, "failed");
+    assert.match(failed.attachment.error ?? "", /storage limit/);
+  }
+  // Another connector's action is not a file.
+  assert.deepEqual(to(ev("action.taken", { name: "jira_transition" })), []);
+});

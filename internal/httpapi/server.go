@@ -28,9 +28,11 @@ import (
 
 	"github.com/urmzd/open-agent-platform/internal/platform"
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
+	"github.com/urmzd/open-agent-platform/pkg/artifacts"
 	"github.com/urmzd/open-agent-platform/pkg/auth"
 	"github.com/urmzd/open-agent-platform/pkg/call"
 	"github.com/urmzd/open-agent-platform/pkg/evals"
+	"github.com/urmzd/open-agent-platform/pkg/inbox"
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
 	"github.com/urmzd/open-agent-platform/pkg/memory"
 	"github.com/urmzd/open-agent-platform/pkg/pick"
@@ -90,6 +92,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/schedules/{name}/resume", s.authed(auth.SchedulesWrite, s.pauseSchedule(false)))
 	mux.HandleFunc("POST /api/schedules/{name}/run", s.authed(auth.SchedulesWrite, s.runSchedule))
 	mux.HandleFunc("GET /api/events", s.authed(auth.RunsRead, s.events))
+	s.inboxRoutes(mux)
+	s.artifactRoutes(mux)
 	s.observeRoutes(mux)
 	s.preferenceRoutes(mux)
 	s.projectRoutes(mux)
@@ -154,6 +158,9 @@ func (s *Server) me(w http.ResponseWriter, _ *http.Request, who auth.Principal) 
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	if err := s.P.EnsureBuiltins(r.Context(), who.Tenant); err != nil {
+		s.Log.Warn("httpapi: built-in agents", "error", err)
+	}
 	var all []agentspec.Revision
 	page := registry.Page{Size: 100}
 	for {
@@ -168,12 +175,17 @@ func (s *Server) listAgents(w http.ResponseWriter, r *http.Request, who auth.Pri
 		}
 		page.Token = next
 	}
-	ok(w, http.StatusOK, map[string]any{"agents": orEmpty(all)})
+	// builtin names the agents the platform provides, which cannot be edited.
+	ok(w, http.StatusOK, map[string]any{"agents": orEmpty(all), "builtin": platform.Builtins()})
 }
 
 func (s *Server) createAgent(w http.ResponseWriter, r *http.Request, who auth.Principal) {
 	var spec agentspec.AgentSpec
 	if !decode(w, r, &spec) {
+		return
+	}
+	if platform.IsBuiltin(spec.Name) {
+		fail(w, http.StatusForbidden, "that name belongs to an agent the platform provides")
 		return
 	}
 	rev, err := s.P.Agents.Create(r.Context(), who.Tenant, spec, who.Subject)
@@ -194,6 +206,10 @@ func (s *Server) reviseAgent(w http.ResponseWriter, r *http.Request, who auth.Pr
 	}
 	if body.Spec.Name != r.PathValue("name") {
 		fail(w, http.StatusBadRequest, "the spec's name must match the agent being revised")
+		return
+	}
+	if platform.IsBuiltin(body.Spec.Name) {
+		fail(w, http.StatusForbidden, "this agent is provided by the platform and cannot be edited")
 		return
 	}
 	rev, err := s.P.Agents.Revise(r.Context(), who.Tenant, body.Spec, body.ExpectedRev, who.Subject)
@@ -256,7 +272,7 @@ func (s *Server) approveMemory(w http.ResponseWriter, r *http.Request, who auth.
 		s.problem(w, err)
 		return
 	}
-	n, err := s.P.Memory.Approve(who.Tenant, r.PathValue("name"), body.IDs)
+	n, err := s.P.ApproveMemory(who.Tenant, r.PathValue("name"), body.IDs)
 	if err != nil {
 		s.problem(w, err)
 		return
@@ -284,7 +300,7 @@ func (s *Server) pendingMemory(w http.ResponseWriter, _ *http.Request, who auth.
 }
 
 func (s *Server) removeMemory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
-	if err := s.P.Memory.Remove(who.Tenant, r.PathValue("name"), r.PathValue("id")); err != nil {
+	if err := s.P.RemoveMemory(who.Tenant, r.PathValue("name"), r.PathValue("id")); err != nil {
 		s.problem(w, err)
 		return
 	}
@@ -498,12 +514,29 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, who auth.Princip
 		}
 	}()
 
+	// Inbox changes ride the same stream as a named event, so a reader that
+	// only listens for run events never sees them. A notice names a message
+	// and nothing more: the reader fetches it and is shown what they may see.
+	notices, unwatch := s.P.Inbox.Watch(who.Tenant)
+	defer unwatch()
+
 	tick := time.NewTicker(heartbeat)
 	defer tick.Stop()
 	for {
 		select {
 		case <-r.Context().Done():
 			return
+		case n := <-notices:
+			if !platform.InboxSees(who, n.Kind) {
+				continue
+			}
+			b, err := json.Marshal(n)
+			if err != nil {
+				continue
+			}
+			if _, err := fmt.Fprintf(w, "event: inbox\ndata: %s\n\n", b); err != nil {
+				return
+			}
 		case <-tick.C:
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				return
@@ -539,7 +572,8 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, runs.ErrNotFound), errors.Is(err, registry.ErrNotFound), errors.Is(err, platform.ErrScheduleNotFound),
 		errors.Is(err, platform.ErrProjectNotFound),
 		errors.Is(err, alerts.ErrNotFound), errors.Is(err, knowledge.ErrNotFound), errors.Is(err, evals.ErrNotFound),
-		errors.Is(err, memory.ErrNotFound), errors.Is(err, policy.ErrNotFound):
+		errors.Is(err, memory.ErrNotFound), errors.Is(err, policy.ErrNotFound), errors.Is(err, inbox.ErrNotFound),
+		errors.Is(err, artifacts.ErrNotFound):
 		fail(w, http.StatusNotFound, "not found")
 	case errors.Is(err, registry.ErrExists), errors.Is(err, platform.ErrScheduleExists), errors.Is(err, platform.ErrProjectExists),
 		errors.Is(err, alerts.ErrExists), errors.Is(err, knowledge.ErrExists), errors.Is(err, evals.ErrExists):
@@ -559,7 +593,10 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, call.ErrInvalid), errors.Is(err, registry.ErrInvalid), errors.Is(err, agentspec.ErrInvalid),
 		errors.Is(err, envelope.ErrInvalid), errors.Is(err, cron.ErrSchedule),
 		errors.Is(err, alerts.ErrInvalid), errors.Is(err, knowledge.ErrInvalid), errors.Is(err, evals.ErrInvalid),
-		errors.Is(err, prefs.ErrInvalid), errors.Is(err, memory.ErrInvalid), errors.Is(err, policy.ErrInvalid):
+		errors.Is(err, prefs.ErrInvalid), errors.Is(err, memory.ErrInvalid), errors.Is(err, policy.ErrInvalid),
+		errors.Is(err, inbox.ErrInvalid), errors.Is(err, platform.ErrAction):
+		fail(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, platform.ErrSandbox), errors.Is(err, artifacts.ErrInvalid):
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, memory.ErrSensitive):
 		fail(w, http.StatusBadRequest, "that note carries personal data, such as an email address or a card number, so it was not stored")

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type ThreadSummary } from "./api.ts";
+import { within } from "./timeout.ts";
 
 export type Standing = "" | "running" | "failed";
 
@@ -32,6 +33,9 @@ export function useRecents(agent: string, standing: Standing, signal: unknown) {
   const [local, setLocal] = useState<number | null>(null);
   const [loading, setLoading] = useState<"first" | "more" | null>("first");
   const [failed, setFailed] = useState(false);
+  // The first page could not be had, or took too long. Nothing is listed, and it can be tried again.
+  const [stalled, setStalled] = useState(false);
+  const [again, setAgain] = useState(0);
 
   // Every request carries the filters it was made for. An answer for filters
   // that have since changed is dropped.
@@ -50,10 +54,10 @@ export function useRecents(agent: string, standing: Standing, signal: unknown) {
       setFailed(false);
       setLoading("first");
     }
-    api
-      .threadsPage({ limit: PAGE, origin: "api", agent, standing })
+    within(api.threadsPage({ limit: PAGE, origin: "api", agent, standing }))
       .then((page) => {
         if (current.current !== key) return;
+        setStalled(false);
         if (page.next === undefined) {
           // Not paged by the server. Filter and page what it sent.
           setRows(page.threads.filter((t) => keep(t, agent, standing)));
@@ -74,12 +78,13 @@ export function useRecents(agent: string, standing: Standing, signal: unknown) {
         loaded.current = { key, pages: Math.max(fresh ? 1 : loaded.current.pages, 1) };
       })
       .catch(() => {
-        // A failed refresh leaves what is on screen. The next signal tries again.
+        // A failed refresh leaves what is on screen. With nothing on screen, say so and offer to try again.
+        if (current.current === key && fresh) setStalled(true);
       })
       .finally(() => {
         if (current.current === key) setLoading((l) => (l === "first" ? null : l));
       });
-  }, [key, signal]);
+  }, [key, signal, again]);
 
   const more = useCallback(() => {
     if (local !== null) {
@@ -89,8 +94,7 @@ export function useRecents(agent: string, standing: Standing, signal: unknown) {
     if (!next || loading) return;
     setLoading("more");
     setFailed(false);
-    api
-      .threadsPage({ limit: PAGE, origin: "api", agent, standing, before: next })
+    within(api.threadsPage({ limit: PAGE, origin: "api", agent, standing, before: next }))
       .then((page) => {
         if (current.current !== key) return;
         setRows((old) => {
@@ -113,6 +117,12 @@ export function useRecents(agent: string, standing: Standing, signal: unknown) {
     hasMore: local === null ? next !== null : rows.length > local,
     loading,
     failed,
+    stalled,
+    retry: () => {
+      setStalled(false);
+      setLoading("first");
+      setAgain((n) => n + 1);
+    },
     more,
   };
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
 	"github.com/urmzd/open-agent-platform/pkg/call"
+	"github.com/urmzd/open-agent-platform/pkg/inbox"
 	"github.com/urmzd/open-agent-platform/pkg/policy"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 	"github.com/urmzd/open-agent-platform/pkg/usage"
@@ -69,6 +70,19 @@ func (p *Platform) admit(tag envelope.Tag, edge call.Edge) error {
 	return nil
 }
 
+// limitOf is the number a policy sets for one of its limits.
+func limitOf(pol policy.Policy, l policy.Limit) int64 {
+	switch l {
+	case policy.LimitRuns:
+		return int64(pol.MaxRuns)
+	case policy.LimitConcurrent:
+		return int64(pol.MaxConcurrent)
+	case policy.LimitSpend:
+		return pol.SpendLimit
+	}
+	return pol.MaxLease
+}
+
 // budgetAlert raises one alert per scope and limit while it stays open.
 func (p *Platform) budgetAlert(tenant string, d policy.Decision, severity alerts.Severity, lead string) {
 	// Nearing a limit and being refused at it are different things to tell
@@ -78,7 +92,14 @@ func (p *Platform) budgetAlert(tenant string, d policy.Decision, severity alerts
 	if d.Policy.Scope.Kind == policy.Agent {
 		a.Agent = d.Policy.Scope.Name
 	}
-	if _, raised := p.Alerts.Raise(tenant, key, a); raised {
+	if raised, ok := p.Alerts.Raise(tenant, key, a); ok {
 		p.log.Warn("platform: alert", "rule", key, "severity", severity, "title", a.Title)
+		pol := d.Policy
+		p.inboxAlert(tenant, raised, inbox.Part{Type: inbox.PartBudget, Budget: &inbox.BudgetPart{
+			ScopeKind: string(pol.Scope.Kind), ScopeName: pol.Scope.Name, Limit: string(d.Limit),
+			Period: string(pol.Period), Version: pol.Version, Used: limitOf(*pol, d.Limit) - d.Remaining, Max: limitOf(*pol, d.Limit),
+			Refused: severity == alerts.Critical,
+			Current: inbox.Limits{MaxRuns: pol.MaxRuns, MaxConcurrent: pol.MaxConcurrent, SpendLimit: pol.SpendLimit},
+		}})
 	}
 }

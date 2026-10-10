@@ -39,8 +39,11 @@ import (
 	"github.com/urmzd/opentag/pkg/topic"
 
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
+	"github.com/urmzd/open-agent-platform/pkg/artifacts"
+	"github.com/urmzd/open-agent-platform/pkg/blob"
 	"github.com/urmzd/open-agent-platform/pkg/call"
 	"github.com/urmzd/open-agent-platform/pkg/evals"
+	"github.com/urmzd/open-agent-platform/pkg/inbox"
 	"github.com/urmzd/open-agent-platform/pkg/journal"
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
 	"github.com/urmzd/open-agent-platform/pkg/memory"
@@ -66,7 +69,11 @@ type Config struct {
 	// OfflineHooks lets housekeeping run on the offline provider. It exists
 	// for tests: an offline answer is a notice, not a title or a fact.
 	OfflineHooks bool
-	Log          *slog.Logger
+	// BuiltinProvider and BuiltinModel are what the platform's own agents
+	// run on. With either empty there are no built-in agents.
+	BuiltinProvider string
+	BuiltinModel    string
+	Log             *slog.Logger
 	// Now is the clock. Nil means time.Now.
 	Now func() time.Time
 }
@@ -88,6 +95,15 @@ type Platform struct {
 	Memory    *memory.Store
 	Policies  *policy.Store
 	Usage     *usage.Ledger
+	Inbox     *inbox.Store
+	Artifacts *artifacts.Index
+	// Blobs holds the bytes of published files.
+	Blobs blob.Store
+
+	// dir is the workspace directory, resolved once.
+	dir string
+	// publishing makes a storage check and the write it allows one step.
+	publishing sync.Mutex
 
 	broker  bus.Bus
 	sinks   *connector.Registry
@@ -130,6 +146,8 @@ func New(cfg Config) (*Platform, error) {
 		Memory:    memory.NewStore(),
 		Policies:  policy.NewStore(),
 		Usage:     usage.NewLedger(),
+		Inbox:     inbox.NewStore(),
+		Artifacts: artifacts.NewIndex(),
 		broker:    bus.NewMemory(),
 		sinks:     connector.NewRegistry(),
 		ledger:    ledger.NewMemory(),
@@ -178,14 +196,22 @@ func (p *Platform) executor() (runtime.Executor, error) {
 		}
 		dir = filepath.Join(base, "open-agent-platform", "workspace")
 	}
+	p.dir = dir
 	ws, err := workspace.NewLocal(dir)
 	if err != nil {
 		return nil, fmt.Errorf("platform: workspace %q: %w", dir, err)
 	}
+	if p.Blobs == nil {
+		blobs, err := blob.NewDisk(filepath.Join(dir, "blobs"))
+		if err != nil {
+			return nil, fmt.Errorf("platform: storage: %w", err)
+		}
+		p.Blobs = blobs
+	}
 	tools := tool.NewRegistry()
 	plane := controlplane.NewMemory(inproc.NewFactory(tools, ws), metrics.Nop())
 	exec, err := runtime.NewSandbox(plane, tools, registry.NewSpecs(p.Agents),
-		runtime.WithCatalog(runtime.Connectors(p.sinks)),
+		runtime.WithCatalog(p.fileTools(runtime.Connectors(p.sinks))),
 		runtime.WithSandboxLogger(p.log),
 	)
 	if err != nil {
@@ -329,8 +355,15 @@ func (p *Platform) reconcile(ctx context.Context) {
 
 // raise checks a run that has just ended against its tenant's alert rules.
 func (p *Platform) raise(run runs.Run) {
+	spoken := false
 	for _, a := range p.Alerts.Evaluate(run, p.Runs.Recent) {
 		p.log.Warn("platform: alert", "rule", a.Rule, "severity", a.Severity, "title", a.Title, "run", a.RunID)
+		p.inboxAlert(run.Tenant, a)
+		spoken = spoken || a.RunID == run.ID
+	}
+	// A failure no rule was watching for still needs someone.
+	if !spoken {
+		p.inboxFailure(run)
 	}
 }
 
@@ -395,6 +428,18 @@ func (p *Platform) Run(ctx context.Context) error {
 	}
 
 	loop("router", func() error { return p.deliver.Run(ctx) })
+	loop("sandbox sweep", func() error {
+		tick := time.NewTicker(time.Hour)
+		defer tick.Stop()
+		for {
+			p.sweepSandboxes()
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-tick.C:
+			}
+		}
+	})
 	loop("worker", func() error {
 		return worker.New(p.ledger, p.queue,
 			worker.WithRegistry(p.rt.Registry()),

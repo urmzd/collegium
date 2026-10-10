@@ -1,6 +1,6 @@
 import { type FormEvent, useState } from "react";
 import { type Alert, type AlertRule, ApiError, api, type Revision } from "./api.ts";
-import { agentOptions, ago, button, card, cause, Chip, Empty, field, Label, Menu, Page, Problem, primary } from "./ui.tsx";
+import { agentOptions, ago, button, card, Empty, field, Label, Menu, Page, Problem, primary, rows } from "./ui.tsx";
 
 const kindLabel: Record<AlertRule["kind"], string> = {
   run_failed: "A run fails",
@@ -23,6 +23,9 @@ function describe(r: AlertRule): string {
   }
 }
 
+const linkish =
+  "rounded-aui-sm text-aui-fg underline underline-offset-2 hover:no-underline focus-visible:outline-2 focus-visible:outline-aui-accent";
+
 /** Severity as a word and a mark, so it never depends on color alone. */
 function Severity({ level }: { level: AlertRule["severity"] }) {
   return (
@@ -33,25 +36,34 @@ function Severity({ level }: { level: AlertRule["severity"] }) {
   );
 }
 
+/**
+ * What to watch for. A rule looks at runs as they end, and when it holds it
+ * raises a message in the inbox. This page is where rules are made and where
+ * each one's recent firings are listed. Resolving what a rule raised happens
+ * in the inbox, so there is one place for it.
+ */
 export function Alerts({
   alerts,
   rules,
   agents,
   canWrite,
   onChanged,
-  onOpenRun,
+  onOpenInbox,
 }: {
   alerts: Alert[];
   rules: AlertRule[];
   agents: Revision[];
   canWrite: boolean;
   onChanged: () => void;
-  onOpenRun: (id: string) => void;
+  /** Open the inbox, at the message an alert raised when one is given. */
+  onOpenInbox?: (alert?: Alert) => void;
+  /** No longer used: an alert's run is opened from its message in the inbox. */
+  onOpenRun?: (id: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const open = alerts.filter((a) => !a.acked_by);
-  const seen = alerts.filter((a) => a.acked_by);
+  const open = alerts.filter((a) => !a.acked_by).length;
+  const newest = [...alerts].sort((x, y) => y.at.localeCompare(x.at));
 
   const act = (p: Promise<unknown>, fallback: string) => {
     setProblem(null);
@@ -61,7 +73,7 @@ export function Alerts({
   return (
     <Page
       title="Alerts"
-      lede="Rules watch runs as they end. When one holds it raises an alert, which stays open until someone acknowledges it."
+      lede="Rules decide what to watch for. When one holds, it raises a message in the inbox, and that is where it gets resolved."
       actions={
         canWrite && !adding ? (
           <button type="button" className={primary} onClick={() => setAdding(true)}>
@@ -71,6 +83,16 @@ export function Alerts({
       }
     >
       <Problem message={problem} />
+
+      <p data-testid="alerts-open" className="text-aui-sm text-aui-muted">
+        {open === 0 ? "Nothing a rule raised is open." : `${open} ${open === 1 ? "message a rule raised is" : "messages rules raised are"} open.`}{" "}
+        {onOpenInbox && (
+          <button type="button" className={linkish} onClick={() => onOpenInbox()}>
+            Open the inbox
+          </button>
+        )}
+      </p>
+
       {adding && (
         <RuleForm
           agents={agents}
@@ -82,96 +104,69 @@ export function Alerts({
         />
       )}
 
-      <section className="flex flex-col gap-2">
-        <h2 className="text-aui-sm font-medium text-aui-fg">Open ({open.length})</h2>
-        {open.length === 0 ? (
-          <div className={card}>
-            <Empty title="Nothing needs attention">
-              {rules.length === 0 ? "No rules exist, so nothing can be raised." : "No rule has fired since the last one was acknowledged."}
-            </Empty>
-          </div>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {open.map((a) => (
-              <li key={a.id} className={`${card} flex items-start justify-between gap-3`}>
+      {rules.length === 0 ? (
+        <Empty title="No rules yet">
+          {canWrite ? "Without a rule, nothing is watched and nothing reaches the inbox. Add one with New Rule." : "Without a rule, nothing is watched. Ask someone who can change alerts to add one."}
+        </Empty>
+      ) : (
+        <ul className={rows} aria-label="Rules">
+          {rules.map((r) => {
+            const fired = newest.filter((a) => a.rule === r.name);
+            const waiting = fired.filter((a) => !a.acked_by).length;
+            return (
+              <li key={r.name} data-testid="alert-rule" className="grid grid-cols-1 gap-x-8 gap-y-3 py-4 @3xl:grid-cols-[minmax(0,5fr)_minmax(0,6fr)_auto]">
                 <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <h3 className="text-aui-base font-medium text-aui-fg">{a.title}</h3>
-                    <Severity level={a.severity} />
-                    <span className="text-aui-xs text-aui-muted">{ago(a.at)}</span>
-                  </div>
-                  {a.body && <p className="pt-1 text-aui-sm text-aui-muted">{cause(a.body)}</p>}
-                  <p className="pt-1 text-aui-2xs text-aui-muted">Rule: {a.rule}</p>
-                </div>
-                <div className="flex shrink-0 gap-2">
-                  {a.run_id && (
-                    <button type="button" className={button} onClick={() => onOpenRun(a.run_id as string)}>
-                      Open Run
-                    </button>
-                  )}
-                  {canWrite && (
-                    <button type="button" className={button} onClick={() => act(api.ackAlert(a.id), "Could not acknowledge.")}>
-                      Acknowledge
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      <section className="flex flex-col gap-2">
-        <h2 className="text-aui-sm font-medium text-aui-fg">Rules ({rules.length})</h2>
-        {rules.length === 0 ? (
-          <p className="text-aui-sm text-aui-muted">No rules. Without one, nothing raises an alert.</p>
-        ) : (
-          <ul className="oap-glass overflow-hidden rounded-aui-lg">
-            {rules.map((r) => (
-              <li
-                key={r.name}
-                className="flex items-center justify-between gap-3 border-aui-border border-b px-4 py-2.5 last:border-b-0"
-              >
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-x-3">
-                    <span className="text-aui-sm font-medium text-aui-fg">{r.name}</span>
+                    <h2 className="oap-display text-aui-lg font-semibold text-aui-fg">{r.name}</h2>
                     <Severity level={r.severity} />
                   </div>
-                  <p className="text-aui-xs text-aui-muted">{describe(r)}</p>
+                  <p className="pt-0.5 text-aui-sm text-aui-muted">{describe(r)}</p>
+                  <p className="pt-1 text-aui-xs text-aui-muted">
+                    Watches {r.agent ? r.agent : "every agent"}. Raises a {r.severity === "critical" ? "critical" : "warning"} message for everyone who can see alerts
+                    {r.created_by ? `. Made by ${r.created_by}.` : "."}
+                  </p>
                 </div>
+
+                <div className="min-w-0">
+                  <p className="text-aui-xs text-aui-muted">
+                    {fired.length === 0
+                      ? "Has not fired."
+                      : `Fired ${fired.length} ${fired.length === 1 ? "time" : "times"}${waiting > 0 ? `, ${waiting} still open` : ""}.`}
+                  </p>
+                  {fired.length > 0 && (
+                    <ul className="pt-1">
+                      {fired.slice(0, 3).map((a) => (
+                        <li key={a.id} className="flex items-baseline gap-3 py-0.5 text-aui-sm">
+                          {onOpenInbox ? (
+                            <button type="button" className={`${linkish} min-w-0 truncate text-left`} onClick={() => onOpenInbox(a)}>
+                              {a.title}
+                            </button>
+                          ) : (
+                            <span className="min-w-0 truncate text-aui-fg">{a.title}</span>
+                          )}
+                          <span className="shrink-0 text-aui-xs text-aui-muted">
+                            {ago(a.at)}, {a.acked_by ? `acknowledged by ${a.acked_by}` : "open"}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 {canWrite && (
                   <button
                     type="button"
-                    className={button}
+                    className={`${button} self-start`}
+                    aria-label={`Delete the rule ${r.name}`}
                     onClick={() => act(api.deleteAlertRule(r.name), "Could not delete the rule.")}
                   >
                     Delete
                   </button>
                 )}
               </li>
-            ))}
-          </ul>
-        )}
-      </section>
-
-      {seen.length > 0 && (
-        <section className="flex flex-col gap-2">
-          <h2 className="text-aui-sm font-medium text-aui-fg">Acknowledged ({seen.length})</h2>
-          <ul className="oap-glass overflow-hidden rounded-aui-lg">
-            {seen.slice(0, 50).map((a) => (
-              <li
-                key={a.id}
-                className="flex items-center gap-3 border-aui-border border-b px-4 py-2 text-aui-sm last:border-b-0"
-              >
-                <span className="min-w-0 flex-1 truncate text-aui-muted">{a.title}</span>
-                <Chip>{a.rule}</Chip>
-                <span className="shrink-0 text-aui-xs text-aui-muted">
-                  {a.acked_by}, {ago(a.acked_at ?? a.at)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </section>
+            );
+          })}
+        </ul>
       )}
     </Page>
   );

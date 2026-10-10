@@ -95,7 +95,7 @@ export function Onboarding({
   };
 
   return (
-    <main data-testid="onboarding" data-first-admin={firstAdmin} className="aui-scroll flex h-full flex-col overflow-y-auto text-aui-fg">
+    <main data-testid="onboarding" data-first-admin={firstAdmin} className="oap-fade aui-scroll flex h-full flex-col overflow-y-auto text-aui-fg">
       <form onSubmit={finish} noValidate className="m-auto flex w-full max-w-xl flex-col gap-8 px-5 py-12">
         <header>
           <p className="text-aui-sm text-aui-muted">Open Agent Platform</p>

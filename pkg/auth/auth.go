@@ -52,6 +52,10 @@ const (
 	EvalsWrite     Permission = "evals:write"
 	BillingRead    Permission = "billing:read"
 	BillingWrite   Permission = "billing:write"
+	ArtifactsRead  Permission = "artifacts:read"
+	// ArtifactsWrite is deleting published files. Publishing is something an
+	// agent does in a run, which runs:write already covers.
+	ArtifactsWrite Permission = "artifacts:write"
 )
 
 // Permissions lists every permission, for validating configured scopes.
@@ -59,7 +63,7 @@ func Permissions() []Permission {
 	return []Permission{
 		AgentsRead, AgentsWrite, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
 		AlertsRead, AlertsWrite, KnowledgeRead, KnowledgeWrite, EvalsRead, EvalsWrite,
-		BillingRead, BillingWrite,
+		BillingRead, BillingWrite, ArtifactsRead, ArtifactsWrite,
 	}
 }
 
@@ -78,11 +82,11 @@ const (
 )
 
 var rolePermissions = map[Role][]Permission{
-	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead, BillingRead},
+	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead, BillingRead, ArtifactsRead},
 	Operator: {
 		AgentsRead, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
 		AlertsRead, AlertsWrite, KnowledgeRead, EvalsRead, EvalsWrite,
-		BillingRead, BillingWrite,
+		BillingRead, ArtifactsRead, ArtifactsWrite,
 	},
 	Admin: Permissions(),
 }

@@ -2,12 +2,14 @@ import { ActionId, type UiAction } from "@agent-ui/core";
 import { CheckIcon, ChevronDownIcon, WebSurface } from "@agent-ui/render-web";
 import { AgentMessage, Thread, useQueue } from "@agent-ui/web";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Activity } from "./Activity.tsx";
 import type { Run } from "./adapter.ts";
 import { Composer } from "./Composer.tsx";
 import { ApiError, api, type Choice, type Revision, type Settings, type ThreadSummary } from "./api.ts";
 import { useRunTurn } from "./Runs.tsx";
-import { Trace } from "./Trace.tsx";
-import { AgentMark, AgentTint, agentOptions, cause, Menu, Popover, Problem } from "./ui.tsx";
+import { itemActions } from "./itemActions.tsx";
+import { SessionGaugeFor } from "./SessionGauge.tsx";
+import { AgentMark, agentOptions, AgentTint, cause, Menu, Popover, Presence, Problem } from "./ui.tsx";
 
 const AUTO = "auto";
 // Controls in the dock are text, not boxes: they sit under the composer and
@@ -37,25 +39,17 @@ function TurnView({
   run,
   siblings,
   live,
-  agents,
-  canRun,
   onSwitch,
-  onBranch,
 }: {
   run: Run;
   siblings: Run[];
   /** Follow the run's events. Off for settled turns, whose record is enough. */
   live: boolean;
-  agents: Revision[];
-  canRun: boolean;
   onSwitch: (id: string) => void;
-  onBranch: (agent: string) => void;
 }) {
   const turn = useRunTurn(live ? run : undefined);
-  const [trace, setTrace] = useState(false);
   const index = siblings.findIndex((s) => s.id === run.id);
   const ended = run.status === "completed" || run.status === "failed";
-  const stamp = `${run.id}:${run.calls}:${run.status}`;
   const shown = useMemo(
     () =>
       turn ?? {
@@ -76,7 +70,7 @@ function TurnView({
   );
 
   return (
-    <article className="flex flex-col gap-3" aria-label={`Turn answered by ${run.agent}`}>
+    <article id={`turn-${run.id}`} className="flex flex-col gap-3" aria-label={`Turn answered by ${run.agent}`}>
       <div className="flex flex-col items-end gap-1">
         <p className="oap-glass max-w-[80%] whitespace-pre-wrap rounded-aui-lg px-3.5 py-2 text-aui-sm text-aui-fg">{run.text}</p>
         <p className="flex flex-wrap items-center justify-end gap-x-2 text-aui-2xs text-aui-muted">
@@ -89,7 +83,7 @@ function TurnView({
       </div>
 
       <AgentTint name={run.agent}>
-        <AgentMessage turn={shown} />
+        <AgentMessage turn={shown} itemActions={itemActions(run)} />
       </AgentTint>
 
       <div className="flex flex-wrap items-center gap-2 pl-11 text-aui-xs text-aui-muted">
@@ -118,32 +112,9 @@ function TurnView({
             </button>
           </span>
         )}
-        {canRun && ended && (
-          <Menu
-            quiet
-            label="Answer this again with another agent"
-            shows="Answer again with"
-            value=""
-            options={agentOptions(agents.map((a) => a.spec.name))}
-            onChange={onBranch}
-          />
-        )}
-        <button
-          type="button"
-          aria-pressed={trace}
-          onClick={() => setTrace(!trace)}
-          className="rounded-aui px-1.5 py-0.5 hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent"
-        >
-          {trace ? "Hide trace" : "Trace"}
-        </button>
         {run.calls > 0 && <span>{run.calls} calls to other agents</span>}
         {!ended && run.error && <span>Last attempt failed, retrying: {cause(run.error)}</span>}
       </div>
-      {trace && (
-        <div className="oap-glass overflow-hidden rounded-aui-lg">
-          <Trace run={run} stamp={stamp} />
-        </div>
-      )}
     </article>
   );
 }
@@ -185,6 +156,11 @@ export function Chat({
   const [project, setProject] = useState(startIn ?? "");
   const [preview, setPreview] = useState<Choice | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // The drawer of every run in the conversation, open on one of them or on the list.
+  const [activity, setActivity] = useState<{ focus: string | null } | null>(null);
+  // What the drawer was showing, kept for the moment it takes to leave.
+  const lastActivity = useRef(activity);
+  if (activity) lastActivity.current = activity;
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: tick is the refresh signal
   useEffect(() => {
@@ -260,6 +236,8 @@ export function Chat({
   };
 
   const onAction = (a: UiAction) => {
+    // An agent drawn inside a turn opens the drawer on its run.
+    if (a.id === ActionId.openRun) return setActivity({ focus: a.payload.target });
     if (a.id !== ActionId.retry || !canRun) return;
     const run = path.find((r) => r.id === a.payload.turnId || r.id === a.payload.target) ?? tail;
     if (run) branch(run, run.agent);
@@ -378,7 +356,7 @@ export function Chat({
 
   if (!threadId || path.length === 0) {
     return (
-      <section className="flex min-h-0 flex-1 flex-col justify-center">
+      <section className="oap-fade flex min-h-0 flex-1 flex-col justify-center">
         <div className="flex flex-col items-center gap-1 px-6 pb-8 text-center">
           <h1 className="text-[2rem] leading-tight font-semibold text-aui-fg">{greeting}</h1>
           {agents.length === 0 && <p className="text-aui-sm text-aui-muted">Define an agent first, then start here.</p>}
@@ -388,12 +366,20 @@ export function Chat({
     );
   }
 
+  const running = turns.filter((t) => t.status !== "completed" && t.status !== "failed").length;
+
   return (
-    <section className="flex min-h-0 flex-1 flex-col">
+    <section className="flex min-h-0 flex-1">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {/* Arrives with the conversation: its name, then who has answered in it. */}
-      <header className="aui-fade-up mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-4 gap-y-1 px-4 pt-4 pb-2">
-        <h1 className="min-w-0 flex-1 truncate text-aui-lg font-semibold text-aui-fg">{summary?.title ?? path[0]?.text}</h1>
-        <ul className="flex shrink-0 items-center gap-3 text-aui-xs text-aui-muted" aria-label="Agents in this conversation">
+      {/*
+        Above the thread, so a panel opened from it is not painted over by the first message.
+        The arrival animation is on the title and the agents, not the header: an animated
+        ancestor stops a glass panel from blurring the page behind it.
+      */}
+      <header className="relative z-10 mx-auto flex w-full max-w-4xl flex-wrap items-center gap-x-4 gap-y-1 px-4 pt-4 pb-2">
+        <h1 className="aui-fade-up min-w-0 flex-1 truncate text-aui-lg font-semibold text-aui-fg">{summary?.title ?? path[0]?.text}</h1>
+        <ul className="aui-fade-up flex shrink-0 items-center gap-3 text-aui-xs text-aui-muted" aria-label="Agents in this conversation">
           {(summary?.agents ?? []).map((a) => (
             <li key={a} className="inline-flex items-center gap-1">
               <AgentMark name={a} size={14} />
@@ -402,6 +388,15 @@ export function Chat({
           ))}
           {tail?.project && <li>{tail.project}</li>}
         </ul>
+        <SessionGaugeFor tail={tail} />
+        <button
+          type="button"
+          aria-expanded={activity !== null}
+          onClick={() => setActivity(activity ? null : { focus: null })}
+          className="shrink-0 rounded-aui px-2 py-1 text-aui-xs text-aui-muted hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-expanded:text-aui-fg"
+        >
+          Activity{running > 0 ? ` ${running}` : ""}
+        </button>
       </header>
       <WebSurface onAction={onAction} className="flex min-h-0 flex-1 flex-col">
         <Thread className="mx-auto w-full max-w-4xl flex-1 px-4" busy={!tailEnded} label="Conversation">
@@ -411,15 +406,25 @@ export function Chat({
               run={run}
               siblings={siblingsOf(turns, run)}
               live={i === path.length - 1 || (run.status !== "completed" && run.status !== "failed")}
-              agents={agents}
-              canRun={canRun}
               onSwitch={(id) => setChosen((c) => ({ ...c, [run.prev ?? ""]: id }))}
-              onBranch={(to) => branch(run, to)}
             />
           ))}
         </Thread>
       </WebSurface>
       {composer}
+      </div>
+      <Presence when={activity !== null} ms={180}>
+        {(leaving) => (
+          <Activity
+            leaving={leaving}
+            turns={path}
+            stamp={turns.map((t) => `${t.id}:${t.calls}:${t.status}`).join("|")}
+            focus={(activity ?? lastActivity.current)?.focus ?? null}
+            onClose={() => setActivity(null)}
+            onJump={(id) => document.getElementById(`turn-${id}`)?.scrollIntoView({ block: "start", behavior: "smooth" })}
+          />
+        )}
+      </Presence>
     </section>
   );
 }

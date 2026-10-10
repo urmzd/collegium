@@ -3,7 +3,7 @@ import { type ReactNode, type SVGProps, useState } from "react";
 import type { Me, Preferences, ThreadSummary } from "./api.ts";
 import { Avatar } from "./Settings.tsx";
 import { type Standing, useRecents } from "./recents.ts";
-import { AgentMark, Popover } from "./ui.tsx";
+import { AgentMark, Popover, SkeletonRows } from "./ui.tsx";
 
 export type View =
   | "chat"
@@ -16,6 +16,7 @@ export type View =
   | "analytics"
   | "alerts"
   | "project"
+  | "storage"
   | "settings";
 
 // Glyphs agent-ui does not ship. Same grid and stroke as its set.
@@ -60,6 +61,12 @@ const BellIcon = glyph(
   <>
     <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
     <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+  </>,
+);
+const BoxIcon = glyph(
+  <>
+    <path d="M21 8v13H3V8M1 3h22v5H1z" />
+    <path d="M10 12h4" />
   </>,
 );
 const FilterIcon = glyph(<path d="M3 5h18M7 12h10M10 19h4" />);
@@ -201,7 +208,7 @@ export function Sidebar({
   const answering = [...new Set(threads.filter((t) => t.origin === "api").flatMap((t) => t.agents))].sort();
   // The list pages itself. The caller's threads change when a run starts or
   // ends, which is the signal to fetch the first page again.
-  const { threads: recents, hasMore, loading, failed, more } = useRecents(agent, standing, threads);
+  const { threads: recents, hasMore, loading, failed, stalled, retry, more } = useRecents(agent, standing, threads);
   const filters = (agent ? 1 : 0) + (standing ? 1 : 0);
   const clear = () => {
     setStanding("");
@@ -266,6 +273,9 @@ export function Sidebar({
             active={view === "knowledge"}
             onClick={() => onView("knowledge")}
           />
+        )}
+        {can("artifacts:read") && (
+          <Item icon={<BoxIcon />} label="Storage" open={open} active={view === "storage"} onClick={() => onView("storage")} />
         )}
         {can("schedules:read") && (
           <Item
@@ -355,17 +365,32 @@ export function Sidebar({
             </Popover>
           </div>
           <ul className="px-2 pb-3" aria-label="Conversations" aria-busy={loading !== null}>
-            {recents.length === 0 && (
+            {recents.length === 0 && loading === "first" && (
+              <li className="px-2.5">
+                <SkeletonRows count={5} height="1.25rem" />
+              </li>
+            )}
+            {recents.length === 0 && loading !== "first" && stalled && (
+              <li className="flex flex-col items-start gap-1.5 px-2.5 py-1.5 text-aui-xs text-aui-muted">
+                Your conversations could not be loaded.
+                <button
+                  type="button"
+                  onClick={retry}
+                  className="oap-press inline-flex h-6 items-center rounded-full border border-[var(--oap-rule)] px-2.5 text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+                >
+                  Try Again
+                </button>
+              </li>
+            )}
+            {recents.length === 0 && loading !== "first" && !stalled && (
               <li className="px-2.5 py-1.5 text-aui-xs text-aui-muted">
-                {loading === "first"
-                  ? "Loading"
-                  : filters > 0
+                {filters > 0
                     ? "No conversation matches these filters."
                     : "Your conversations appear here."}
               </li>
             )}
             {recents.map((t) => (
-              <li key={t.id}>
+              <li key={t.id} className="oap-enter">
                 <button
                   type="button"
                   onClick={() => onSelect(t.id)}

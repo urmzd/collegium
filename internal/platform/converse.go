@@ -330,5 +330,6 @@ func (p *Platform) DeleteProject(ctx context.Context, tenant, name string) error
 		return err
 	}
 	p.Memory.Drop(tenant, memory.ProjectOwner(name))
+	p.syncMemory(tenant, memory.ProjectOwner(name))
 	return nil
 }

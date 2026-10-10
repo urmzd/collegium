@@ -1,8 +1,8 @@
 import { emptyTurn, reduce, type Turn } from "@agent-ui/core";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { adapter, type BusEvent, type Run, turnOf } from "./adapter.ts";
-import { subscribe } from "./api.ts";
-import { AgentMark, agentOptions, ago, Chip, Empty, elapsed, Menu, Page, rows, SearchField, Segmented, Status, Tape, took } from "./ui.tsx";
+import { api, subscribe } from "./api.ts";
+import { AgentMark, agentOptions, ago, Chip, elapsed, Empty, hueOf, Menu, Page, rows, SearchField, Segmented, Status, Tape, took } from "./ui.tsx";
 
 type Action = { type: "seed"; turn: Turn } | { type: "open" } | { type: "event"; event: BusEvent };
 
@@ -11,14 +11,24 @@ type Action = { type: "seed"; turn: Turn } | { type: "open" } | { type: "event";
  * over: every connect replays the run from its first event, so the turn is
  * rebuilt from empty on each open rather than appended to.
  */
+/** An adapter that colors a call to another agent as that agent. */
+const make = () => adapter({ hue: hueOf });
+
+/** A finished run's turn, rebuilt from the events the journal still holds. Undefined when it holds none. */
+export function replay(run: Run, events: BusEvent[]): Turn | undefined {
+  if (events.length === 0) return undefined;
+  const to = make();
+  return events.reduce<Turn>((turn, e) => to(e).reduce(reduce, turn), emptyTurn(run.id, { name: run.agent }));
+}
+
 export function useRunTurn(run: Run | undefined): Turn | undefined {
   const [state, dispatch] = useReducer(
     (s: { turn?: Turn; to: ReturnType<typeof adapter>; fresh: boolean }, a: Action) => {
       switch (a.type) {
         case "seed":
-          return { turn: a.turn, to: adapter(), fresh: true };
+          return { turn: a.turn, to: make(), fresh: true };
         case "open":
-          return { ...s, to: adapter(), fresh: true };
+          return { ...s, to: make(), fresh: true };
         case "event": {
           const base = s.fresh ? emptyTurn(a.event.run_id, { name: a.event.agent }) : s.turn;
           if (!base) return s;
@@ -26,7 +36,7 @@ export function useRunTurn(run: Run | undefined): Turn | undefined {
         }
       }
     },
-    { to: adapter(), fresh: true },
+    { to: make(), fresh: true },
   );
 
   const id = run?.id;
@@ -35,6 +45,22 @@ export function useRunTurn(run: Run | undefined): Turn | undefined {
   useEffect(() => {
     if (!run || !id || !agent) return;
     dispatch({ type: "seed", turn: turnOf(run) });
+    // A run that has ended is read from the journal, which still has its reasoning
+    // and tool calls after the stream has let them go. Its record stands in until
+    // then, and stays if the journal holds nothing.
+    if (run.status === "completed" || run.status === "failed") {
+      let on = true;
+      api
+        .runEvents(id)
+        .then(({ events }) => {
+          const turn = replay(run, events);
+          if (on && turn) dispatch({ type: "seed", turn });
+        })
+        .catch(() => {});
+      return () => {
+        on = false;
+      };
+    }
     return subscribe(`agent:${agent}:${id}`, {
       onOpen: () => dispatch({ type: "open" }),
       onEvent: (event) => dispatch({ type: "event", event }),
@@ -163,7 +189,7 @@ export function RunList({ runs: all, onSelect }: { runs: Run[]; onSelect: (id: s
           ) : (
             <ul className={`${rows} -mt-3`}>
               {runs.map((r) => (
-                <li key={r.id}>
+                <li key={r.id} className="oap-enter">
                   <button
                     type="button"
                     onClick={() => onSelect(r.id)}

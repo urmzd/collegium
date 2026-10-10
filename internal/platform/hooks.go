@@ -115,6 +115,7 @@ func (p *Platform) fileHook(run runs.Run) {
 		}
 	case hookMemory:
 		kept := 0
+		var proposed []memory.Note
 		for _, line := range strings.Split(run.Answer, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.EqualFold(strings.Trim(line, ".-* "), "none") || kept == 3 {
@@ -129,12 +130,16 @@ func (p *Platform) fileHook(run runs.Run) {
 			if p.Settings(run.Tenant).MemoryAutoApprove {
 				status = memory.Approved
 			}
-			if _, err := p.Memory.Add(run.Tenant, target, line, memory.Consolidated, status, run.ID, run.UpdatedAt); err == nil {
+			if note, err := p.Memory.Add(run.Tenant, target, line, memory.Consolidated, status, run.ID, run.UpdatedAt); err == nil {
 				kept++
+				if status == memory.Pending {
+					proposed = append(proposed, note)
+				}
 			} else {
 				p.log.Info("platform: a proposed memory was not kept", "agent", target, "reason", err)
 			}
 		}
+		p.inboxMemory(run, target, proposed)
 	}
 }
 

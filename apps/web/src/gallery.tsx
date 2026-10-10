@@ -3,8 +3,15 @@ import { createRoot } from "react-dom/client";
 import "@fontsource-variable/figtree";
 import "@fontsource-variable/bricolage-grotesque/wdth.css";
 import "./styles.css";
+import { ActivityPanel } from "./Activity.tsx";
+import { sampleTrees } from "./activity.fixtures.ts";
 import type { Me, Preferences, Settings } from "./api.ts";
+import { InboxPage } from "./InboxPage.tsx";
+import { memoryTransport } from "./mail.fixtures.ts";
 import { Onboarding } from "./Onboarding.tsx";
+import { RunItem } from "./RunItem.tsx";
+import { Storage, StorageUsed, StoredList } from "./Storage.tsx";
+import { memoryStorage, sampleUse } from "./storage.fixtures.ts";
 import {
   AgentMark,
   counted,
@@ -27,6 +34,10 @@ import {
 const states: StrokeState[] = ["idle", "working", "waiting", "failed", "done"];
 const agents = ["lead", "oncall", "releaser", "helper", "billing", "triage"];
 const M = 1_000_000;
+// One inbox for the page's life, so what is resolved in it stays resolved.
+const inbox = memoryTransport();
+const trees = sampleTrees();
+const files = memoryStorage();
 const person: Me = {
   principal: { subject: "gallery", tenant: "default", kind: "user", name: "Ada Lovelace", email: "ada@example.com" },
   permissions: [],
@@ -46,6 +57,7 @@ function Gallery() {
   const [theme, setTheme] = useState<"dark" | "light">("dark");
   const [limit, setLimit] = useState<number | null>(null);
   const [period, setPeriod] = useState<Period>("month");
+  const [run, setRun] = useState<string | null>(null);
   const [prefs, setPrefs] = useState<Preferences>({ display_name: "", theme: "system", accent: "purple", has_photo: false, photo_version: 0 });
   document.documentElement.dataset.theme = theme;
 
@@ -130,6 +142,60 @@ function Gallery() {
           />
           <LimitField label="Workspace limit" value={250 * M} period="month" onChange={() => {}} testId="limit-set" />
           <LimitField label="Agent limit" value={null} period="day" onChange={() => {}} disabled testId="limit-disabled" />
+        </div>
+      </Section>
+
+      <Section title="Run item: the status, fill and export control under an answer">
+        <div className="flex flex-wrap items-center gap-3" data-testid="gallery-run-items">
+          {(() => {
+            const tree = trees[1];
+            const base = tree?.runs[0];
+            if (!tree || !base) return null;
+            const load = async () => tree;
+            return (
+              <>
+                <RunItem run={{ ...base, status: "accepted" }} load={load} onActivity={setRun} />
+                <RunItem run={{ ...base, status: "running", calls: 0 }} load={load} onActivity={setRun} />
+                <RunItem run={{ ...base, status: "running", lease: 2_000_000, granted: 1_700_000 }} load={load} onActivity={setRun} />
+                <RunItem run={{ ...base, status: "parked", reason: "approval to deploy" }} load={load} onActivity={setRun} />
+                <RunItem run={{ ...base, status: "failed", agent: "releaser" }} load={load} onActivity={setRun} />
+                <RunItem run={base} load={load} onActivity={setRun} />
+                <RunItem run={{ ...base, agent: "oncall", lease: 2_000_000, granted: 500_000 }} load={load} onActivity={setRun} />
+              </>
+            );
+          })()}
+        </div>
+      </Section>
+
+      <Section title="Activity: a conversation's runs, then one run's whole conversation">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          {/* The panel is a full sheet below the lg width. A transform keeps each one inside its box here. */}
+          <div data-testid="gallery-activity" className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--oap-rule)] [transform:translateZ(0)] [&>aside]:w-full">
+            <ActivityPanel trees={trees} selected={run} onSelect={setRun} onClose={() => setRun(null)} onJump={() => {}} />
+          </div>
+          <div className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--oap-rule)] [transform:translateZ(0)] [&>aside]:w-full">
+            <ActivityPanel trees={trees} selected="r2a" onSelect={() => {}} onClose={() => {}} onJump={() => {}} />
+          </div>
+          <div className="relative flex h-[40rem] overflow-hidden rounded-aui-lg border border-[var(--oap-rule)] [transform:translateZ(0)] [&>aside]:w-full">
+            <ActivityPanel trees={[]} selected={null} onSelect={() => {}} onClose={() => {}} />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="Inbox, held in memory with one message of every kind">
+        <div data-testid="gallery-inbox" className="flex h-[44rem] flex-col overflow-hidden rounded-aui-lg border border-[var(--oap-rule)]">
+          <InboxPage signal={0} viewer="You" via={inbox} onOpen={() => {}} />
+        </div>
+      </Section>
+
+      <Section title="Storage, held in memory, then its over-limit, loading and failed states">
+        <div data-testid="gallery-storage" className="overflow-hidden rounded-aui-lg border border-[var(--oap-rule)]">
+          <Storage signal={0} agents={["lead", "billing", "oncall", "releaser"]} projects={["Launch"]} canDelete via={files} onOpenRun={() => {}} onOpenThread={() => {}} />
+        </div>
+        <div className="@container grid grid-cols-1 gap-6 md:grid-cols-3">
+          <StorageUsed use={sampleUse({ used_bytes: 6 * 1024 ** 2, by_project: [] })} />
+          <StoredList files={[]} selected={null} state="loading" narrowed={false} onSelect={() => {}} />
+          <StoredList files={[]} selected={null} state="failed" narrowed={false} onSelect={() => {}} />
         </div>
       </Section>
 

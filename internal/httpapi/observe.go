@@ -1,15 +1,20 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/urmzd/opentag/pkg/agentspec"
+	"github.com/urmzd/opentag/pkg/envelope"
+
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
 	"github.com/urmzd/open-agent-platform/pkg/auth"
 	"github.com/urmzd/open-agent-platform/pkg/evals"
 	"github.com/urmzd/open-agent-platform/pkg/journal"
+	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
 
 // maxWindow bounds how far back analytics and the journal may be asked for.
@@ -19,6 +24,8 @@ func (s *Server) observeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/analytics", s.authed(auth.RunsRead, s.analytics))
 	mux.HandleFunc("GET /api/journal", s.authed(auth.RunsRead, s.journal))
 	mux.HandleFunc("GET /api/runs/{id}/trace", s.authed(auth.RunsRead, s.trace))
+	mux.HandleFunc("GET /api/runs/{id}/events", s.authed(auth.RunsRead, s.runEvents))
+	mux.HandleFunc("GET /api/runs/{id}/manifest", s.authed(auth.RunsRead, s.manifest))
 
 	mux.HandleFunc("GET /api/alerts", s.authed(auth.AlertsRead, s.listAlerts))
 	mux.HandleFunc("POST /api/alerts/{id}/ack", s.authed(auth.AlertsWrite, s.ackAlert))
@@ -109,12 +116,94 @@ func (s *Server) trace(w http.ResponseWriter, r *http.Request, who auth.Principa
 	ok(w, http.StatusOK, map[string]any{"runs": tree, "spans": orEmpty(s.P.Journal.Trace(who.Tenant, ids))})
 }
 
+// runEvents returns one run's events as they were published, oldest first, for
+// showing a run that is no longer streaming. It is the same shape the event
+// stream sends.
+func (s *Server) runEvents(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	run, err := s.P.Runs.Get(who.Tenant, r.PathValue("id"))
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	events := s.P.Journal.Events(who.Tenant, []string{run.ID})
+	ok(w, http.StatusOK, map[string]any{"events": orEmpty(events), "complete": complete(events)})
+}
+
+// complete reports whether a run's events are all still held: the first one
+// kept is the first one published.
+func complete(events []envelope.Event) bool {
+	return len(events) > 0 && events[0].Kind == envelope.KindAccepted
+}
+
+// manifest is one document that says everything the platform recorded about a
+// run and every run under the same root: who ran, at which revision, what each
+// was asked and answered, and every event in order with its body decoded.
+func (s *Server) manifest(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	tree, err := s.P.Runs.Tree(who.Tenant, r.PathValue("id"))
+	if err != nil {
+		s.problem(w, err)
+		return
+	}
+	type event struct {
+		Seq  uint64          `json:"seq"`
+		At   time.Time       `json:"at"`
+		Kind envelope.Kind   `json:"kind"`
+		Body json.RawMessage `json:"body,omitempty"`
+	}
+	type entry struct {
+		Run runs.Run `json:"run"`
+		// State is where the run stands, as the platform knows it:
+		// queued, running, waiting, failed or done.
+		State string `json:"state"`
+		// Cause is why a failed run failed, in one line.
+		Cause string `json:"cause,omitempty"`
+		// Definition is the agent revision the run was pinned to.
+		Definition *agentspec.Revision `json:"definition,omitempty"`
+		DurationMs int64               `json:"duration_ms"`
+		Events     []event             `json:"events"`
+		// Complete is false when the run's first events are no longer held.
+		Complete bool `json:"complete"`
+	}
+	states := map[runs.Status]string{
+		runs.Accepted: "queued", runs.Running: "running", runs.Parked: "waiting", runs.Failed: "failed", runs.Completed: "done",
+	}
+	out := make([]entry, 0, len(tree))
+	for _, run := range tree {
+		e := entry{Run: run, State: states[run.Status], DurationMs: run.UpdatedAt.Sub(run.CreatedAt).Milliseconds(), Events: []event{}}
+		if run.Status == runs.Failed {
+			e.Cause = journal.Cause(run.Error)
+		}
+		if rev, err := s.P.Agents.Get(r.Context(), who.Tenant, run.Agent, run.Rev); err == nil {
+			e.Definition = &rev
+		}
+		held := s.P.Journal.Events(who.Tenant, []string{run.ID})
+		e.Complete = complete(held)
+		for _, ev := range held {
+			item := event{Seq: ev.Seq, At: ev.At, Kind: ev.Kind}
+			if json.Valid(ev.Payload) {
+				item.Body = ev.Payload
+			}
+			e.Events = append(e.Events, item)
+		}
+		out = append(out, e)
+	}
+	s.Log.Info("httpapi: run exported", "tenant", who.Tenant, "run", r.PathValue("id"), "runs", len(out), "by", who.Subject)
+	ok(w, http.StatusOK, map[string]any{
+		"version":      1,
+		"generated_at": time.Now().UTC(),
+		"root":         tree[0].Root,
+		"runs":         out,
+		// The runtime reports no token counts or cost, so none are given.
+		"usage": map[string]any{"metered": false},
+	})
+}
+
 func (s *Server) listAlerts(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
 	ok(w, http.StatusOK, map[string]any{"alerts": orEmpty(s.P.Alerts.Alerts(who.Tenant))})
 }
 
 func (s *Server) ackAlert(w http.ResponseWriter, r *http.Request, who auth.Principal) {
-	a, err := s.P.Alerts.Ack(who.Tenant, r.PathValue("id"), who.Subject, time.Now())
+	a, err := s.P.AckAlert(who.Tenant, r.PathValue("id"), who.Subject)
 	if err != nil {
 		s.problem(w, err)
 		return

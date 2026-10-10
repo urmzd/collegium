@@ -11,7 +11,7 @@ var everything = []string{
 	"oap:agents:read", "oap:agents:write", "oap:runs:read", "oap:runs:write",
 	"oap:schedules:read", "oap:schedules:write", "oap:alerts:read", "oap:alerts:write",
 	"oap:knowledge:read", "oap:knowledge:write", "oap:evals:read", "oap:evals:write",
-	"oap:billing:read", "oap:billing:write",
+	"oap:billing:read", "oap:billing:write", "oap:artifacts:read", "oap:artifacts:write",
 }
 
 func TestObservabilityIsConfinedToATenant(t *testing.T) {

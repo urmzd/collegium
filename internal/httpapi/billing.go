@@ -47,6 +47,7 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, who auth.Prin
 		MaxConcurrent int           `json:"max_concurrent"`
 		SpendLimit    int64         `json:"spend_limit"`
 		MaxLease      int64         `json:"max_lease"`
+		MaxStorage    int64         `json:"max_storage"`
 		WarnAt        int           `json:"warn_at"`
 		Action        policy.Action `json:"action"`
 	}
@@ -62,7 +63,7 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, who auth.Prin
 	}
 	saved, err := s.P.Policies.Put(who.Tenant, policy.Policy{
 		Scope: body.Scope, Period: body.Period, MaxRuns: body.MaxRuns, MaxConcurrent: body.MaxConcurrent,
-		SpendLimit: body.SpendLimit, MaxLease: body.MaxLease, WarnAt: body.WarnAt, Action: body.Action,
+		SpendLimit: body.SpendLimit, MaxLease: body.MaxLease, MaxStorage: body.MaxStorage, WarnAt: body.WarnAt, Action: body.Action,
 	}, who.Subject, time.Now())
 	if err != nil {
 		s.problem(w, err)

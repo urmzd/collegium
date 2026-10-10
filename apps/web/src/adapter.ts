@@ -1,4 +1,4 @@
-import type { Turn, TurnEvent } from "@agent-ui/core";
+import type { ArtifactKind, Task, Turn, TurnEvent } from "@agent-ui/core";
 
 /**
  * The one place opentag's wire format meets agent-ui's event model. Everything
@@ -77,6 +77,32 @@ interface Tool {
   result: string;
   error: string;
 }
+/** What the platform reports when an agent publishes a file. */
+interface Published {
+  name: string;
+  summary: string;
+  error: string;
+  data: {
+    id: string;
+    title: string;
+    kind: ArtifactKind;
+    mime: string;
+    size: number;
+    version: number;
+    description?: string;
+    preview?: string;
+  };
+}
+/** The tool an agent publishes a file with. */
+const PUBLISH = "publish_artifact";
+/** opentag names the tool that hands work to another agent after that agent. */
+const DELEGATE = /^tag_(.+)$/;
+
+/** The agent a tool call hands work to, when the tool is a call to another agent. */
+export function delegateOf(tool?: string): string | undefined {
+  return DELEGATE.exec(tool ?? "")?.[1];
+}
+
 interface Cite {
   label: string;
   text: string;
@@ -89,9 +115,24 @@ interface Cite {
  * stateful because two facts span events: whether text already streamed (the
  * completed event repeats the whole answer), and each tool call's name.
  */
-export function adapter(): (e: BusEvent) => TurnEvent[] {
+export function adapter(opts: { /** An agent's colour, 0 to 360, so a call to it reads as that agent. */ hue?: (agent: string) => number } = {}): (
+  e: BusEvent,
+) => TurnEvent[] {
   let streamed = false;
   const tools = new Map<string, string>();
+  // Publish calls that have not reported yet, oldest first. A file is shown
+  // from the moment the agent starts publishing it, and the report that
+  // follows fills in the same card rather than adding a second one.
+  const publishing: string[] = [];
+
+  // A call to another agent is that agent doing a step, not a tool. The
+  // called agent runs inside this turn and has no run of its own to open.
+  const task = (id: string, name: string | undefined, rest: Partial<Task>): Task => {
+    const to = delegateOf(name);
+    return to
+      ? { id, title: to, status: "in_progress", tool: name, ...rest, subagent: { name: to, summary: rest.output, hue: opts.hue?.(to) } }
+      : { id, title: title(name), status: "in_progress", tool: name, ...rest };
+  };
 
   return (e) => {
     switch (e.kind) {
@@ -126,13 +167,18 @@ export function adapter(): (e: BusEvent) => TurnEvent[] {
         const t = body<Tool>(e);
         if (!t.id) return [];
         tools.set(t.id, t.name ?? "tool");
-        return [
+        const out: TurnEvent[] = [
           { type: "activity", activity: doing(t.name) },
-          {
-            type: "task.upserted",
-            task: { id: t.id, title: title(t.name), status: "in_progress", tool: t.name },
-          },
+          { type: "task.upserted", task: task(t.id, t.name, {}) },
         ];
+        if (t.name === PUBLISH) {
+          publishing.push(t.id);
+          out.push({
+            type: "attachment.upserted",
+            attachment: { type: "artifact", id: t.id, title: "Publishing a file", kind: "document", phase: "generating" },
+          });
+        }
+        return out;
       }
       case "delta.tool.done": {
         const t = body<Tool>(e);
@@ -140,14 +186,50 @@ export function adapter(): (e: BusEvent) => TurnEvent[] {
         const name = t.name ?? tools.get(t.id);
         return [
           { type: "activity", activity: "thinking" },
+          { type: "task.upserted", task: task(t.id, name, { status: t.error ? "error" : "complete", output: t.error || t.result }) },
+        ];
+      }
+      case "action.taken": {
+        const p = body<Published>(e);
+        if (p.name !== PUBLISH) return [];
+        // The card the call opened, or a new one if this is all that is left
+        // of the run's record.
+        const id = publishing.shift() ?? p.data?.id ?? `published-${e.seq}`;
+        const a = p.data;
+        if (p.error || !a) {
+          return [
+            {
+              type: "attachment.upserted",
+              attachment: {
+                type: "artifact",
+                id,
+                title: p.summary || "File",
+                kind: "document",
+                phase: "failed",
+                error: lastLine(p.error) || "The file could not be published.",
+              },
+            },
+          ];
+        }
+        const content = `/api/artifacts/${encodeURIComponent(a.id)}/content`;
+        return [
           {
-            type: "task.upserted",
-            task: {
-              id: t.id,
-              title: title(name),
-              status: t.error ? "error" : "complete",
-              tool: name,
-              output: t.error || t.result,
+            type: "attachment.upserted",
+            attachment: {
+              type: "artifact",
+              id,
+              title: a.title,
+              kind: a.kind,
+              phase: "ready",
+              mimeType: a.mime,
+              sizeBytes: a.size,
+              version: a.version,
+              // Inline is honored only for types that cannot run script. For
+              // everything else this link downloads, like the one below it.
+              url: `${content}?inline=1`,
+              downloadUrl: content,
+              description: a.description,
+              previewText: a.preview,
             },
           },
         ];
@@ -194,7 +276,7 @@ export function adapter(): (e: BusEvent) => TurnEvent[] {
 /** What a tool call looks like from outside: looking something up, handing work on, or acting. */
 function doing(tool?: string): "searching" | "delegating" | "calling" {
   const name = (tool ?? "").toLowerCase();
-  if (/^(delegate|call|agent)[_:.]|subagent|handoff/.test(name)) return "delegating";
+  if (/^(delegate|call|agent|tag)[_:.]|subagent|handoff/.test(name)) return "delegating";
   if (/search|recall|retriev|lookup|find|read|fetch|get/.test(name)) return "searching";
   return "calling";
 }

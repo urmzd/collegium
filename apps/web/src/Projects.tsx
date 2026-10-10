@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { ApiError, api, type Note, type ProjectView, type Revision, type ScheduleView, type ThreadSummary } from "./api.ts";
+import { ScopeLimits } from "./Billing.tsx";
 import { AgentMark, agentOptions, ago, button, field, Label, Menu, Page, Problem, primary } from "./ui.tsx";
 
 const iconButton =
@@ -208,7 +209,7 @@ function SharedMemory({ project, canWrite, onChanged }: { project: string; canWr
       ) : (
         <ul>
           {kept.map((n) => (
-            <li key={n.id} className="flex items-start justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
+            <li key={n.id} className="oap-enter flex items-start justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
               <span className="min-w-0">
                 <span className="block text-aui-sm text-aui-fg">{n.text}</span>
                 <span className="block text-aui-xs text-aui-muted">
@@ -265,6 +266,8 @@ export function ProjectPage({
   agents,
   canWrite,
   canSchedule,
+  canLimit,
+  tick,
   onNewChat,
   onOpenThread,
   onChanged,
@@ -277,6 +280,10 @@ export function ProjectPage({
   agents: Revision[];
   canWrite: boolean;
   canSchedule: boolean;
+  /** May change what the project is allowed to use. */
+  canLimit: boolean;
+  /** Changes when runs do, so usage is read again. */
+  tick?: number;
   onNewChat: () => void;
   onOpenThread: (id: string) => void;
   onChanged: () => void;
@@ -321,7 +328,7 @@ export function ProjectPage({
         ) : (
           <ul>
             {mine.map((t) => (
-              <li key={t.id} className="border-aui-border border-t first:border-t-0">
+              <li key={t.id} className="oap-enter border-aui-border border-t first:border-t-0">
                 <button
                   type="button"
                   onClick={() => onOpenThread(t.id)}
@@ -345,6 +352,11 @@ export function ProjectPage({
       </section>
 
       <SharedMemory project={project.name} canWrite={canWrite} onChanged={onChanged} />
+
+      <section className={section}>
+        <h2 className={heading}>Limits</h2>
+        <ScopeLimits key={project.name} scope={{ kind: "project", name: project.name }} canWrite={canLimit} tick={tick} />
+      </section>
 
       <section className={section}>
         <div className="flex items-center justify-between gap-3">

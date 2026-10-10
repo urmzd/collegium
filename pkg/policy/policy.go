@@ -111,6 +111,9 @@ type Policy struct {
 	SpendLimit int64 `json:"spend_limit,omitempty"`
 	// MaxLease is the largest budget one run may be granted, in micro-USD.
 	MaxLease int64 `json:"max_lease,omitempty"`
+	// MaxStorage is the most bytes of published files the scope may hold. It
+	// is a standing total, not a rate, so the period does not apply to it.
+	MaxStorage int64 `json:"max_storage,omitempty"`
 	// WarnAt is the share of a limit, in percent, at which usage warns. Zero
 	// means DefaultWarnAt.
 	WarnAt int    `json:"warn_at,omitempty"`
@@ -140,9 +143,9 @@ func (p Policy) Validate() error {
 		return fmt.Errorf("%w: a %s policy names the %s it covers", ErrInvalid, p.Scope.Kind, p.Scope.Kind)
 	case p.Period != Day && p.Period != Month:
 		return fmt.Errorf("%w: the period is day or month", ErrInvalid)
-	case p.MaxRuns < 0 || p.MaxConcurrent < 0 || p.SpendLimit < 0 || p.MaxLease < 0:
+	case p.MaxRuns < 0 || p.MaxConcurrent < 0 || p.SpendLimit < 0 || p.MaxLease < 0 || p.MaxStorage < 0:
 		return fmt.Errorf("%w: a limit cannot be negative", ErrInvalid)
-	case p.MaxRuns == 0 && p.MaxConcurrent == 0 && p.SpendLimit == 0 && p.MaxLease == 0:
+	case p.MaxRuns == 0 && p.MaxConcurrent == 0 && p.SpendLimit == 0 && p.MaxLease == 0 && p.MaxStorage == 0:
 		return fmt.Errorf("%w: a policy sets at least one limit", ErrInvalid)
 	case p.WarnAt < 0 || p.WarnAt > 100:
 		return fmt.Errorf("%w: the warning threshold is a percentage from 1 to 100", ErrInvalid)
@@ -159,6 +162,10 @@ func (p Policy) Validate() error {
 // a looser child could never take effect: it is refused so the stored limits
 // say what will actually happen.
 func (p Policy) Within(parent Policy) error {
+	// Storage is a total, so it compares whatever the periods are.
+	if parent.MaxStorage > 0 && p.MaxStorage > parent.MaxStorage {
+		return fmt.Errorf("%w: %s allows more storage than %s", ErrInvalid, p.Scope, parent.Scope)
+	}
 	if p.Period != parent.Period {
 		// Different periods cannot be compared number for number.
 		return nil
@@ -283,9 +290,9 @@ func decideOne(a Applied, req Request) Decision {
 			best = d
 		}
 	}
-	per := "this " + string(p.Period)
-	consider(LimitRuns, int64(a.Usage.Runs), 1, int64(p.MaxRuns), fmt.Sprintf("%d runs %s", p.MaxRuns, per))
-	consider(LimitConcurrent, int64(a.Usage.Concurrent), 1, int64(p.MaxConcurrent), fmt.Sprintf("%d runs at once", p.MaxConcurrent))
+	per := "a " + string(p.Period)
+	consider(LimitRuns, int64(a.Usage.Runs), 1, int64(p.MaxRuns), counted(p.MaxRuns)+" "+per)
+	consider(LimitConcurrent, int64(a.Usage.Concurrent), 1, int64(p.MaxConcurrent), counted(p.MaxConcurrent)+" at once")
 	consider(LimitSpend, a.Usage.Spend, req.Lease, p.SpendLimit, "spend "+per)
 	// A lease is judged on its own size, not against what was used.
 	if p.MaxLease > 0 && req.Lease > p.MaxLease {
@@ -298,6 +305,14 @@ func decideOne(a Applied, req Request) Decision {
 		}
 	}
 	return best
+}
+
+// counted writes a number of runs: "1 run", "10 runs".
+func counted(n int) string {
+	if n == 1 {
+		return "1 run"
+	}
+	return fmt.Sprintf("%d runs", n)
 }
 
 func max0(n int64) int64 {

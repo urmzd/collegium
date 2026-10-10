@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/urmzd/opentag/pkg/agentspec"
+	"github.com/urmzd/opentag/pkg/envelope"
 	"github.com/urmzd/opentag/pkg/registry"
 
 	"github.com/urmzd/open-agent-platform/internal/httpapi"
@@ -63,6 +64,8 @@ func run(args []string) error {
 	maxDepth := fs.Int("max-depth", 4, "deepest an agent-to-agent call may land")
 	maxFanOut := fs.Int("max-fan-out", 16, "most calls one run may make")
 	seed := fs.Bool("seed", false, "create two example agents that need no model key")
+	builtinProvider := fs.String("builtin-provider", "", `model provider for the agents the platform provides, such as "anthropic" or "ollama". Empty means none are provided`)
+	builtinModel := fs.String("builtin-model", "", "model for the agents the platform provides")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -108,8 +111,10 @@ func run(args []string) error {
 	}
 
 	p, err := platform.New(platform.Config{
-		Limits: call.Limits{MaxDepth: *maxDepth, MaxFanOut: *maxFanOut},
-		Log:    log,
+		Limits:          call.Limits{MaxDepth: *maxDepth, MaxFanOut: *maxFanOut},
+		Log:             log,
+		BuiltinProvider: *builtinProvider,
+		BuiltinModel:    *builtinModel,
 	})
 	if err != nil {
 		return err
@@ -132,6 +137,20 @@ func run(args []string) error {
 
 	errc := make(chan error, 2)
 	go func() { errc <- p.Run(ctx) }()
+	if *seed {
+		go func() {
+			// After the platform is running, so the conversation the files
+			// belong to is a real one.
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(500 * time.Millisecond):
+			}
+			if err := seedFiles(ctx, p, *tenant); err != nil {
+				log.Warn("seed files", "error", err)
+			}
+		}()
+	}
 	go func() {
 		log.Info("listening", "addr", *addr, "auth", *authMode, "tenant", *tenant)
 		if err := srv.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
@@ -147,6 +166,37 @@ func run(args []string) error {
 	defer cancel()
 	_ = srv.Shutdown(shutdown)
 	return err
+}
+
+// seedFiles publishes a few example files, so the storage page has something
+// on it before any agent with a model has run.
+func seedFiles(ctx context.Context, p *platform.Platform, tenant string) error {
+	if p.Artifacts.Usage(tenant).Count > 0 {
+		return nil
+	}
+	run, err := p.Converse(ctx, tenant, platform.Turn{
+		ID: "seed-files", Agent: "lead", Text: "Draft the launch checklist", Project: "Launch",
+		Actor: envelope.Actor{ID: "seed", Display: "Seed", Bot: true},
+	})
+	if err != nil {
+		return err
+	}
+	for _, f := range []struct{ path, content, description string }{
+		{"launch-checklist.md", "# Launch checklist\n\n- [ ] Freeze the release branch\n- [ ] Run the smoke tests\n", "The first draft"},
+		{"launch-checklist.md", "# Launch checklist\n\n- [x] Freeze the release branch\n- [ ] Run the smoke tests\n- [ ] Tell support\n", "With support added"},
+		{"signups.csv", "week,signups\n1,120\n2,164\n3,210\n", "Signups by week"},
+	} {
+		if err := p.PutFile(tenant, run.Thread, f.path, f.content); err != nil {
+			return err
+		}
+		if _, err := p.Publish(ctx, platform.Publication{
+			Tenant: tenant, Thread: run.Thread, Run: run.ID, Agent: "lead", Project: "Launch", By: "seed",
+			Path: f.path, Description: f.description,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // loopback reports whether addr can only be reached from this machine.

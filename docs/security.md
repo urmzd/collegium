@@ -18,9 +18,9 @@ Every caller becomes a `Principal`, and every route asks it one question:
 
 | Role | Permissions |
 |------|-------------|
-| `viewer` | `agents:read`, `runs:read`, `schedules:read`, `alerts:read`, `knowledge:read`, `evals:read` |
-| `operator` | viewer, plus `runs:write`, `schedules:write`, `alerts:write`, `evals:write` |
-| `admin` | operator, plus `agents:write`, `knowledge:write` |
+| `viewer` | `agents:read`, `runs:read`, `schedules:read`, `alerts:read`, `knowledge:read`, `evals:read`, `billing:read`, `artifacts:read` |
+| `operator` | viewer, plus `runs:write`, `schedules:write`, `alerts:write`, `evals:write`, `artifacts:write` |
+| `admin` | operator, plus `agents:write`, `knowledge:write`, `billing:write` |
 
 Writing knowledge is an admin permission because a document an agent is grounded
 in changes what that agent says.
@@ -124,8 +124,45 @@ open-agent-platform serve -public-url https://oap.example.com
 Any OpenID Connect provider works the same way. Group names, the groups claim
 and a per-caller tenant claim are flags: see `serve -h`.
 
+## Files agents make
+
+- An agent has the file tools only if its spec names them. They act on one
+  directory per conversation, opened as an `os.Root`, so no path a model
+  writes leaves it: not `..`, not an absolute path, not a symbolic link.
+- A published file's type comes from its bytes, not from its name or from
+  what the agent said it was.
+- A download checks the caller's tenant and `artifacts:read` on every
+  request. It is served as an attachment of an opaque type with `nosniff` and
+  a sandboxing content security policy. Only plain text, PNG, JPEG, GIF, WebP
+  and PDF are ever shown inline, and only when asked. HTML and SVG never are:
+  a file written from a stranger's text would otherwise run as this
+  application.
+- Deleting needs `artifacts:write`. Publishes, downloads, deletes and run
+  exports are logged with who and when.
+- The platform's own agents cannot be created or revised through the API.
+
+## The inbox
+
+Every inbox route asks only for `runs:read`. What a caller sees and may do is
+decided per message:
+
+| Kind | To see | To settle |
+|------|--------|-----------|
+| Alert, reached limit | `alerts:read` | `alerts:write` to acknowledge, `billing:write` to raise a limit |
+| Failed run | `runs:read` | `runs:write` |
+| Proposed memory | `agents:read` | `agents:write` |
+
+A message a caller may not see answers 404, not 403, and is left out of their
+count. The right is checked before saying whether a part is still open. A
+change is pushed to the browser as an id only, and only to callers who may see
+that kind.
+
 ## Not built yet
 
+- Limits are checked under a lock in one process, and the usage ledger is in
+  memory. Two servers could both admit a run at the limit, and a restart
+  forgets what was used. Spend limits are recorded but not enforced, because a
+  run reports no cost.
 - Sessions and schedules are in memory, so a restart signs everyone out.
 - Knowledge is not yet used by runs. The runtime's retriever is not told which
   tenant or agent is asking, and wiring it before that changes would let one

@@ -50,6 +50,16 @@ body,
   --oap-stroke: var(--oap-rule);
   --oap-stroke-l: 0.55;
   --oap-stroke-c: 0.14;
+  /*
+   * Motion. Three lengths: a press or a hover, a menu or a row, a drawer or a
+   * page. One curve for arriving, which settles gently, and a quicker one for
+   * leaving, which gets out of the way.
+   */
+  --oap-dur-fast: 110ms;
+  --oap-dur: 180ms;
+  --oap-dur-slow: 260ms;
+  --oap-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --oap-ease-in: cubic-bezier(0.4, 0, 1, 1);
 }
 html[data-theme="dark"] {
   --oap-plane: oklch(0.105 0 0);
@@ -231,6 +241,15 @@ button.oap-tick:focus-visible {
   border-width: var(--oap-stroke-w);
   border-radius: inherit;
 }
+/* A change of state eases from one line to the next. Arriving at waiting does not: it is simply there. */
+.oap-stroke::before {
+  transition:
+    border-color var(--oap-dur) var(--oap-ease-out),
+    opacity var(--oap-dur) var(--oap-ease-out);
+}
+.oap-stroke[data-state="waiting"]::before {
+  transition: none;
+}
 /* Only work in flight moves. Waiting on a person never does. */
 .oap-stroke[data-state="working"]::before {
   animation: oap-stroke-work 1.8s ease-in-out infinite;
@@ -243,6 +262,122 @@ button.oap-tick:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   .oap-stroke[data-state="working"]::before {
     animation: none;
+  }
+  .oap-stroke::before {
+    transition: none;
+  }
+}
+
+/*
+ * Motion classes. Each moves only transform and opacity, runs once, and never
+ * holds up the next click: nothing here blocks input while it plays.
+ *
+ * - oap-press: a control gives a little under the pointer.
+ * - oap-enter: a row or a panel that has just appeared rises into place.
+ * - oap-fade: a page or a pane that replaced another fades in.
+ * - oap-pop: a menu or a popover grows from the control that opened it.
+ * - oap-drawer: a panel slides in from the edge it lives on.
+ * - oap-note: a brief confirmation beside a control.
+ *
+ * oap-pop, oap-drawer and oap-note also leave: set data-leaving="true" for as
+ * long as the leaving takes, then unmount. `usePresence` in ui.tsx does this.
+ */
+.oap-press {
+  transition-property: color, background-color, border-color, opacity, transform;
+  transition-duration: var(--oap-dur-fast);
+  transition-timing-function: var(--oap-ease-out);
+}
+.oap-press:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.oap-enter {
+  animation: oap-enter var(--oap-dur) var(--oap-ease-out) both;
+}
+@keyframes oap-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.oap-fade {
+  animation: oap-fade var(--oap-dur) var(--oap-ease-out) both;
+}
+@keyframes oap-fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes oap-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+
+.oap-pop {
+  transform-origin: var(--oap-pop-origin, top left);
+  animation: oap-pop var(--oap-dur) var(--oap-ease-out) both;
+}
+@keyframes oap-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+.oap-pop[data-leaving="true"] {
+  pointer-events: none;
+  animation: oap-pop-out var(--oap-dur-fast) var(--oap-ease-in) both;
+}
+@keyframes oap-pop-out {
+  to {
+    opacity: 0;
+    transform: scale(0.98);
+  }
+}
+
+.oap-drawer {
+  animation: oap-drawer var(--oap-dur-slow) var(--oap-ease-out) both;
+}
+@keyframes oap-drawer {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+.oap-drawer[data-leaving="true"] {
+  pointer-events: none;
+  animation: oap-drawer-out var(--oap-dur) var(--oap-ease-in) both;
+}
+@keyframes oap-drawer-out {
+  to {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+}
+
+.oap-note {
+  animation: oap-enter var(--oap-dur) var(--oap-ease-out) both;
+}
+.oap-note[data-leaving="true"] {
+  animation: oap-fade-out var(--oap-dur-fast) var(--oap-ease-in) both;
+}
+
+/* With motion reduced, nothing travels. Things that arrive or leave only fade, briefly. */
+@media (prefers-reduced-motion: reduce) {
+  .oap-press:active:not(:disabled) {
+    transform: none;
+  }
+  .oap-enter,
+  .oap-pop,
+  .oap-drawer,
+  .oap-note {
+    animation: oap-fade var(--oap-dur-fast) linear both;
+  }
+  .oap-pop[data-leaving="true"],
+  .oap-drawer[data-leaving="true"],
+  .oap-note[data-leaving="true"] {
+    animation: oap-fade-out var(--oap-dur-fast) linear both;
   }
 }
 

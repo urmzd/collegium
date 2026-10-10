@@ -64,6 +64,7 @@ func (p *Platform) StartEval(ctx context.Context, tenant, name, by string) (eval
 		p.log.Info("platform: eval finished", "suite", suite.Name, "status", run.Status, "pass_rate", run.PassRate)
 		for _, a := range p.Alerts.EvaluateEval(tenant, run) {
 			p.log.Warn("platform: alert", "rule", a.Rule, "severity", a.Severity, "title", a.Title)
+			p.inboxAlert(tenant, a)
 		}
 	}()
 	return started, nil

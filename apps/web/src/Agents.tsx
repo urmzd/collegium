@@ -11,6 +11,7 @@ export function Agents({
   agents,
   stats,
   runs = [],
+  builtin = [],
   baseline,
   canWrite,
   onOpen,
@@ -21,6 +22,8 @@ export function Agents({
   stats: Map<string, Group>;
   /** Recent runs across the tenant, drawn on each agent's tape. */
   runs?: Run[];
+  /** Agents the platform provides. They can be opened and read, not changed. */
+  builtin?: string[];
   baseline: string;
   canWrite: boolean;
   onOpen: (name: string) => void;
@@ -59,7 +62,7 @@ export function Agents({
                   ]
                 : [];
             return (
-              <li key={name}>
+              <li key={name} className="oap-enter">
                 <Stroke agent={name} state={waiting ? "waiting" : busy ? "working" : "idle"}>
                 <button
                   type="button"
@@ -74,6 +77,7 @@ export function Agents({
                       <span className="flex items-center gap-2">
                         <span className="oap-display truncate text-aui-lg font-semibold text-aui-fg">{name}</span>
                         {name === baseline && <Chip>Baseline</Chip>}
+                        {builtin.includes(name) && <Chip>Built in, read only</Chip>}
                       </span>
                       <span className="line-clamp-1 text-aui-sm text-aui-muted">
                         {a.spec.description || a.spec.system_prompt || "No description or prompt yet."}
