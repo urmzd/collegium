@@ -1,0 +1,27 @@
+@import "tailwindcss";
+@import "@agent-ui/render-web/theme.css";
+
+@source "../../../../agent-ui/packages/render-web/src";
+@source "../../../../agent-ui/packages/web/src";
+@source "./";
+
+html {
+  color-scheme: light;
+}
+html[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--aui-bg);
+  color: var(--aui-fg);
+  font-family: var(--font-aui-sans);
+  -webkit-font-smoothing: antialiased;
+}

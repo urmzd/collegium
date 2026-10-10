@@ -94,15 +94,28 @@ stack until that is closed.
 | Piece | State |
 |-------|-------|
 | `pkg/call`: edge, modes, depth, fan-out and lease checks | Built, tested |
-| Ledger that supplies a run's calls and spend | Not built |
-| Call tool in the sandbox, and returning a subagent's answer | Not built |
+| `pkg/runs`: run index, call tree, statistics | Built, in memory |
+| `internal/platform`: opentag composed, `Invoke`, `Call` with the spawn allowlist | Built, tested |
+| Ledger reconciler: ends runs whose retries ran out with no final event | Built, tested |
+| `pkg/auth`: OIDC sign-in, machine tokens, roles and scopes | Built, tested against an in-process issuer |
+| HTTP API, sessions, event stream | Built, tested |
+| Schedules through opentag's cron trigger: pause, run now, next fires, history | Built, in memory |
+| `pkg/journal`: event log, query, run traces | Built, a bounded ring in memory |
+| `pkg/alerts`: rules on run failure, failure rate and duration | Built, in memory |
+| `pkg/knowledge`: sources, documents, BM25 search | Built, in memory, lexical only |
+| Web console on agent-ui: runs, inbox, agents, knowledge, schedules, analytics, alerts | Built |
+| Knowledge retrieval inside a run | Not built. opentag's retriever is not given the tenant or the agent, so wiring it would cross tenants |
+| Connections: MCP servers, OAuth to third parties, stored credentials | Not built |
+| Schedule delivery to Slack, email or another system | Not built. Needs connections |
+| Call tool inside the sandbox | Not built. Calls are made through the API |
+| Returning a subagent's answer to a parked caller | Not built |
+| Spend tracking | Not built. Only granted leases are counted |
 | Cancel propagation down a tree | Not built |
 | Access intersection across a call | Not built |
-| Envelope adapter for agent-ui | Not built |
-| Inbox routing by role | Not built |
-| Alert rules over bus events | Not built |
-| OTel across the bus | Not built |
-| Online evals and analytics | Not built |
-| Email connector, MCP server | Not built |
+| Approvals and budget requests in the inbox, routed by role | Not built. The inbox shows alerts and failed runs |
+| Alert delivery outside the console | Not built |
+| OTel export | Not built. Traces are rebuilt from the journal |
+| Online evals | Not built |
+| Email connector, MCP server, Slack and Jira wiring | Not built |
 | Remote execution nodes, peer connector | Not built |
-| Postgres stores | Not built |
+| Postgres stores | Not built. Everything above is lost on restart |

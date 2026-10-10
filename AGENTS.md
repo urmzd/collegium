@@ -16,8 +16,19 @@ platform. agent-ui supplies the components. The design is in
 - **Fail closed.** A missing or malformed edge on an agent's tag is an error.
 - **Nothing presentational here.** Rendering belongs in agent-ui. Anything that
   needs a network call, a database or an identity belongs here.
+- **Tenant comes from the Principal.** Never read it from a request, and return 404 for another tenant's objects.
+- **Every route checks one permission.** Add it in `Server.Handler`, next to the route.
+- **The ledger decides whether a run is over.** Events report attempts. Do not infer an ending from silence.
+- **Bound every query.** A window, a row cap and a bucket cap, enforced on the server.
 - **Keep the status table honest.** When a piece lands, update
   `docs/architecture.md#status` in the same change.
+
+## Layout
+
+- `pkg/call`: the call primitive. `pkg/runs`: the run index and statistics. `pkg/auth`: principals, roles, OIDC.
+- `pkg/journal`: the event log, queries and traces. `pkg/alerts`: rules and alerts. `pkg/knowledge`: sources and search.
+- `internal/platform`: the composition root. `internal/httpapi`: routes, sessions, event stream.
+- `cmd/open-agent-platform`: the binary. `apps/web`: the console, built on agent-ui.
 
 ## Commands
 
@@ -26,6 +37,8 @@ platform. agent-ui supplies the components. The design is in
 | Set up | `make init` |
 | Format, lint and test | `make check` |
 | Test | `make test` |
+| Preview | `make dev`, then `make web` |
+| Web checks | `cd apps/web && pnpm typecheck && pnpm test` |
 
 ## Conventions
 

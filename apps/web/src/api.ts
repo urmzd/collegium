@@ -1,0 +1,249 @@
+import type { BusEvent, Run } from "./adapter.ts";
+
+export class ApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+export interface Principal {
+  subject: string;
+  tenant: string;
+  kind: "user" | "machine";
+  name?: string;
+  email?: string;
+  roles?: string[];
+}
+
+export interface Me {
+  principal: Principal;
+  permissions: string[];
+}
+
+export interface AgentSpec {
+  name: string;
+  description?: string;
+  model: string;
+  provider: string;
+  system_prompt: string;
+  tools?: string[];
+  sources?: { name: string; uri: string }[];
+  access?: { spawn?: string[]; workspace_areas?: string[] };
+}
+
+export interface Revision {
+  spec: AgentSpec;
+  rev: number;
+  hash: string;
+  created_at: string;
+  created_by: string;
+}
+
+export interface Schedule {
+  name: string;
+  expression: string;
+  agent: string;
+  text: string;
+}
+
+/** A schedule plus what makes it trustworthy: state, next fires, recent runs. */
+export interface ScheduleView extends Schedule {
+  paused: boolean;
+  created_by?: string;
+  next: string[];
+  recent: Run[];
+}
+
+export interface Group {
+  name: string;
+  runs: number;
+  completed: number;
+  failed: number;
+  active: number;
+  p50_ms: number;
+  p95_ms: number;
+}
+
+export interface Bucket {
+  start: string;
+  completed: number;
+  failed: number;
+  active: number;
+}
+
+export interface Summary {
+  since: string;
+  until: string;
+  bucket_ns: number;
+  total: Group;
+  buckets: Bucket[];
+  by_agent: Group[];
+  by_origin: Group[];
+  slowest: Run[] | null;
+  delegated: number;
+}
+
+export interface Entry {
+  seq: number;
+  run_id: string;
+  agent: string;
+  rev: number;
+  origin: string;
+  kind: string;
+  at: string;
+  detail?: string;
+}
+
+export interface Span {
+  run_id: string;
+  agent: string;
+  kind: "run" | "attempt" | "tool" | "output" | "parked";
+  name: string;
+  start: string;
+  end?: string;
+  error?: string;
+}
+
+export interface AlertRule {
+  name: string;
+  kind: "run_failed" | "failure_rate" | "slow_run";
+  agent?: string;
+  severity: "warning" | "critical";
+  threshold?: number;
+  window_seconds?: number;
+  min_runs?: number;
+  created_by?: string;
+}
+
+export interface Alert {
+  id: string;
+  rule: string;
+  kind: AlertRule["kind"];
+  severity: AlertRule["severity"];
+  agent?: string;
+  run_id?: string;
+  title: string;
+  body?: string;
+  at: string;
+  acked_by?: string;
+  acked_at?: string;
+}
+
+export interface Source {
+  name: string;
+  description?: string;
+  documents: number;
+  passages: number;
+  updated_at: string;
+}
+
+export interface Doc {
+  id: string;
+  title: string;
+  uri?: string;
+  bytes: number;
+  passages: number;
+  added_by?: string;
+  added_at: string;
+}
+
+export interface Hit {
+  source: string;
+  document_id: string;
+  title: string;
+  uri?: string;
+  index: number;
+  text: string;
+  score: number;
+}
+
+// Same-origin only. The session is an HttpOnly cookie the page cannot read,
+// so there is no token here to leak.
+async function call<T>(method: string, path: string, json?: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method,
+    credentials: "same-origin",
+    headers: json === undefined ? undefined : { "Content-Type": "application/json" },
+    body: json === undefined ? undefined : JSON.stringify(json),
+  });
+  if (res.status === 204) return undefined as T;
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new ApiError(res.status, data.error ?? `Request failed (${res.status})`);
+  return data as T;
+}
+
+export const api = {
+  me: () => call<Me>("GET", "/api/me"),
+  agents: () => call<{ agents: Revision[] }>("GET", "/api/agents").then((r) => r.agents),
+  createAgent: (spec: AgentSpec) => call<Revision>("POST", "/api/agents", spec),
+  reviseAgent: (spec: AgentSpec, expectedRev: number) =>
+    call<Revision>("PUT", `/api/agents/${encodeURIComponent(spec.name)}`, {
+      spec,
+      expected_rev: expectedRev,
+    }),
+  runs: () => call<{ runs: Run[] }>("GET", "/api/runs").then((r) => r.runs),
+  tree: (id: string) =>
+    call<{ runs: Run[] }>("GET", `/api/runs/${encodeURIComponent(id)}/tree`).then((r) => r.runs),
+  createRun: (agent: string, text: string) => call<Run>("POST", "/api/runs", { agent, text }),
+  schedules: () => call<{ schedules: ScheduleView[] }>("GET", "/api/schedules").then((r) => r.schedules),
+  createSchedule: (s: Schedule) => call<ScheduleView>("POST", "/api/schedules", s),
+  deleteSchedule: (name: string) => call<void>("DELETE", `/api/schedules/${encodeURIComponent(name)}`),
+  pauseSchedule: (name: string, paused: boolean) =>
+    call<ScheduleView>("POST", `/api/schedules/${encodeURIComponent(name)}/${paused ? "pause" : "resume"}`),
+  runSchedule: (name: string) => call<Run>("POST", `/api/schedules/${encodeURIComponent(name)}/run`),
+
+  analytics: (window: string) => call<Summary>("GET", `/api/analytics?window=${window}`),
+  journal: (params: Record<string, string>) =>
+    call<{ entries: Entry[] }>("GET", `/api/journal?${new URLSearchParams(params)}`).then((r) => r.entries),
+  trace: (id: string) => call<{ runs: Run[]; spans: Span[] }>("GET", `/api/runs/${encodeURIComponent(id)}/trace`),
+
+  alerts: () => call<{ alerts: Alert[] }>("GET", "/api/alerts").then((r) => r.alerts),
+  ackAlert: (id: string) => call<Alert>("POST", `/api/alerts/${encodeURIComponent(id)}/ack`),
+  alertRules: () => call<{ rules: AlertRule[] }>("GET", "/api/alert-rules").then((r) => r.rules),
+  createAlertRule: (r: AlertRule) => call<AlertRule>("POST", "/api/alert-rules", r),
+  deleteAlertRule: (name: string) => call<void>("DELETE", `/api/alert-rules/${encodeURIComponent(name)}`),
+
+  sources: () => call<{ sources: Source[] }>("GET", "/api/knowledge").then((r) => r.sources),
+  createSource: (name: string, description: string) => call<Source>("POST", "/api/knowledge", { name, description }),
+  deleteSource: (name: string) => call<void>("DELETE", `/api/knowledge/${encodeURIComponent(name)}`),
+  documents: (name: string) =>
+    call<{ documents: Doc[] }>("GET", `/api/knowledge/${encodeURIComponent(name)}/documents`).then((r) => r.documents),
+  addDocument: (name: string, d: { title: string; uri: string; text: string }) =>
+    call<Doc>("POST", `/api/knowledge/${encodeURIComponent(name)}/documents`, d),
+  removeDocument: (name: string, id: string) =>
+    call<void>("DELETE", `/api/knowledge/${encodeURIComponent(name)}/documents/${encodeURIComponent(id)}`),
+  searchKnowledge: (q: string, source?: string) =>
+    call<{ hits: Hit[] }>(
+      "GET",
+      `/api/knowledge/search?${new URLSearchParams(source ? { q, source } : { q })}`,
+    ).then((r) => r.hits),
+  logout: () => call<void>("POST", "/auth/logout"),
+};
+
+/**
+ * Subscribe to the tenant's events. `onOpen` fires on every (re)connect, and
+ * the stream then replays what the bus still holds, so a caller that folds
+ * events into state resets that state in `onOpen`.
+ */
+export function subscribe(
+  topic: string,
+  handlers: { onOpen?: () => void; onEvent: (e: BusEvent) => void; onState?: (live: boolean) => void },
+): () => void {
+  const source = new EventSource(`/api/events?topic=${encodeURIComponent(topic)}`);
+  source.onopen = () => {
+    handlers.onOpen?.();
+    handlers.onState?.(true);
+  };
+  source.onerror = () => handlers.onState?.(false);
+  source.onmessage = (m) => {
+    try {
+      handlers.onEvent(JSON.parse(m.data as string) as BusEvent);
+    } catch {
+      // A frame that is not an event is ignored rather than fatal.
+    }
+  };
+  return () => source.close();
+}
