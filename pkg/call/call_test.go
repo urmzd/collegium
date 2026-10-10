@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/address"
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/address"
+	"github.com/urmzd/mandatum/pkg/envelope"
 )
 
 var (
@@ -16,7 +16,7 @@ var (
 
 func root(t *testing.T) envelope.Tag {
 	t.Helper()
-	src, err := address.Parse("github://urmzd/opentag/issues/42")
+	src, err := address.Parse("github://urmzd/mandatum/issues/42")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/connectors/cron"
+	"github.com/urmzd/mandatum/pkg/connectors/cron"
 )
 
 // Schedule errors.

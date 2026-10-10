@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentrt"
-	"github.com/urmzd/opentag/pkg/runtime"
+	"github.com/urmzd/mandatum/pkg/agentrt"
+	"github.com/urmzd/mandatum/pkg/runtime"
 
 	"github.com/urmzd/collegium/internal/platform"
 	"github.com/urmzd/collegium/pkg/artifacts"

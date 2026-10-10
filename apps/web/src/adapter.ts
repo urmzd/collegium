@@ -1,11 +1,11 @@
-import type { ArtifactKind, Task, Turn, TurnEvent } from "@agent-ui/core";
+import type { ArtifactKind, Task, Turn, TurnEvent } from "@vultus/core";
 
 /**
- * The one place opentag's wire format meets agent-ui's event model. Everything
+ * The one place mandatum's wire format meets vultus's event model. Everything
  * above this file speaks TurnEvent, and everything below it speaks envelopes.
  */
 
-/** An opentag envelope.Event as the platform's event stream sends it. */
+/** An mandatum envelope.Event as the platform's event stream sends it. */
 export interface BusEvent {
   seq: number;
   topic: string;
@@ -104,7 +104,7 @@ interface Published {
 const PUBLISH = "publish_artifact";
 /** The tool an agent hands work to another agent with, without waiting for it. */
 const HAND_ON = "delegate_task";
-/** opentag names the tool that hands work to another agent after that agent. */
+/** mandatum names the tool that hands work to another agent after that agent. */
 const DELEGATE = /^tag_(.+)$/;
 
 /** The agent a tool call hands work to, when the tool is a call to another agent. */
@@ -174,7 +174,7 @@ export function adapter(opts: { /** An agent's colour, 0 to 360, so a call to it
       case "lifecycle.resumed":
         return [{ type: "activity", activity: "thinking" }];
       case "lifecycle.parked":
-        // Blocked on a person or an event. agent-ui does not animate waiting.
+        // Blocked on a person or an event. vultus does not animate waiting.
         return [{ type: "activity", activity: "waiting" }];
       case "delta.text": {
         const text = body<{ text: string }>(e).text ?? "";

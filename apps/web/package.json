@@ -10,11 +10,11 @@
     "test": "node --test --experimental-strip-types src/*.test.ts"
   },
   "dependencies": {
-    "@agent-ui/components": "link:../../../agent-ui/packages/components",
-    "@agent-ui/core": "link:../../../agent-ui/packages/core",
-    "@agent-ui/primitives": "link:../../../agent-ui/packages/primitives",
-    "@agent-ui/render-web": "link:../../../agent-ui/packages/render-web",
-    "@agent-ui/web": "link:../../../agent-ui/packages/web",
+    "@vultus/components": "link:../../../vultus/packages/components",
+    "@vultus/core": "link:../../../vultus/packages/core",
+    "@vultus/primitives": "link:../../../vultus/packages/primitives",
+    "@vultus/render-web": "link:../../../vultus/packages/render-web",
+    "@vultus/web": "link:../../../vultus/packages/web",
     "@fontsource-variable/bricolage-grotesque": "^5.3.0",
     "@fontsource-variable/figtree": "^5.3.0",
     "react": "^19.3.0",

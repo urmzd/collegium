@@ -10,20 +10,20 @@ and the stores behind them. It does not reimplement what it composes.
 
 | Part | Owns | Repo |
 |------|------|------|
-| Bus, topics, connectors, agent specs, revision pinning | Transport and surfaces | [opentag](https://github.com/urmzd/opentag) |
+| Bus, topics, connectors, agent specs, revision pinning | Transport and surfaces | [mandatum](https://github.com/urmzd/mandatum) |
 | Agent loop, tools, MCP client, RAG, evals, OTel | Runtime | [saige](https://github.com/urmzd/saige) |
-| Sandboxed execution nodes, NGAC | Confinement | [dispatch](https://github.com/urmzd/dispatch) |
+| Sandboxed execution nodes, NGAC | Confinement | [legatus](https://github.com/urmzd/legatus) |
 | Durable runs and replay | Crash survival | [duraturo](https://github.com/urmzd/duraturo) |
-| Components and helpers for web and Slack | Presentation | agent-ui |
+| Components and helpers for web and Slack | Presentation | vultus |
 
-## The boundary with agent-ui
+## The boundary with vultus
 
-agent-ui is components and helpers only. It takes data in as props and events
+vultus is components and helpers only. It takes data in as props and events
 and emits actions out.
 
 The test for where something goes: if it needs a network call, a database or an
-identity, it belongs here. The platform owns the wire. It translates opentag
-envelopes into agent-ui events and turns agent-ui actions back into tags. That
+identity, it belongs here. The platform owns the wire. It translates mandatum
+envelopes into vultus events and turns vultus actions back into tags. That
 adapter is the only place the two meet.
 
 ## One primitive: the call
@@ -61,7 +61,7 @@ topic (`agent:<name>:<runID>`). The caller holds a reference and a result, never
 the child's work. Each branch compacts alone, and a tree can spread across
 nodes.
 
-opentag's built-in delegate tool is the attached counterpart: a sub-task inside
+mandatum's built-in delegate tool is the attached counterpart: a sub-task inside
 the caller's turn with no run id and no stream. Both shapes stay available.
 
 ## Governance rides the edge
@@ -91,7 +91,7 @@ A peer node is a connector. One node addresses an agent on another the same way
 it addresses a Slack thread, so a cross-node call is a tag with a route.
 
 This depends on execution nodes that publish to the bus themselves. Today
-opentag streams out of the sandbox through an in-process channel, so every
+mandatum streams out of the sandbox through an in-process channel, so every
 agent runs inside the serving process.
 
 ## Storage
@@ -124,11 +124,11 @@ Admission is one process holding one lock, reading counts from memory. That is c
 |-------|-------|
 | `pkg/call`: edge, modes, depth, fan-out and lease checks | Built, tested |
 | `pkg/runs`: run index, call tree, statistics | Built, in memory |
-| `internal/platform`: opentag composed, `Invoke`, `Call` with the spawn allowlist | Built, tested |
+| `internal/platform`: mandatum composed, `Invoke`, `Call` with the spawn allowlist | Built, tested |
 | Ledger reconciler: ends runs whose retries ran out with no final event | Built, tested |
 | `pkg/auth`: OIDC sign-in, machine tokens, roles and scopes | Built, tested against an in-process issuer |
 | HTTP API, sessions, event stream | Built, tested |
-| Schedules through opentag's cron trigger: pause, run now, next fires, history | Built, in memory |
+| Schedules through mandatum's cron trigger: pause, run now, next fires, history | Built, in memory |
 | `pkg/journal`: event log, query, run traces | Built, a bounded ring in memory |
 | `pkg/alerts`: rules on run failure, failure rate and duration | Built, in memory |
 | `pkg/knowledge`: sources, documents, BM25 search, per-document exclusion, saved variants | Built, in memory, lexical only |
@@ -144,15 +144,15 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | `pkg/usage`: append-only ledger of admitted, refused, warned and ended runs, with `Rebuild` from its entries | Built, in memory. Admissions are kept 62 days |
 | Admission: every run is checked under one lock before it is accepted; a refusal answers 429 or 402 with the limit, the policy version and the reset time, and raises a budget alert | Built, tested with 40 racers against a limit of 7 |
 | Console for limits: Settings, each project page, and usage against limits in Analytics | Built |
-| Spend limits | Stored and versioned, not enforced. opentag reports no cost for a run, so `spend.metered` is false |
+| Spend limits | Stored and versioned, not enforced. mandatum reports no cost for a run, so `spend.metered` is false |
 | Asking a person to approve a run at a limit | Not built. A run cannot be parked on a person, so the only action is to block |
 | Limits set by a project's owner | Not built. Only an admin sets limits, because projects have no owners |
 | First-run setup: the first admin names themselves and the workspace | Built. `first_admin`, `onboarded_at` and the workspace's setup fields |
 | Recents: conversations paged by an opaque keyset cursor, 200 a page | Built |
 | Project membership and per-project access | Not built. Everyone in the workspace sees every project |
-| Web console on agent-ui: chat, inbox, agent editor with revisions, evals, knowledge, schedules, analytics, alerts, settings | Built |
+| Web console on vultus: chat, inbox, agent editor with revisions, evals, knowledge, schedules, analytics, alerts, settings | Built |
 | Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the only mode is loopback dev auth |
-| Model parameters on an agent (temperature, token and step limits) | Not built. opentag's agent spec has no fields for them |
+| Model parameters on an agent (temperature, token and step limits) | Not built. mandatum's agent spec has no fields for them |
 | Stopping a run in flight | Not built. The composer's queue waits for the run to end |
 | Skill consolidation | Not built |
 | Sandbox: each conversation has a scratch directory that agents with the file tools read and write. It is opened as an `os.Root`, bounded in file size, count and total, and removed after 7 days untouched | Built, tested against traversal, absolute paths and planted links |
@@ -162,7 +162,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Storage limits per workspace, project and agent, as `max_storage` on a policy | Built. A refusal raises a message in the inbox |
 | Downloads: tenant and right checked on every request, always an attachment unless an inert type is asked for inline, never HTML or SVG inline | Built, tested |
 | Built-in agents: `collegium-writer` writes a document and publishes it. Provided by the platform, not editable, present only when the server is given `-builtin-provider` and `-builtin-model` | Built. One agent. Not run against a real model here: no provider key was available |
-| Called agents are runs: an agent that tags another starts a run with its own id, events and record, in the caller's conversation and sandbox | Built, on opentag's `WithDelegator` hook. Needs the opentag branch `feat/delegated-runs`, pinned by a `replace` in `go.mod` until it is tagged |
+| Called agents are runs: an agent that tags another starts a run with its own id, events and record, in the caller's conversation and sandbox | Built, on mandatum's `WithDelegator` hook. Needs the mandatum branch `feat/delegated-runs`, pinned by a `replace` in `go.mod` until it is tagged |
 | Two lifetimes for a called run. Attached (tagged, the caller waits): ends with its caller, and the caller is not done until it is. Delegated (`delegate_task`, the caller carries on): independent, and its answer goes to the inbox | Built, tested three levels deep under the race detector |
 | Stopping a run: `POST /api/runs/{id}/stop` stops it and everything attached to it, with the cause recorded. What it delegated keeps running | Built. A stop is taken at the platform's edge: the run can start nothing more and its answer is discarded, but a model call in flight is not interrupted, because the runtime has no cancel |
 | A place is always kept for work that waits on nobody, so runs waiting on each other cannot fill every place and hang | Built. With `Concurrency` 4 by default, three runs may wait at once and a fourth is told no |
@@ -172,7 +172,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Uploading binary files (PDF, images) to knowledge or a message | Not built. Files are read as text in the browser |
 | Evals against a knowledge variant | Not built. Evals search the current view |
 | Summarizing history | Not built. Long conversations are truncated to the limit, oldest turns first |
-| Knowledge retrieval inside a run | Not built. opentag's retriever is not given the tenant or the agent, so wiring it would cross tenants |
+| Knowledge retrieval inside a run | Not built. mandatum's retriever is not given the tenant or the agent, so wiring it would cross tenants |
 | Connections: MCP servers, OAuth to third parties, stored credentials | Not built |
 | Schedule delivery to Slack, email or another system | Not built. Needs connections |
 | Call tool inside the sandbox | Not built. Calls are made through the API |

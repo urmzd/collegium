@@ -16,8 +16,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentrt/payload"
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
+	"github.com/urmzd/mandatum/pkg/envelope"
 )
 
 // DefaultCapacity is how many events a journal keeps.

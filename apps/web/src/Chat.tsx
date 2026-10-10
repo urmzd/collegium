@@ -1,6 +1,6 @@
-import { ActionId, type UiAction } from "@agent-ui/core";
-import { CheckIcon, ChevronDownIcon, WebSurface } from "@agent-ui/render-web";
-import { AgentMessage, Thread, useQueue } from "@agent-ui/web";
+import { ActionId, type UiAction } from "@vultus/core";
+import { CheckIcon, ChevronDownIcon, WebSurface } from "@vultus/render-web";
+import { AgentMessage, Thread, useQueue } from "@vultus/web";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity } from "./Activity.tsx";
 import type { Run } from "./adapter.ts";

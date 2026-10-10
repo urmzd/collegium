@@ -14,7 +14,7 @@
 // and a result rather than the child's work. Each branch compacts alone, and a
 // tree of calls can spread across nodes.
 //
-// opentag's delegate tool is the attached counterpart: a sub-task inside the
+// mandatum's delegate tool is the attached counterpart: a sub-task inside the
 // caller's turn with no run id and no stream. This package is the other shape
 // its doc comment describes, the one that outlives the turn.
 //
@@ -42,7 +42,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/envelope"
 )
 
 // Origin marks a tag raised by an agent rather than by a trigger.

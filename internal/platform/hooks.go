@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/envelope"
 
 	"github.com/urmzd/collegium/pkg/memory"
 	"github.com/urmzd/collegium/pkg/runs"

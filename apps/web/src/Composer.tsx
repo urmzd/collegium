@@ -1,5 +1,5 @@
-import { ArrowUpIcon, FileIcon, XIcon } from "@agent-ui/render-web";
-import { type QueueControls, QueueStrip } from "@agent-ui/web";
+import { ArrowUpIcon, FileIcon, XIcon } from "@vultus/render-web";
+import { type QueueControls, QueueStrip } from "@vultus/web";
 import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const MAX_HEIGHT = 260;

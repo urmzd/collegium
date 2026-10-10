@@ -9,7 +9,7 @@
 
 > ## Status
 >
-> **Early.** One process runs agents through opentag, with sign-in,
+> **Early.** One process runs agents through mandatum, with sign-in,
 > conversations that branch across agents, an agent editor with revisions,
 > evals, schedules, alerts, analytics, traces, knowledge search and a web
 > console. Every store is in memory. Connections (MCP, OAuth), approvals, local
@@ -18,10 +18,10 @@
 
 ## What it is
 
-The composition of [opentag](https://github.com/urmzd/opentag) (bus and
+The composition of [mandatum](https://github.com/urmzd/mandatum) (bus and
 connectors), [saige](https://github.com/urmzd/saige) (agent runtime and evals),
-[dispatch](https://github.com/urmzd/dispatch) (sandboxes) and
-[duraturo](https://github.com/urmzd/duraturo) (durability), with agent-ui as
+[legatus](https://github.com/urmzd/legatus) (sandboxes) and
+[duraturo](https://github.com/urmzd/duraturo) (durability), with vultus as
 the component library for web and Slack.
 
 The idea that holds it together: **an agent calls another agent by raising a
@@ -51,10 +51,10 @@ make web   # console on http://127.0.0.1:5173
 ```
 
 `make dev` uses dev auth, which only listens on loopback. The example agents
-use opentag's offline provider and call no model. Set an agent's provider to
+use mandatum's offline provider and call no model. Set an agent's provider to
 `anthropic` with `ANTHROPIC_API_KEY` in the environment for real answers.
 
-The console links agent-ui from a sibling checkout at `../agent-ui`.
+The console links vultus from a sibling checkout at `../vultus`.
 
 For real sign-in, roles and machine tokens, see
 [docs/security.md](docs/security.md).

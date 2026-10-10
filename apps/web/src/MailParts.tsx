@@ -1,12 +1,12 @@
-import { ActionId, canAct, type Resolution } from "@agent-ui/core";
-import type { PartRenderer } from "@agent-ui/web";
+import { ActionId, canAct, type Resolution } from "@vultus/core";
+import type { PartRenderer } from "@vultus/web";
 import { useState } from "react";
 import { limitWord, type PlatformMessage, reached, type Source, scopeName } from "./mail.ts";
 import { ago, button, counted, field, LimitField, type Period, primary, UsageMeter } from "./ui.tsx";
 
 /**
  * The parts the platform draws itself. Everything else in a message (text,
- * failures, memory to review, replies) is drawn by agent-ui's mailbox.
+ * failures, memory to review, replies) is drawn by vultus's mailbox.
  *
  * - An alert, so it can name its rule and link to it.
  * - A limit that was reached, so it can say which limit and on what, show the

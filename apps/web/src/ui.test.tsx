@@ -14,14 +14,14 @@ import { memoryStorage, sampleFiles, sampleUse } from "./storage.fixtures.ts";
 import { RunItem, runManifest, runMarkdown, statusOf } from "./RunItem.tsx";
 import { CopyAs } from "./CopyAs.tsx";
 import { itemActions, itemOf } from "./itemActions.tsx";
-import { AgentMessage } from "@agent-ui/web";
-import { WebSurface } from "@agent-ui/render-web";
+import { AgentMessage } from "@vultus/web";
+import { WebSurface } from "@vultus/render-web";
 import { replay } from "./Runs.tsx";
 import { formats } from "./copyas.ts";
-import { emptyTurn } from "@agent-ui/core";
+import { emptyTurn } from "@vultus/core";
 import type { Alert, AlertRule, Me, Preferences, Settings } from "./api.ts";
 import { Onboarding, welcome } from "./Onboarding.tsx";
-import { ActionId, messageState, partTarget, type UiAction } from "@agent-ui/core";
+import { ActionId, messageState, partTarget, type UiAction } from "@vultus/core";
 import { after, merge } from "./inbox.ts";
 import { edgeOf, MailboxView } from "./InboxPage.tsx";
 import { fromServer, type PlatformMessage, reached, toRequest } from "./mail.ts";
@@ -476,7 +476,7 @@ test("edgeOf: an agent's message carries its edge, a rule's and the platform's s
   assert.equal(edgeOf(mailOf("m-done")).state, "done");
 });
 
-test("MailboxView: hosts agent-ui's mailbox with every message listed", () => {
+test("MailboxView: hosts vultus's mailbox with every message listed", () => {
   const out = mailbox(null);
   for (const m of sampleMail().filter((x) => messageState(x) === "open")) assert.ok(out.includes(m.subject), m.subject);
   assert.equal(out.match(/data-message="/g)?.length, 4, "one row per open message");
@@ -512,7 +512,7 @@ test("MailboxView: the platform draws a reached limit with the meter and a way t
   assert.match(out, /value="200"/, "the new limit starts at double");
 });
 
-test("MailboxView: failures and memory to review are agent-ui's own parts", () => {
+test("MailboxView: failures and memory to review are vultus's own parts", () => {
   const failure = mailbox("m-failure");
   assert.match(failure, /data-aui-part="text"/);
   assert.match(failure, /data-aui-part="failure"/);
@@ -922,7 +922,7 @@ test("motion: loading lists are skeletons that still say Loading to a screen rea
   assert.ok((out.match(/aui-skeleton/g)?.length ?? 0) >= 3);
 });
 
-test("an answer has exactly one copy control: the console's Copy as, in place of agent-ui's button", () => {
+test("an answer has exactly one copy control: the console's Copy as, in place of vultus's button", () => {
   const run = runOf({ answer: "2.4 could not be tagged." });
   const turn = { ...emptyTurn(run.id, { name: run.agent }), status: "done" as const, text: "2.4 could not be tagged." };
   const draw = (withSlot: boolean) =>
@@ -933,14 +933,14 @@ test("an answer has exactly one copy control: the console's Copy as, in place of
     );
   const hosted = draw(true);
   assert.equal(hosted.match(/data-testid="item-copy"/g)?.length, 1, "the console's control is there once");
-  assert.doesNotMatch(hosted, /aria-label="Copy answer"/, "agent-ui's own button is not drawn beside it");
+  assert.doesNotMatch(hosted, /aria-label="Copy answer"/, "vultus's own button is not drawn beside it");
   assert.match(hosted, /aria-label="Copy answer as: none"/, "it is an icon with a name, opened on click");
   assert.match(hosted, /aria-haspopup="listbox"/);
   assert.match(hosted, /role="status"[^>]*aria-live="polite"/, "the confirmation is announced");
   assert.doesNotMatch(hosted, />Copied</);
 
   const plain = draw(false);
-  assert.equal(plain.match(/aria-label="Copy answer"/g)?.length, 1, "with no host control, agent-ui's button is the one");
+  assert.equal(plain.match(/aria-label="Copy answer"/g)?.length, 1, "with no host control, vultus's button is the one");
   assert.doesNotMatch(plain, /data-testid="item-copy"/);
 });
 

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentrt/payload"
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
+	"github.com/urmzd/mandatum/pkg/envelope"
 )
 
 var t0 = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)

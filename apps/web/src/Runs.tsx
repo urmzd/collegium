@@ -1,4 +1,4 @@
-import { emptyTurn, reduce, type Turn } from "@agent-ui/core";
+import { emptyTurn, reduce, type Turn } from "@vultus/core";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
 import { adapter, type BusEvent, type Run, turnOf } from "./adapter.ts";
 import { api, subscribe } from "./api.ts";

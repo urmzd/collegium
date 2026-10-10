@@ -1,5 +1,5 @@
-import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, XIcon } from "@agent-ui/render-web";
-import { AgentOrb, type OrbSize, type OrbState } from "@agent-ui/web";
+import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, XIcon } from "@vultus/render-web";
+import { AgentOrb, type OrbSize, type OrbState } from "@vultus/web";
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
 import { cause, elapsed, took } from "./format.ts";
@@ -236,7 +236,7 @@ export function hueOf(name: string): number {
 }
 
 /**
- * Gives everything inside it an agent's color. agent-ui draws its accent from
+ * Gives everything inside it an agent's color. vultus draws its accent from
  * one hue, so setting that hue here recolors the orb, and any accent, for this
  * agent alone.
  */

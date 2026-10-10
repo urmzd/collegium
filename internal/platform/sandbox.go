@@ -18,9 +18,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/urmzd/opentag/pkg/agentrt"
-	"github.com/urmzd/opentag/pkg/agentrt/payload"
-	"github.com/urmzd/opentag/pkg/runtime"
+	"github.com/urmzd/mandatum/pkg/agentrt"
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
+	"github.com/urmzd/mandatum/pkg/runtime"
 	saigetypes "github.com/urmzd/saige/agent/types"
 
 	"github.com/urmzd/collegium/pkg/alerts"

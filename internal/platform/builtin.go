@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/urmzd/opentag/pkg/agentspec"
-	"github.com/urmzd/opentag/pkg/registry"
+	"github.com/urmzd/mandatum/pkg/agentspec"
+	"github.com/urmzd/mandatum/pkg/registry"
 )
 
 // Agents the platform provides.

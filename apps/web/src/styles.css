@@ -1,8 +1,8 @@
 @import "tailwindcss";
-@import "@agent-ui/render-web/theme.css";
+@import "@vultus/render-web/theme.css";
 
-@source "../../../../agent-ui/packages/render-web/src";
-@source "../../../../agent-ui/packages/web/src";
+@source "../../../../vultus/packages/render-web/src";
+@source "../../../../vultus/packages/web/src";
 @source "./";
 
 html {
@@ -19,7 +19,7 @@ body,
 }
 
 /*
- * The console's own layer. agent-ui owns the tokens for what it renders. The
+ * The console's own layer. vultus owns the tokens for what it renders. The
  * console adds three things: a display face for titles and figures, flat
  * planes for its chrome and panels, and the run tape.
  */
@@ -28,7 +28,7 @@ body,
 }
 
 :root {
-  /* agent-ui names Figtree. The console ships it, so it is never a fallback. */
+  /* vultus names Figtree. The console ships it, so it is never a fallback. */
   --font-aui-sans: "Figtree Variable", "Figtree", ui-sans-serif, system-ui, sans-serif;
   /* The sidebar's plane and a panel's plane, each one step off the page. */
   --collegium-plane: oklch(0.975 0 0);

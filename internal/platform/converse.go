@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/envelope"
-	"github.com/urmzd/opentag/pkg/registry"
+	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/registry"
 
 	"github.com/urmzd/collegium/pkg/memory"
 	"github.com/urmzd/collegium/pkg/pick"

@@ -10,14 +10,14 @@ const api = process.env.COLLEGIUM_API ?? "http://127.0.0.1:8080";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
-    // agent-ui is linked from a sibling checkout with its own node_modules.
+    // vultus is linked from a sibling checkout with its own node_modules.
     // Without this, it would load a second copy of React.
     dedupe: ["react", "react-dom"],
   },
   server: {
     host: "127.0.0.1",
     port: 5173,
-    fs: { allow: ["../..", "../../../agent-ui"] },
+    fs: { allow: ["../..", "../../../vultus"] },
     proxy: {
       "/api": { target: api, changeOrigin: false },
       "/auth": { target: api, changeOrigin: false },

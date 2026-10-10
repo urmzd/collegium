@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/urmzd/opentag/pkg/agentspec"
-	"github.com/urmzd/opentag/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/agentspec"
+	"github.com/urmzd/mandatum/pkg/envelope"
 
 	"github.com/urmzd/collegium/pkg/alerts"
 	"github.com/urmzd/collegium/pkg/auth"
