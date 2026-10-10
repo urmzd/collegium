@@ -1,0 +1,14 @@
+# Build artifacts
+bin/
+build/
+
+# Coverage
+*.out
+coverage.html
+
+# OS noise
+.DS_Store
+
+# direnv
+.direnv/
+.envrc.local
