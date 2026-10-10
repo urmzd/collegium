@@ -8,10 +8,12 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/urmzd/opentag/pkg/envelope"
 	"github.com/urmzd/opentag/pkg/registry"
 
+	"github.com/urmzd/open-agent-platform/pkg/memory"
 	"github.com/urmzd/open-agent-platform/pkg/pick"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
@@ -75,6 +77,13 @@ type Settings struct {
 	// MemoryAutoApprove keeps what the memory agent writes without asking.
 	// Off, which is the default, every note it writes waits for a person.
 	MemoryAutoApprove bool `json:"memory_auto_approve"`
+	// WorkspaceName is what the workspace calls itself.
+	WorkspaceName string `json:"workspace_name"`
+	// SetupAt and SetupBy record the first time an admin saved the
+	// workspace's settings. The server sets them once. A value sent by a
+	// client is ignored.
+	SetupAt time.Time `json:"setup_at,omitzero"`
+	SetupBy string    `json:"setup_by,omitempty"`
 }
 
 func (s Settings) withDefaults() Settings {
@@ -107,6 +116,13 @@ func (p *Platform) Settings(tenant string) Settings { return p.settings.get(tena
 // SetSettings replaces a tenant's settings.
 func (p *Platform) SetSettings(ctx context.Context, tenant string, next Settings) error {
 	next = next.withDefaults()
+	// Who set the workspace up, and when, is the server's to say.
+	stored := p.Settings(tenant)
+	next.SetupAt, next.SetupBy = stored.SetupAt, stored.SetupBy
+	next.WorkspaceName = strings.TrimSpace(next.WorkspaceName)
+	if len(next.WorkspaceName) > 80 || strings.ContainsAny(next.WorkspaceName, "\r\n\t<>") {
+		return fmt.Errorf("%w: a workspace name is plain text on one line, at most 80 characters", ErrSettings)
+	}
 	for _, name := range []string{next.Baseline, next.TitleAgent, next.MemoryAgent} {
 		if name == "" {
 			continue
@@ -137,6 +153,22 @@ func (p *Platform) SetSettings(ctx context.Context, tenant string, next Settings
 	}
 	p.settings.by[tenant] = next
 	return nil
+}
+
+// MarkSetup records who first set the workspace up. It does nothing once that
+// is on record, so it is safe to call after every admin write.
+func (p *Platform) MarkSetup(tenant, by string) Settings {
+	p.settings.mu.Lock()
+	defer p.settings.mu.Unlock()
+	if p.settings.by == nil {
+		p.settings.by = map[string]Settings{}
+	}
+	cfg := p.settings.by[tenant]
+	if cfg.SetupAt.IsZero() {
+		cfg.SetupAt, cfg.SetupBy = p.now(), by
+		p.settings.by[tenant] = cfg
+	}
+	return cfg.withDefaults()
 }
 
 // Pick chooses an agent for a message without starting anything.
@@ -212,9 +244,17 @@ func (p *Platform) Converse(ctx context.Context, tenant string, t Turn) (runs.Ru
 		meta[runs.MetaPicked] = choice.Reason
 	}
 
-	// What this agent remembers goes first, ahead of the conversation.
+	// What this agent remembers goes first, ahead of the conversation, and
+	// what the project knows goes ahead of that: it is shared by every agent
+	// and every conversation in the project.
 	if notes := p.Memory.Prompt(tenant, agent); notes != "" {
 		prompt = notes + "\n\n" + prompt
+	}
+	if project := meta[runs.MetaProject]; project != "" {
+		heading := fmt.Sprintf("What everyone working on the project %q knows:", project)
+		if notes := p.Memory.PromptAs(tenant, memory.ProjectOwner(project), heading); notes != "" {
+			prompt = notes + "\n\n" + prompt
+		}
 	}
 
 	return p.Invoke(ctx, envelope.Tag{
@@ -254,4 +294,41 @@ func transcript(path []runs.Run, limit int) string {
 		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// ErrProject reports a project that cannot be created or found.
+var (
+	ErrProjectExists   = errors.New("platform: project already exists")
+	ErrProjectNotFound = errors.New("platform: project not found")
+)
+
+// HasProject reports whether a tenant has a project by this name.
+func (p *Platform) HasProject(tenant, name string) bool {
+	return slices.ContainsFunc(p.Settings(tenant).Projects, func(pr Project) bool { return pr.Name == name })
+}
+
+// CreateProject adds a project to a tenant.
+func (p *Platform) CreateProject(ctx context.Context, tenant string, pr Project) error {
+	cfg := p.Settings(tenant)
+	if slices.ContainsFunc(cfg.Projects, func(have Project) bool { return strings.EqualFold(have.Name, pr.Name) }) {
+		return fmt.Errorf("%w: %q", ErrProjectExists, pr.Name)
+	}
+	cfg.Projects = append(slices.Clone(cfg.Projects), pr)
+	return p.SetSettings(ctx, tenant, cfg)
+}
+
+// DeleteProject removes a project and what it alone holds: its shared memory.
+// Its conversations and schedules are kept. They simply stop being filed.
+func (p *Platform) DeleteProject(ctx context.Context, tenant, name string) error {
+	cfg := p.Settings(tenant)
+	i := slices.IndexFunc(cfg.Projects, func(pr Project) bool { return pr.Name == name })
+	if i < 0 {
+		return fmt.Errorf("%w: %q", ErrProjectNotFound, name)
+	}
+	cfg.Projects = slices.Delete(slices.Clone(cfg.Projects), i, i+1)
+	if err := p.SetSettings(ctx, tenant, cfg); err != nil {
+		return err
+	}
+	p.Memory.Drop(tenant, memory.ProjectOwner(name))
+	return nil
 }

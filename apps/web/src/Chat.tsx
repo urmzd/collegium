@@ -154,6 +154,7 @@ function TurnView({
  */
 export function Chat({
   threadId,
+  startIn,
   summary,
   tick,
   agents,
@@ -164,6 +165,8 @@ export function Chat({
   onChanged,
 }: {
   threadId: string | null;
+  /** The project a new conversation starts in, when it was started from one. */
+  startIn?: string;
   /** The conversation at a glance, once it exists. */
   summary: ThreadSummary | undefined;
   /** Changes whenever any run starts or ends. */
@@ -179,7 +182,7 @@ export function Chat({
   const [chosen, setChosen] = useState<Record<string, string>>({});
   const [auto, setAuto] = useState(true);
   const [agent, setAgent] = useState("");
-  const [project, setProject] = useState("");
+  const [project, setProject] = useState(startIn ?? "");
   const [preview, setPreview] = useState<Choice | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -283,8 +286,8 @@ export function Chat({
         queue={queue}
         autoFocus={!threadId}
         onDraft={setDraft}
-      />
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 px-1 text-aui-xs text-aui-muted">
+        leading={
+          <>
         {threadId ? (
           tail?.project && <span className="px-1.5 text-aui-sm">In {tail.project}</span>
         ) : (
@@ -296,7 +299,10 @@ export function Chat({
             onChange={setProject}
           />
         )}
-        <span className="flex-1" />
+          </>
+        }
+        trailing={
+          <>
         {/* The reason for a pick is one hover away, and announced, without taking a line. */}
         <span className="sr-only" aria-live="polite">
           {auto && preview ? `${preview.agent}. ${preview.reason}` : ""}
@@ -364,7 +370,9 @@ export function Chat({
             </div>
           )}
         </Popover>
-      </div>
+          </>
+        }
+      />
     </div>
   );
 

@@ -235,6 +235,13 @@ func (s *Store) List(tenant, agent string) []Note {
 	return slices.Clone(s.by[key(tenant, agent)])
 }
 
+// Drop forgets everything an owner holds, for when the owner is deleted.
+func (s *Store) Drop(tenant, owner string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.by, key(tenant, owner))
+}
+
 // Remove deletes one note.
 func (s *Store) Remove(tenant, agent, id string) error {
 	s.mu.Lock()
@@ -250,14 +257,30 @@ func (s *Store) Remove(tenant, agent, id string) error {
 
 // Prompt renders an agent's notes for the start of a turn, or "" for none.
 func (s *Store) Prompt(tenant, agent string) string {
+	return s.PromptAs(tenant, agent, "What you remember from earlier conversations:")
+}
+
+// projectPrefix marks a memory owner that is a project rather than an agent.
+// An agent's name cannot contain a colon, so the two never collide.
+const projectPrefix = "project:"
+
+// ProjectOwner is the owner under which a project's shared notes are kept.
+// Every agent answering in that project is sent them.
+func ProjectOwner(project string) string { return projectPrefix + project }
+
+// OwnerProject reports the project an owner names, if it names one.
+func OwnerProject(owner string) (string, bool) { return strings.CutPrefix(owner, projectPrefix) }
+
+// PromptAs renders an owner's approved notes under a heading, or "" for none.
+func (s *Store) PromptAs(tenant, owner, heading string) string {
 	var b strings.Builder
-	for _, n := range s.List(tenant, agent) {
+	for _, n := range s.List(tenant, owner) {
 		// A proposal nobody has approved is not a memory yet.
 		if n.Status != Approved {
 			continue
 		}
 		if b.Len() == 0 {
-			b.WriteString("What you remember from earlier conversations:")
+			b.WriteString(heading)
 		}
 		b.WriteString("\n- ")
 		b.WriteString(n.Text)

@@ -1,6 +1,6 @@
 import type { Run } from "./adapter.ts";
 import type { Group, Revision } from "./api.ts";
-import { AgentMark, Chip, Empty, longest, Page, primary, rows, Tape, took } from "./ui.tsx";
+import { AgentMark, Chip, Empty, longest, Page, primary, rows, Stroke, Tape, took } from "./ui.tsx";
 
 /**
  * Every agent in the tenant, one lane each: who it is, its recent runs on a
@@ -49,6 +49,7 @@ export function Agents({
             const ended = g ? g.completed + g.failed : 0;
             const own = runs.filter((r) => r.agent === name);
             const busy = own.some((r) => r.status === "running" || r.status === "accepted");
+            const waiting = own.some((r) => r.status === "parked");
             const figures: [string, string][] =
               g && g.runs > 0
                 ? [
@@ -59,10 +60,11 @@ export function Agents({
                 : [];
             return (
               <li key={name}>
+                <Stroke agent={name} state={waiting ? "waiting" : busy ? "working" : "idle"}>
                 <button
                   type="button"
                   onClick={() => onOpen(name)}
-                  className="grid w-full grid-cols-1 items-center gap-x-8 gap-y-3 px-1 py-4 text-left transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent focus-visible:-outline-offset-2 md:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_15rem]"
+                  className="grid w-full grid-cols-1 items-center gap-x-8 gap-y-3 py-4 pr-1 pl-4 text-left transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent focus-visible:-outline-offset-2 @4xl:grid-cols-[minmax(0,5fr)_minmax(0,4fr)_15rem]"
                 >
                   <span className="flex min-w-0 items-start gap-3">
                     <span className="pt-0.5">
@@ -97,6 +99,7 @@ export function Agents({
                     <span className="text-aui-xs text-aui-muted">No runs in the last 24 hours</span>
                   )}
                 </button>
+                </Stroke>
               </li>
             );
           })}

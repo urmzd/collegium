@@ -32,6 +32,17 @@ Read [docs/architecture.md](docs/architecture.md) for the full design.
 
 ## Preview
 
+<p align="center">
+  <img src="showcase/runs.png" alt="The Runs page: a tape of recent runs above a searchable, filterable list" width="49%">
+  <img src="showcase/agents.png" alt="The Agents page: one lane per agent with its recent runs and the last day's figures" width="49%">
+</p>
+<p align="center">
+  <img src="showcase/onboarding.png" alt="The first-run page that asks the first admin for their name and the workspace's" width="49%">
+  <img src="showcase/analytics.png" alt="The Analytics page: runs, success rate and duration for a time window" width="49%">
+</p>
+
+The screenshots are captured with [teasr](https://github.com/urmzd/teasr) from `teasr.toml`.
+
 ```sh
 make dev   # server on 127.0.0.1:8080, no sign-in, two example agents
 make web   # console on http://127.0.0.1:5173

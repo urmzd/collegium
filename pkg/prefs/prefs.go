@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Errors.
@@ -52,6 +53,9 @@ type Preferences struct {
 	// PhotoVersion changes with every upload, so a browser never shows a
 	// stale picture from its cache.
 	PhotoVersion int `json:"photo_version"`
+	// OnboardedAt is when the person finished or skipped the first-run
+	// questions. Zero means they have not been through them.
+	OnboardedAt time.Time `json:"onboarded_at,omitzero"`
 }
 
 // Defaults is what a person has before they choose anything.
@@ -120,6 +124,19 @@ func (s *Store) Set(tenant, subject string, next Preferences) (Preferences, erro
 	e := s.of(tenant, subject)
 	e.DisplayName, e.Theme, e.Accent = next.DisplayName, next.Theme, next.Accent
 	return e.Preferences, nil
+}
+
+// MarkOnboarded records that a person has been through the first-run questions.
+// The time is the server's, and the first one stands: asking twice does not
+// move it.
+func (s *Store) MarkOnboarded(tenant, subject string, at time.Time) Preferences {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.of(tenant, subject)
+	if e.OnboardedAt.IsZero() {
+		e.OnboardedAt = at
+	}
+	return e.Preferences
 }
 
 // imageType reports the type of an image from its own bytes. What the uploader

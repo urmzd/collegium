@@ -1,6 +1,7 @@
 package runs
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -117,5 +118,98 @@ func TestRecent(t *testing.T) {
 	}
 	if total, _ := x.Recent("acme", "", t0.Add(30*time.Second)); total != 1 {
 		t.Fatalf("since = %d", total)
+	}
+}
+
+func TestThreadPaging(t *testing.T) {
+	x := NewIndex()
+	// Seven conversations, each a minute after the last. Odd ones are
+	// answered by helper and started by cron, and t3 has a failure.
+	for i := range 7 {
+		id := "t" + string(rune('0'+i))
+		agent, origin := "lead", "api"
+		if i%2 == 1 {
+			agent, origin = "helper", "cron"
+		}
+		record(t, x, "acme", id, agent, origin, time.Duration(i)*time.Minute, nil)
+		kind, body := envelope.KindCompleted, payload.Lifecycle{}
+		if i == 3 {
+			kind, body = envelope.KindFailed, payload.Lifecycle{Terminal: true}
+		}
+		if i != 6 {
+			end(t, x, "acme", id, time.Duration(i)*time.Minute+time.Second, kind, body)
+		}
+	}
+	record(t, x, "globex", "other", "lead", "api", 0, nil)
+	ids := func(page []ThreadSummary) string {
+		out := ""
+		for _, s := range page {
+			out += s.ID + " "
+		}
+		return out
+	}
+
+	// Pages walk from newest to oldest with no gap and no repeat.
+	var seen string
+	cursor := ""
+	for range 5 {
+		page, next, err := x.ThreadPage("acme", ThreadQuery{Limit: 3, Before: cursor})
+		if err != nil {
+			t.Fatal(err)
+		}
+		seen += ids(page)
+		if cursor = next; cursor == "" {
+			break
+		}
+	}
+	if seen != "t6 t5 t4 t3 t2 t1 t0 " {
+		t.Fatalf("walked %q", seen)
+	}
+	// A page that ends exactly at the last conversation has no next.
+	if _, next, _ := x.ThreadPage("acme", ThreadQuery{Limit: 7}); next != "" {
+		t.Fatalf("a full last page offered a next page: %q", next)
+	}
+
+	// Filters apply before the limit.
+	page, next, _ := x.ThreadPage("acme", ThreadQuery{Origin: "api", Limit: 2})
+	if ids(page) != "t6 t4 " || next == "" {
+		t.Fatalf("origin page = %q, next %q", ids(page), next)
+	}
+	page, _, _ = x.ThreadPage("acme", ThreadQuery{Origin: "api", Limit: 2, Before: next})
+	if ids(page) != "t2 t0 " {
+		t.Fatalf("origin page two = %q", ids(page))
+	}
+	if page, _, _ := x.ThreadPage("acme", ThreadQuery{Agent: "helper"}); ids(page) != "t5 t3 t1 " {
+		t.Fatalf("agent = %q", ids(page))
+	}
+	if page, _, _ := x.ThreadPage("acme", ThreadQuery{Standing: StandingFailed}); ids(page) != "t3 " {
+		t.Fatalf("failed = %q", ids(page))
+	}
+	if page, _, _ := x.ThreadPage("acme", ThreadQuery{Standing: StandingRunning}); ids(page) != "t6 " {
+		t.Fatalf("running = %q", ids(page))
+	}
+
+	// New activity between pages: a conversation on a later page moves to the
+	// top. It is not repeated and nothing else is skipped.
+	first, next, _ := x.ThreadPage("acme", ThreadQuery{Limit: 3})
+	record(t, x, "acme", "t1-again", "helper", "cron", 30*time.Minute, map[string]string{})
+	x.runs["t1-again"].Thread = "t1"
+	rest, _, _ := x.ThreadPage("acme", ThreadQuery{Limit: 10, Before: next})
+	if ids(first) != "t6 t5 t4 " || ids(rest) != "t3 t2 t0 " {
+		t.Fatalf("after new activity: first %q, rest %q", ids(first), ids(rest))
+	}
+	if top, _, _ := x.ThreadPage("acme", ThreadQuery{Limit: 1}); ids(top) != "t1 " {
+		t.Fatalf("the newly active conversation is not on top: %q", ids(top))
+	}
+
+	// Another tenant, a bad cursor, and the cap.
+	if page, _, _ := x.ThreadPage("globex", ThreadQuery{}); ids(page) != "other " {
+		t.Fatalf("other tenant = %q", ids(page))
+	}
+	if _, _, err := x.ThreadPage("acme", ThreadQuery{Before: "not a cursor"}); !errors.Is(err, ErrCursor) {
+		t.Fatalf("bad cursor: %v", err)
+	}
+	if page, _, _ := x.ThreadPage("acme", ThreadQuery{Limit: 100000}); len(page) > MaxThreadPage {
+		t.Fatalf("the limit was not capped: %d", len(page))
 	}
 }

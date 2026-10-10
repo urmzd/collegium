@@ -43,6 +43,9 @@ const (
 	SlowRun Kind = "slow_run"
 	// EvalBelow fires when an eval run's pass rate ends under a threshold.
 	EvalBelow Kind = "eval_below"
+	// Budget is raised by a billing policy, not by a rule: a scope is close
+	// to a limit, or a run was refused at one.
+	Budget Kind = "budget"
 )
 
 // Severity ranks an alert.
@@ -319,4 +322,23 @@ func (e *Engine) EvaluateEval(tenantName string, run evals.Run) []Alert {
 		raised = append(raised, a)
 	}
 	return raised
+}
+
+// Raise records an alert the platform itself decided on. key names what it is
+// about, and while an alert with that key is open a second one is not raised:
+// a limit that is refusing every run says so once, not once per run.
+func (e *Engine) Raise(tenantName, key string, a Alert) (Alert, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	t := e.of(tenantName)
+	if slices.ContainsFunc(t.alerts, func(x Alert) bool { return x.Open() && x.Rule == key }) {
+		return Alert{}, false
+	}
+	t.next++
+	a.ID, a.Rule = "al-"+strconv.Itoa(t.next), key
+	t.alerts = append(t.alerts, a)
+	if len(t.alerts) > maxAlerts {
+		t.alerts = t.alerts[len(t.alerts)-maxAlerts:]
+	}
+	return a, true
 }

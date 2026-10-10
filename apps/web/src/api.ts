@@ -21,6 +21,8 @@ export interface Principal {
 export interface Me {
   principal: Principal;
   permissions: string[];
+  /** The caller is an admin in a workspace nobody has set up yet. */
+  first_admin?: boolean;
 }
 
 export interface AgentSpec {
@@ -47,6 +49,8 @@ export interface Schedule {
   expression: string;
   agent: string;
   text: string;
+  /** Files every run the schedule raises under a project. */
+  project?: string;
 }
 
 /** A schedule plus what makes it trustworthy: state, next fires, recent runs. */
@@ -200,11 +204,80 @@ export interface Settings {
   title_agent: string;
   memory_agent: string;
   memory_auto_approve: boolean;
+  workspace_name?: string;
+  /** Set once by the server when an admin first saves settings. */
+  setup_at?: string;
+  setup_by?: string;
 }
 
+/** A proposed memory, for an agent or for a project. */
 export interface Proposal {
-  agent: string;
+  agent?: string;
+  project?: string;
   note: Note;
+}
+
+export interface PolicyScope {
+  kind: "tenant" | "project" | "agent";
+  name?: string;
+}
+
+/** The limits for one scope. A limit of 0 or absent means the scope sets none. */
+export interface Policy {
+  scope: PolicyScope;
+  period: "day" | "month";
+  max_runs?: number;
+  max_concurrent?: number;
+  /** Micro-USD. Recorded and versioned, not enforced until runs report cost. */
+  spend_limit?: number;
+  max_lease?: number;
+  warn_at?: number;
+  action: "block" | "approve";
+  version: number;
+  updated_by?: string;
+  updated_at: string;
+}
+
+export interface Measure {
+  used: number;
+  limit: number;
+  projected?: number;
+}
+
+/** One policy and where its scope stands against it. */
+export interface ScopeUsage {
+  scope: PolicyScope;
+  period: "day" | "month";
+  period_start: string;
+  period_end: string;
+  version: number;
+  warn_at: number;
+  action: "block" | "approve";
+  runs: Measure;
+  concurrent: Measure;
+  spend: Measure & { metered: boolean };
+  max_lease: number;
+  state: "ok" | "warn" | "over";
+}
+
+export interface PolicyChange {
+  scope: PolicyScope;
+  by: string;
+  at: string;
+  before?: Policy;
+  after?: Policy;
+}
+
+/** A project and what is in it. */
+export interface ProjectView {
+  name: string;
+  description?: string;
+  conversations: number;
+  active: number;
+  schedules: number;
+  notes: number;
+  proposed: number;
+  updated_at?: string;
 }
 
 export interface Note {
@@ -223,6 +296,8 @@ export interface Preferences {
   accent: string;
   has_photo: boolean;
   photo_version: number;
+  /** When the person finished or skipped the first-run questions. Absent means not yet. */
+  onboarded_at?: string;
 }
 
 export interface Check {
@@ -312,6 +387,12 @@ export const api = {
   createRun: (agent: string, text: string, opts: { after?: string; project?: string } = {}) =>
     call<Run>("POST", "/api/runs", { agent, text, ...opts }),
   threads: () => call<{ threads: ThreadSummary[] }>("GET", "/api/threads").then((r) => r.threads),
+  /** One page of conversations, newest first. `next` is the cursor for the page after it, null at the end, and absent from a server that does not page. */
+  threadsPage: (q: { limit: number; before?: string; origin?: string; agent?: string; standing?: string }) => {
+    const params = new URLSearchParams({ limit: String(q.limit) });
+    for (const k of ["before", "origin", "agent", "standing"] as const) if (q[k]) params.set(k, q[k]);
+    return call<{ threads: ThreadSummary[]; next?: string | null }>("GET", `/api/threads?${params}`);
+  },
   thread: (id: string) =>
     call<{ turns: Run[] }>("GET", `/api/threads/${encodeURIComponent(id)}`).then((r) => r.turns),
   pick: (q: string) => call<Choice>("GET", `/api/pick?${new URLSearchParams({ q })}`),
@@ -327,11 +408,29 @@ export const api = {
   approveMemory: (agent: string, ids: string[]) =>
     call<{ approved: number }>("POST", `/api/agents/${encodeURIComponent(agent)}/memory/approve`, { ids }),
   pendingMemory: () => call<{ proposals: Proposal[] }>("GET", "/api/memory/pending").then((r) => r.proposals),
+  policies: () => call<{ policies: Policy[] }>("GET", "/api/policies").then((r) => r.policies),
+  savePolicy: (p: Omit<Policy, "version" | "updated_at" | "updated_by" | "action"> & { action?: Policy["action"] }) =>
+    call<Policy>("PUT", "/api/policies", p),
+  deletePolicy: (scope: PolicyScope) =>
+    call<void>("DELETE", `/api/policies?${new URLSearchParams({ kind: scope.kind, name: scope.name ?? "" })}`),
+  policyHistory: () => call<{ changes: PolicyChange[] }>("GET", "/api/policies/history").then((r) => r.changes),
+  usage: () => call<{ scopes: ScopeUsage[] }>("GET", "/api/usage").then((r) => r.scopes),
+  projects: () => call<{ projects: ProjectView[] }>("GET", "/api/projects").then((r) => r.projects),
+  createProject: (name: string, description: string) => call<void>("POST", "/api/projects", { name, description }),
+  deleteProject: (name: string) => call<void>("DELETE", `/api/projects/${encodeURIComponent(name)}`),
+  projectMemory: (project: string) =>
+    call<{ notes: Note[] }>("GET", `/api/projects/${encodeURIComponent(project)}/memory`).then((r) => r.notes),
+  addProjectMemory: (project: string, text: string) =>
+    call<Note>("POST", `/api/projects/${encodeURIComponent(project)}/memory`, { text }),
+  approveProjectMemory: (project: string, ids: string[]) =>
+    call<{ approved: number }>("POST", `/api/projects/${encodeURIComponent(project)}/memory/approve`, { ids }),
+  removeProjectMemory: (project: string, id: string) =>
+    call<void>("DELETE", `/api/projects/${encodeURIComponent(project)}/memory/${encodeURIComponent(id)}`),
   removeMemory: (agent: string, id: string) =>
     call<void>("DELETE", `/api/agents/${encodeURIComponent(agent)}/memory/${encodeURIComponent(id)}`),
 
   preferences: () => call<Preferences>("GET", "/api/preferences"),
-  savePreferences: (p: Pick<Preferences, "display_name" | "theme" | "accent">) =>
+  savePreferences: (p: Pick<Preferences, "display_name" | "theme" | "accent"> & { onboarded?: boolean }) =>
     call<Preferences>("PUT", "/api/preferences", p),
   removePhoto: () => call<Preferences>("DELETE", "/api/preferences/photo"),
   // The picture is sent as its own bytes. The server decides what it is.

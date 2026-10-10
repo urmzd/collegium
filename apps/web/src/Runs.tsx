@@ -178,11 +178,13 @@ export function RunList({ runs: all, onSelect }: { runs: Run[]; onSelect: (id: s
                     />
                     <span className="w-28 shrink-0 truncate text-aui-sm font-medium text-aui-fg">{r.agent}</span>
                     <span className="min-w-0 flex-1 truncate text-aui-sm text-aui-muted">{r.text || "No request text"}</span>
-                    <Chip>{r.origin}</Chip>
-                    <span className="hidden w-16 shrink-0 text-right text-aui-xs tabular-nums text-aui-muted md:inline">
+                    <span className="hidden @xl:inline-flex">
+                      <Chip>{r.origin}</Chip>
+                    </span>
+                    <span className="hidden w-16 shrink-0 text-right text-aui-xs tabular-nums text-aui-muted @2xl:inline">
                       {took(elapsed(r))}
                     </span>
-                    <span className="hidden w-28 shrink-0 text-right text-aui-xs text-aui-muted sm:inline">{ago(r.created_at)}</span>
+                    <span className="hidden w-28 shrink-0 text-right text-aui-xs text-aui-muted @lg:inline">{ago(r.created_at)}</span>
                     <span className="w-20 shrink-0">
                       <Status status={r.status} />
                     </span>

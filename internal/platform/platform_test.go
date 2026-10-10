@@ -3,7 +3,10 @@ package platform_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,7 +18,9 @@ import (
 	"github.com/urmzd/open-agent-platform/internal/platform"
 	"github.com/urmzd/open-agent-platform/pkg/alerts"
 	"github.com/urmzd/open-agent-platform/pkg/call"
+	"github.com/urmzd/open-agent-platform/pkg/policy"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/open-agent-platform/pkg/usage"
 )
 
 const tenant = "acme"
@@ -382,6 +387,96 @@ func TestHousekeepingSkipsTheOfflineProvider(t *testing.T) {
 		if run.Origin == runs.OriginSystem {
 			t.Fatal("a housekeeping run started on the offline provider")
 		}
+	}
+}
+
+// Many runs race for a limit that fits fewer. The number let in must be exactly
+// the limit: checking and counting are one step.
+func TestConcurrentRunsNeverExceedALimit(t *testing.T) {
+	p := start(t, call.Limits{})
+	ctx := t.Context()
+	const limit, racers = 7, 40
+	_, err := p.Policies.Put(tenant, policy.Policy{
+		Scope: policy.Scope{Kind: policy.Tenant}, Period: policy.Day, MaxRuns: limit, Action: policy.Block,
+	}, "test", time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	var admitted, refused atomic.Int64
+	for i := range racers {
+		wg.Go(func() {
+			_, err := p.Invoke(ctx, tag(fmt.Sprintf("race-%d", i), "lead"))
+			var d *platform.Denied
+			switch {
+			case err == nil:
+				admitted.Add(1)
+			case errors.As(err, &d) && d.Decision.Limit == policy.LimitRuns:
+				refused.Add(1)
+			default:
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if admitted.Load() != limit || refused.Load() != racers-limit {
+		t.Fatalf("%d admitted and %d refused, want %d and %d", admitted.Load(), refused.Load(), limit, racers-limit)
+	}
+
+	// The same tag again joins its run, and is neither refused nor counted.
+	if _, err := p.Invoke(ctx, tag("race-0", "lead")); err != nil && admitted.Load() > 0 {
+		var d *platform.Denied
+		if !errors.As(err, &d) {
+			t.Fatalf("a repeat of an admitted tag: %v", err)
+		}
+	}
+	scope := policy.Scope{Kind: policy.Tenant}
+	if got := p.Usage.Usage(tenant, scope, policy.PeriodStart(policy.Day, time.Now())); got.Runs != limit {
+		t.Fatalf("the ledger counted %d runs, want %d", got.Runs, limit)
+	}
+	// One alert for the limit, however many runs it refused.
+	budget := 0
+	for _, a := range p.Alerts.Alerts(tenant) {
+		if a.Kind == "budget" && a.Severity == "critical" {
+			budget++
+		}
+	}
+	if budget != 1 {
+		t.Fatalf("%d refusal alerts, want exactly one", budget)
+	}
+	// The live counts are a projection of the ledger: replaying it agrees.
+	if live, replayed := p.Usage.Usage(tenant, scope, time.Time{}), usage.Rebuild(p.Usage.Entries()).Usage(tenant, scope, time.Time{}); live != replayed {
+		t.Fatalf("live %+v, rebuilt %+v", live, replayed)
+	}
+}
+
+// A concurrency limit frees a place when a run ends.
+func TestAConcurrencyLimitFreesUp(t *testing.T) {
+	p := start(t, call.Limits{})
+	ctx := t.Context()
+	scope := policy.Scope{Kind: policy.Agent, Name: "lead"}
+	if _, err := p.Policies.Put(tenant, policy.Policy{Scope: scope, Period: policy.Day, MaxConcurrent: 1, Action: policy.Block}, "test", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := p.Invoke(ctx, tag("c-1", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, first.ID, runs.Completed)
+	deadline := time.Now().Add(5 * time.Second)
+	for p.Usage.Usage(tenant, scope, time.Time{}).Concurrent != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("a finished run still holds its place")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if _, err := p.Invoke(ctx, tag("c-2", "lead")); err != nil {
+		t.Fatalf("the place was not freed: %v", err)
+	}
+	// Another agent is not held to this agent's limit.
+	if _, err := p.Invoke(ctx, tag("c-3", "helper")); err != nil {
+		t.Fatalf("another agent was refused: %v", err)
 	}
 }
 

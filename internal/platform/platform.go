@@ -44,8 +44,10 @@ import (
 	"github.com/urmzd/open-agent-platform/pkg/journal"
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
 	"github.com/urmzd/open-agent-platform/pkg/memory"
+	"github.com/urmzd/open-agent-platform/pkg/policy"
 	"github.com/urmzd/open-agent-platform/pkg/prefs"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/open-agent-platform/pkg/usage"
 )
 
 // ErrForbidden reports a call the caller's agent spec does not allow.
@@ -84,6 +86,8 @@ type Platform struct {
 	Evals     *evals.Store
 	Prefs     *prefs.Store
 	Memory    *memory.Store
+	Policies  *policy.Store
+	Usage     *usage.Ledger
 
 	broker  bus.Bus
 	sinks   *connector.Registry
@@ -93,6 +97,10 @@ type Platform struct {
 	queue   *dqueue.Memory
 
 	settings settings
+
+	// admission serializes letting a run in. It is taken inside calls, never
+	// the other way round.
+	admission sync.Mutex
 
 	// calls serializes Call, so two calls from one run cannot both pass a
 	// fan-out or budget check that only one of them fits under.
@@ -120,6 +128,8 @@ func New(cfg Config) (*Platform, error) {
 		Evals:     evals.NewStore(),
 		Prefs:     prefs.NewStore(),
 		Memory:    memory.NewStore(),
+		Policies:  policy.NewStore(),
+		Usage:     usage.NewLedger(),
 		broker:    bus.NewMemory(),
 		sinks:     connector.NewRegistry(),
 		ledger:    ledger.NewMemory(),
@@ -192,15 +202,32 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	}
 	// Fail before anything is registered if the tag claims to come from an
 	// agent but carries no usable edge.
-	if _, err := call.EdgeOf(tag); err != nil {
+	edge, err := call.EdgeOf(tag)
+	if err != nil {
 		return runs.Run{}, err
 	}
 	runID := runtime.RunID(tag.ID)
+
+	// Admission and acceptance are one step, so the count a policy is judged
+	// on always includes every run already let in.
+	p.admission.Lock()
+	defer p.admission.Unlock()
+	// The same tag again joins the run it already started. It is not a new
+	// run, so it is neither judged nor counted a second time.
+	if existing, err := p.Runs.Get(tag.Tenant, runID); err == nil {
+		return existing, nil
+	}
+	if err := p.admit(tag, edge); err != nil {
+		return runs.Run{}, err
+	}
 	if err := p.deliver.Register(runID, tag.Routes()); err != nil {
+		p.Usage.Append(usage.Entry{Kind: usage.Ended, Tenant: tag.Tenant, RunID: runID, At: p.now()})
 		return runs.Run{}, fmt.Errorf("platform: register routes: %w", err)
 	}
 	acc, err := p.rt.Accept(ctx, tag)
 	if err != nil {
+		// It never started, so it holds no place.
+		p.Usage.Append(usage.Entry{Kind: usage.Ended, Tenant: tag.Tenant, RunID: runID, At: p.now()})
 		return runs.Run{}, err
 	}
 	if err := p.Runs.Record(acc.RunID, tag, acc.Rev); err != nil {

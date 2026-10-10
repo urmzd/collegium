@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/urmzd/open-agent-platform/pkg/auth"
 	"github.com/urmzd/open-agent-platform/pkg/prefs"
@@ -29,6 +30,9 @@ func (s *Server) putPreferences(w http.ResponseWriter, r *http.Request, who auth
 		DisplayName string      `json:"display_name"`
 		Theme       prefs.Theme `json:"theme"`
 		Accent      string      `json:"accent"`
+		// Onboarded marks the first-run questions as done. It can be set
+		// and never unset, and the time recorded is the server's.
+		Onboarded bool `json:"onboarded"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -39,6 +43,9 @@ func (s *Server) putPreferences(w http.ResponseWriter, r *http.Request, who auth
 	if err != nil {
 		s.problem(w, err)
 		return
+	}
+	if body.Onboarded {
+		next = s.P.Prefs.MarkOnboarded(who.Tenant, who.Subject, time.Now())
 	}
 	ok(w, http.StatusOK, next)
 }

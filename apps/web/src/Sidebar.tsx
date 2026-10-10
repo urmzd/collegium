@@ -1,8 +1,9 @@
-import { BotIcon, ClockIcon, MessageIcon } from "@agent-ui/render-web";
-import { type ReactNode, type SVGProps, useEffect, useRef, useState } from "react";
+import { BotIcon, CheckIcon, ClockIcon, MessageIcon } from "@agent-ui/render-web";
+import { type ReactNode, type SVGProps, useState } from "react";
 import type { Me, Preferences, ThreadSummary } from "./api.ts";
 import { Avatar } from "./Settings.tsx";
-import { AgentMark, Menu, SearchField } from "./ui.tsx";
+import { type Standing, useRecents } from "./recents.ts";
+import { AgentMark, Popover } from "./ui.tsx";
 
 export type View =
   | "chat"
@@ -14,6 +15,7 @@ export type View =
   | "schedules"
   | "analytics"
   | "alerts"
+  | "project"
   | "settings";
 
 // Glyphs agent-ui does not ship. Same grid and stroke as its set.
@@ -60,6 +62,7 @@ const BellIcon = glyph(
     <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
   </>,
 );
+const FilterIcon = glyph(<path d="M3 5h18M7 12h10M10 19h4" />);
 const LogOutIcon = glyph(
   <>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -106,6 +109,38 @@ function Item({
   );
 }
 
+/** One group in the filter panel: a title, then choices where exactly one is on. */
+function Choices<T extends string>({
+  title,
+  value,
+  options,
+  onChange,
+}: {
+  title: string;
+  value: T;
+  options: { value: T; label: string; mark?: ReactNode }[];
+  onChange: (next: T) => void;
+}) {
+  return (
+    <fieldset className="flex flex-col pb-1">
+      <legend className="px-2.5 pt-2 pb-1 text-aui-xs text-aui-muted">{title}</legend>
+      {options.map((o) => (
+        <button
+          key={o.value}
+          type="button"
+          aria-pressed={o.value === value}
+          onClick={() => onChange(o.value)}
+          className="flex h-8 items-center gap-2 rounded-aui px-2.5 text-left text-aui-sm text-aui-fg transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+        >
+          {o.mark}
+          <span className="min-w-0 flex-1 truncate">{o.label}</span>
+          {o.value === value && <CheckIcon size={14} />}
+        </button>
+      ))}
+    </fieldset>
+  );
+}
+
 /** A group label when open, a hairline when the sidebar is a rail. */
 function Heading({ open, children }: { open: boolean; children: ReactNode }) {
   return open ? (
@@ -131,13 +166,11 @@ export function Sidebar({
   threads,
   selected,
   onSelect,
-  projects,
-  project,
-  onProject,
   inboxCount,
   alertCount,
   live,
   onSignOut,
+  projectsSlot,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -150,46 +183,30 @@ export function Sidebar({
   threads: ThreadSummary[];
   selected: string | null;
   onSelect: (id: string) => void;
-  projects: string[];
-  /** The project the recents are narrowed to. Empty shows every conversation. */
-  project: string;
-  onProject: (name: string) => void;
   inboxCount: number;
   alertCount: number;
   /** Updates are arriving. When false, the sidebar says so. */
   live: boolean;
   onSignOut: () => void;
+  /** Drawn between the sections and Recents, in both the open and the rail state. It handles its own collapsed look. */
+  projectsSlot?: ReactNode;
 }) {
   const who = me.principal;
   const dev = who.subject === "dev";
   const name = prefs?.display_name || who.name || who.email || who.subject;
   // Recents is what people asked for. Scheduled and eval runs live on their own
   // pages, so a timer cannot push a person's work off the list.
-  const [query, setQuery] = useState("");
-  const search = useRef<HTMLInputElement>(null);
-  const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-  const mine = threads.filter((t) => t.origin === "api" && (!project || t.project === project));
-  // A search looks through every conversation, not only the newest few.
-  const recents = (
-    words.length > 0
-      ? mine.filter((t) => {
-          const hay = `${t.title} ${t.agents.join(" ")} ${t.project ?? ""}`.toLowerCase();
-          return words.every((w) => hay.includes(w));
-        })
-      : mine
-  ).slice(0, 40);
-
-  // Cmd+K, or Ctrl+K, finds a conversation from anywhere, opening the sidebar if it is closed.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key.toLowerCase() !== "k" || !(e.metaKey || e.ctrlKey)) return;
-      e.preventDefault();
-      if (!open) onToggle();
-      window.setTimeout(() => search.current?.focus(), 0);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open, onToggle]);
+  const [standing, setStanding] = useState<Standing>("");
+  const [agent, setAgent] = useState("");
+  const answering = [...new Set(threads.filter((t) => t.origin === "api").flatMap((t) => t.agents))].sort();
+  // The list pages itself. The caller's threads change when a run starts or
+  // ends, which is the signal to fetch the first page again.
+  const { threads: recents, hasMore, loading, failed, more } = useRecents(agent, standing, threads);
+  const filters = (agent ? 1 : 0) + (standing ? 1 : 0);
+  const clear = () => {
+    setStanding("");
+    setAgent("");
+  };
 
   return (
     <aside
@@ -211,7 +228,9 @@ export function Sidebar({
         </button>
       </div>
 
-      <nav aria-label="Sections" className={`flex flex-col gap-0.5 ${open ? "px-2" : "items-center"}`}>
+      {/* Everything between the top row and the account scrolls as one, so a short window never squeezes Recents into a sliver. */}
+      <div className="aui-scroll flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
+      <nav aria-label="Sections" className={`flex shrink-0 flex-col gap-0.5 ${open ? "px-2" : "items-center"}`}>
         {can("runs:write") && (
           <Item icon={<PlusIcon />} label="New Chat" open={open} active={view === "chat" && !selected} onClick={onNewChat} />
         )}
@@ -280,37 +299,68 @@ export function Sidebar({
         )}
       </nav>
 
-      {open && can("runs:read") ? (
-        <div className="flex min-h-0 flex-1 flex-col pt-4">
-          <div className="flex items-center justify-between gap-2 px-4 pb-1">
-            <p className="text-aui-xs text-aui-muted">Recents</p>
-            {projects.length > 0 && (
-              <Menu
-                quiet
-                align="right"
-                label="Show conversations in"
-                value={project}
-                options={[{ value: "", label: "All projects" }, ...projects.map((p) => ({ value: p, label: p }))]}
-                onChange={onProject}
-                className="-mr-1.5 [&>button]:h-6 [&>button]:text-aui-xs"
-              />
-            )}
+      {projectsSlot}
+
+      {open && can("runs:read") && (
+        <div className="flex shrink-0 flex-col pt-3">
+          {/* The label stays in reach while the list scrolls under it. */}
+          <div className="sticky top-0 z-10 flex items-center justify-between gap-1 bg-[var(--oap-plane)] py-1 pr-2 pl-2">
+            <p className="px-2 text-aui-xs text-aui-muted">Recents</p>
+            <Popover
+              narrow
+              align="right"
+              label={filters > 0 ? `Filter conversations, ${filters} on` : "Filter conversations"}
+              className="relative inline-flex size-6 items-center justify-center rounded-aui text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-expanded:bg-aui-hover aria-expanded:text-aui-fg"
+              button={
+                <>
+                  <FilterIcon size={14} />
+                  {filters > 0 && <span aria-hidden className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-aui-accent" />}
+                </>
+              }
+            >
+              {() => (
+                <div className="aui-scroll flex max-h-[60vh] flex-col overflow-y-auto">
+                  <Choices
+                    title="Show"
+                    value={standing}
+                    options={[
+                      { value: "", label: "Every conversation" },
+                      { value: "running", label: "Running now" },
+                      { value: "failed", label: "With a failed reply" },
+                    ]}
+                    onChange={setStanding}
+                  />
+                  {answering.length > 1 && (
+                    <Choices
+                      title="Answered by"
+                      value={agent}
+                      options={[
+                        { value: "", label: "Any agent" },
+                        ...answering.map((a) => ({ value: a, label: a, mark: <AgentMark name={a} size={12} /> })),
+                      ]}
+                      onChange={setAgent}
+                    />
+                  )}
+                  {filters > 0 && (
+                    <button
+                      type="button"
+                      onClick={clear}
+                      className="mt-1 rounded-aui border-[var(--oap-rule)] border-t px-2.5 py-2 text-left text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+              )}
+            </Popover>
           </div>
-          <SearchField
-            label="Search conversations"
-            hint="⌘K"
-            value={query}
-            onChange={setQuery}
-            inputRef={search}
-            className="mx-2 mb-1.5"
-          />
-          <ul className="aui-scroll min-h-0 flex-1 overflow-y-auto px-2" aria-label="Conversations">
+          <ul className="px-2 pb-3" aria-label="Conversations" aria-busy={loading !== null}>
             {recents.length === 0 && (
               <li className="px-2.5 py-1.5 text-aui-xs text-aui-muted">
-                {words.length > 0
-                  ? "No conversation matches. Search looks at titles, agents and projects."
-                  : project
-                    ? "Nothing filed here yet."
+                {loading === "first"
+                  ? "Loading"
+                  : filters > 0
+                    ? "No conversation matches these filters."
                     : "Your conversations appear here."}
               </li>
             )}
@@ -334,11 +384,23 @@ export function Sidebar({
                 </button>
               </li>
             ))}
+            {/* Older conversations arrive a page at a time, when asked for. */}
+            {(hasMore || loading === "more") && (
+              <li className="flex justify-center pt-2">
+                <button
+                  type="button"
+                  onClick={more}
+                  disabled={loading === "more"}
+                  className="inline-flex h-6 items-center rounded-full border border-[var(--oap-rule)] px-2.5 text-aui-xs text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-default"
+                >
+                  {loading === "more" ? <span className="aui-shimmer">Loading</span> : failed ? "Could not load. Try again" : "See more"}
+                </button>
+              </li>
+            )}
           </ul>
         </div>
-      ) : (
-        <div className="flex-1" />
       )}
+      </div>
 
       {!live && open && <p className="px-4 pb-2 text-aui-2xs text-aui-muted">Reconnecting. What you see may be out of date.</p>}
       <div className={`flex items-center gap-1 border-aui-border border-t p-1.5 ${open ? "" : "flex-col"}`}>

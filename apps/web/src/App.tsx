@@ -14,6 +14,7 @@ import {
   api,
   type Me,
   type Preferences,
+  type ProjectView,
   type Proposal,
   type Revision,
   type ScheduleView,
@@ -26,6 +27,8 @@ import {
 } from "./api.ts";
 import { Chat } from "./Chat.tsx";
 import { Knowledge } from "./Knowledge.tsx";
+import { Onboarding } from "./Onboarding.tsx";
+import { ProjectNav, ProjectPage } from "./Projects.tsx";
 import { RunList } from "./Runs.tsx";
 import { Schedules } from "./Schedules.tsx";
 import { Settings } from "./Settings.tsx";
@@ -152,8 +155,11 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [agentName, setAgentName] = useState<string | null>(null);
   const [agentTab, setAgentTab] = useState<"memory" | undefined>(undefined);
   const [proposals, setProposals] = useState<Proposal[]>([]);
+  const [projects, setProjects] = useState<ProjectView[]>([]);
+  const [projectName, setProjectName] = useState<string | null>(null);
+  // The project a new chat was started from, so it is filed there.
+  const [startIn, setStartIn] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState(() => stored(SIDEBAR_KEY, window.innerWidth >= 768));
-  const [project, setProject] = useState("");
   const [dismissed, setDismissed] = useState<Set<string>>(() => new Set());
   const [runs, setRuns] = useState<Run[]>([]);
   const [threads, setThreads] = useState<ThreadSummary[]>([]);
@@ -171,6 +177,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [tick, setTick] = useState(0);
 
   useAppearance(prefs);
+  // Set when onboarding ends, whether or not saving that fact worked, so
+  // nobody is asked twice in one sitting or left unable to get in.
+  const [welcomed, setWelcomed] = useState(false);
 
   const toggle = () =>
     setOpen((was) => {
@@ -189,6 +198,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   }, [can]);
   const loadProposals = useCallback(() => {
     if (can("agents:read")) api.pendingMemory().then(setProposals).catch(() => {});
+  }, [can]);
+  const loadProjects = useCallback(() => {
+    if (can("runs:read")) api.projects().then(setProjects).catch(() => {});
   }, [can]);
   const loadSources = useCallback(() => {
     if (can("knowledge:read")) api.sources().then(setSources).catch(() => {});
@@ -214,14 +226,29 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     loadSchedules();
     loadSuites();
     loadProposals();
+    loadProjects();
     setTick((t) => t + 1);
-  }, [can, loadAlerts, loadSchedules, loadSuites, loadProposals]);
+  }, [can, loadAlerts, loadSchedules, loadSuites, loadProposals, loadProjects]);
 
   useEffect(() => {
     loadRuns();
     loadAgents();
     loadSources();
-    api.preferences().then(setPrefs).catch(() => {});
+    api
+      .preferences()
+      .then(setPrefs)
+      // Preferences that cannot be read cannot be saved either, so use the
+      // defaults and do not ask first-run questions.
+      .catch(() =>
+        setPrefs({
+          display_name: "",
+          theme: "system",
+          accent: "purple",
+          has_photo: false,
+          photo_version: 0,
+          onboarded_at: new Date().toISOString(),
+        }),
+      );
   }, [loadRuns, loadAgents, loadSources]);
 
   // One stream for the whole tenant keeps every list current. Lifecycle and
@@ -263,9 +290,14 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     const run = runs.find((r) => r.id === id);
     openThread(run?.thread ?? id);
   };
-  const newChat = () => {
+  const newChat = (inProject?: string) => {
     setThread(null);
+    setStartIn(inProject);
     setView("chat");
+  };
+  const openProject = (name: string) => {
+    setProjectName(name);
+    setView("project");
   };
   const openAgent = (name: string | null, tab?: "memory") => {
     setAgentName(name);
@@ -273,10 +305,16 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     setView("agent");
   };
   // Proposed memories, counted per agent, for the inbox.
-  const toReview = [...new Set(proposals.map((p) => p.agent))].map((agent) => ({
-    agent,
-    count: proposals.filter((p) => p.agent === agent).length,
-  }));
+  const reviewKey = (p: Proposal) => (p.project ? `project:${p.project}` : `agent:${p.agent ?? ""}`);
+  const toReview = [...new Set(proposals.map(reviewKey))].map((key) => {
+    const first = proposals.find((p) => reviewKey(p) === key);
+    return {
+      key,
+      project: first?.project,
+      agent: first?.agent,
+      count: proposals.filter((p) => reviewKey(p) === key).length,
+    };
+  });
 
   const inbox = useMemo(() => inboxOf(runs, alerts, dismissed), [runs, alerts, dismissed]);
   const waiting = inbox.filter((i) => i.state === "open").length + proposals.length;
@@ -311,6 +349,27 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   };
 
 
+  // Wait for preferences, so the console never shows for a moment before the
+  // first-run questions do.
+  if (!prefs) return <Centered>Loading</Centered>;
+  if (!prefs.onboarded_at && !welcomed) {
+    return (
+      <Onboarding
+        me={me}
+        prefs={prefs}
+        workspace={workspace}
+        firstAdmin={can("agents:write") && workspace !== null && !workspace.setup_at}
+        onPrefs={setPrefs}
+        onWorkspace={setWorkspace}
+        onDone={() => {
+          setWelcomed(true);
+          loadAgents();
+          loadProjects();
+        }}
+      />
+    );
+  }
+
   return (
     <div className="flex h-full text-aui-fg">
       <Sidebar
@@ -318,16 +377,27 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
         onToggle={toggle}
         view={view}
         onView={setView}
-        onNewChat={newChat}
+        onNewChat={() => newChat()}
+        projectsSlot={
+          <ProjectNav
+            open={open}
+            projects={projects}
+            current={view === "project" ? projectName : null}
+            canCreate={can("runs:write")}
+            onOpen={openProject}
+            onCreated={(name) => {
+              loadProjects();
+              loadAgents();
+              openProject(name);
+            }}
+          />
+        }
         me={me}
         prefs={prefs}
         can={can}
         threads={threads}
         selected={view === "chat" ? thread : null}
         onSelect={openThread}
-        projects={(workspace?.projects ?? []).map((p) => p.name)}
-        project={project}
-        onProject={setProject}
         inboxCount={waiting}
         alertCount={openAlerts}
         live={live}
@@ -336,8 +406,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           {view === "chat" && (
             <Chat
-              key={thread ?? "new"}
+              key={thread ?? `new:${startIn ?? ""}`}
               threadId={thread}
+              startIn={startIn}
               summary={threads.find((t) => t.id === thread)}
               tick={tick}
               agents={agents}
@@ -359,9 +430,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
                     </p>
                     <ul>
                       {toReview.map((r) => (
-                        <li key={r.agent} className="flex items-center justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
+                        <li key={r.key} className="flex items-center justify-between gap-3 border-aui-border border-t py-2 first:border-t-0">
                           <span className="text-aui-sm text-aui-fg">
-                            {r.agent}
+                            {r.project ? `Project ${r.project}` : r.agent}
                             <span className="pl-2 text-aui-xs text-aui-muted">
                               {r.count} {r.count === 1 ? "note" : "notes"} proposed
                             </span>
@@ -369,7 +440,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
                           <button
                             type="button"
                             className="inline-flex h-8 items-center rounded-aui border border-aui-border px-3 text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
-                            onClick={() => openAgent(r.agent, "memory")}
+                            onClick={() => (r.project ? openProject(r.project) : openAgent(r.agent ?? null, "memory"))}
                           >
                             Review
                           </button>
@@ -388,6 +459,33 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
               </div>
             </div>
           )}
+          {view === "project" &&
+            (() => {
+              const current = projects.find((p) => p.name === projectName);
+              return current ? (
+                <ProjectPage
+                  key={current.name}
+                  project={current}
+                  threads={threads}
+                  schedules={schedules}
+                  agents={agents}
+                  canWrite={can("runs:write")}
+                  canSchedule={can("schedules:write")}
+                  onNewChat={() => newChat(current.name)}
+                  onOpenThread={openThread}
+                  onChanged={() => {
+                    loadProjects();
+                    loadProposals();
+                  }}
+                  onSchedulesChanged={loadSchedules}
+                  onDeleted={() => {
+                    loadProjects();
+                    loadAgents();
+                    setView("chat");
+                  }}
+                />
+              ) : null;
+            })()}
           {view === "runs" && <RunList runs={runs} onSelect={openRun} />}
           {view === "agents" && (
             <Agents

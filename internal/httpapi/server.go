@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ import (
 	"github.com/urmzd/open-agent-platform/pkg/knowledge"
 	"github.com/urmzd/open-agent-platform/pkg/memory"
 	"github.com/urmzd/open-agent-platform/pkg/pick"
+	"github.com/urmzd/open-agent-platform/pkg/policy"
 	"github.com/urmzd/open-agent-platform/pkg/prefs"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
 )
@@ -90,6 +92,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/events", s.authed(auth.RunsRead, s.events))
 	s.observeRoutes(mux)
 	s.preferenceRoutes(mux)
+	s.projectRoutes(mux)
+	s.billingRoutes(mux)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "no such route") })
 
 	if s.WebDir != "" {
@@ -143,7 +147,10 @@ func (s *Server) authed(perm auth.Permission, h handler) http.HandlerFunc {
 }
 
 func (s *Server) me(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
-	ok(w, http.StatusOK, map[string]any{"principal": who, "permissions": who.Granted()})
+	// first_admin says the caller is the one who should set the workspace
+	// up: an admin, in a workspace nobody has set up yet.
+	first := who.Can(auth.AgentsWrite) && s.P.Settings(who.Tenant).SetupAt.IsZero()
+	ok(w, http.StatusOK, map[string]any{"principal": who, "permissions": who.Granted(), "first_admin": first})
 }
 
 func (s *Server) listAgents(w http.ResponseWriter, r *http.Request, who auth.Principal) {
@@ -257,8 +264,23 @@ func (s *Server) approveMemory(w http.ResponseWriter, r *http.Request, who auth.
 	ok(w, http.StatusOK, map[string]int{"approved": n})
 }
 
+// pendingMemory lists every proposal waiting in the tenant. A proposal is for
+// an agent or for a project, and says which.
 func (s *Server) pendingMemory(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
-	ok(w, http.StatusOK, map[string]any{"proposals": orEmpty(s.P.Memory.Pending(who.Tenant))})
+	type proposal struct {
+		Agent   string      `json:"agent,omitempty"`
+		Project string      `json:"project,omitempty"`
+		Note    memory.Note `json:"note"`
+	}
+	out := []proposal{}
+	for _, p := range s.P.Memory.Pending(who.Tenant) {
+		if project, isProject := memory.OwnerProject(p.Agent); isProject {
+			out = append(out, proposal{Project: project, Note: p.Note})
+		} else {
+			out = append(out, proposal{Agent: p.Agent, Note: p.Note})
+		}
+	}
+	ok(w, http.StatusOK, map[string]any{"proposals": out})
 }
 
 func (s *Server) removeMemory(w http.ResponseWriter, r *http.Request, who auth.Principal) {
@@ -306,8 +328,40 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 	ok(w, http.StatusAccepted, run)
 }
 
-func (s *Server) listThreads(w http.ResponseWriter, _ *http.Request, who auth.Principal) {
-	ok(w, http.StatusOK, map[string]any{"threads": orEmpty(s.P.Runs.Threads(who.Tenant, 200))})
+// listThreads pages a tenant's conversations, newest activity first.
+//
+// limit, before, origin, agent and standing are all optional. The answer
+// carries next, the cursor for the page after this one, or null at the end.
+func (s *Server) listThreads(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	q := r.URL.Query()
+	query := runs.ThreadQuery{
+		Origin: q.Get("origin"), Agent: q.Get("agent"), Before: q.Get("before"),
+		Standing: runs.Standing(q.Get("standing")),
+	}
+	if raw := q.Get("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			fail(w, http.StatusBadRequest, "limit is a number above zero")
+			return
+		}
+		query.Limit = n
+	}
+	switch query.Standing {
+	case "", runs.StandingRunning, runs.StandingFailed:
+	default:
+		fail(w, http.StatusBadRequest, "standing is running or failed")
+		return
+	}
+	page, next, err := s.P.Runs.ThreadPage(who.Tenant, query)
+	if err != nil {
+		fail(w, http.StatusBadRequest, "before is not a cursor this server issued")
+		return
+	}
+	var cursor *string
+	if next != "" {
+		cursor = &next
+	}
+	ok(w, http.StatusOK, map[string]any{"threads": page, "next": cursor})
 }
 
 func (s *Server) getThread(w http.ResponseWriter, r *http.Request, who auth.Principal) {
@@ -338,11 +392,18 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request, who auth.Pr
 	if !decode(w, r, &next) {
 		return
 	}
+	before := s.P.Settings(who.Tenant)
 	if err := s.P.SetSettings(r.Context(), who.Tenant, next); err != nil {
 		s.problem(w, err)
 		return
 	}
-	ok(w, http.StatusOK, next)
+	// The first admin to save settings is on record as having set the
+	// workspace up.
+	saved := s.P.MarkSetup(who.Tenant, who.Subject)
+	s.Log.Info("httpapi: settings changed", "subject", who.Subject, "tenant", who.Tenant,
+		"workspace_before", before.WorkspaceName, "workspace_after", saved.WorkspaceName,
+		"baseline_before", before.Baseline, "baseline_after", saved.Baseline, "first_setup", before.SetupAt.IsZero())
+	ok(w, http.StatusOK, saved)
 }
 
 func (s *Server) getRun(w http.ResponseWriter, r *http.Request, who auth.Principal) {
@@ -471,12 +532,16 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request, who auth.Princip
 // and reported without detail, so an internal error never leaks through.
 func (s *Server) problem(w http.ResponseWriter, err error) {
 	var tooBig *http.MaxBytesError
+	if denied(w, err) {
+		return
+	}
 	switch {
 	case errors.Is(err, runs.ErrNotFound), errors.Is(err, registry.ErrNotFound), errors.Is(err, platform.ErrScheduleNotFound),
+		errors.Is(err, platform.ErrProjectNotFound),
 		errors.Is(err, alerts.ErrNotFound), errors.Is(err, knowledge.ErrNotFound), errors.Is(err, evals.ErrNotFound),
-		errors.Is(err, memory.ErrNotFound):
+		errors.Is(err, memory.ErrNotFound), errors.Is(err, policy.ErrNotFound):
 		fail(w, http.StatusNotFound, "not found")
-	case errors.Is(err, registry.ErrExists), errors.Is(err, platform.ErrScheduleExists),
+	case errors.Is(err, registry.ErrExists), errors.Is(err, platform.ErrScheduleExists), errors.Is(err, platform.ErrProjectExists),
 		errors.Is(err, alerts.ErrExists), errors.Is(err, knowledge.ErrExists), errors.Is(err, evals.ErrExists):
 		fail(w, http.StatusConflict, "already exists")
 	case errors.Is(err, pick.ErrNoAgent):
@@ -494,7 +559,7 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 	case errors.Is(err, call.ErrInvalid), errors.Is(err, registry.ErrInvalid), errors.Is(err, agentspec.ErrInvalid),
 		errors.Is(err, envelope.ErrInvalid), errors.Is(err, cron.ErrSchedule),
 		errors.Is(err, alerts.ErrInvalid), errors.Is(err, knowledge.ErrInvalid), errors.Is(err, evals.ErrInvalid),
-		errors.Is(err, prefs.ErrInvalid), errors.Is(err, memory.ErrInvalid):
+		errors.Is(err, prefs.ErrInvalid), errors.Is(err, memory.ErrInvalid), errors.Is(err, policy.ErrInvalid):
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, memory.ErrSensitive):
 		fail(w, http.StatusBadRequest, "that note carries personal data, such as an email address or a card number, so it was not stored")

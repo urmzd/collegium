@@ -10,8 +10,12 @@
 package runs
 
 import (
+	"cmp"
+	"encoding/base64"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -47,6 +51,17 @@ const (
 	MetaPicked  = "oap.picked"
 	MetaProject = "oap.project"
 )
+
+// ProjectOf returns the project a tag files its run under, or "". Only origins
+// whose project the server itself wrote are believed: the API, the cron trigger
+// (a schedule's project is set when the schedule is created) and a person's
+// run-now.
+func ProjectOf(tag envelope.Tag) string {
+	if tag.Origin == OriginAPI || tag.Origin == "cron" || tag.Origin == OriginManual {
+		return tag.Meta[MetaProject]
+	}
+	return ""
+}
 
 // Status is where a run is in its life.
 type Status string
@@ -168,8 +183,10 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 	// A run is its own conversation unless the API placed it in one. A run
 	// called by an agent belongs to its root's conversation.
 	thread, prev, picked, text, project := runID, "", "", tag.Text, ""
+	// A schedule's project is written by the server when the schedule is
+	// created, so the cron trigger and a person's run-now are believed too.
+	project = ProjectOf(tag)
 	if tag.Origin == OriginAPI {
-		project = tag.Meta[MetaProject]
 		if v := tag.Meta[MetaThread]; v != "" {
 			thread = v
 		}
@@ -403,8 +420,128 @@ func (x *Index) Path(tenant, runID string) ([]Run, error) {
 	return out, nil
 }
 
-// Threads returns a tenant's conversations, most recently active first.
+// Standing narrows conversations by how they stand.
+type Standing string
+
+const (
+	// StandingRunning is conversations with a run in flight.
+	StandingRunning Standing = "running"
+	// StandingFailed is conversations in which a reply failed.
+	StandingFailed Standing = "failed"
+)
+
+// Paging bounds for ThreadPage.
+const (
+	DefaultThreadPage = 200
+	MaxThreadPage     = 200
+)
+
+// ErrCursor reports a paging cursor this index did not issue.
+var ErrCursor = errors.New("runs: invalid cursor")
+
+// ThreadQuery selects and pages a tenant's conversations. Every field is
+// optional. Filters apply before the limit, so a page of 30 is 30 matches.
+type ThreadQuery struct {
+	// Origin keeps conversations started from one origin, such as "api".
+	Origin string
+	// Agent keeps conversations that agent has answered in.
+	Agent string
+	// Standing keeps conversations that are running or that had a failure.
+	Standing Standing
+	// Limit is the page size. Zero means DefaultThreadPage, and it is capped
+	// at MaxThreadPage.
+	Limit int
+	// Before is the cursor a previous page returned. Empty starts at the top.
+	Before string
+}
+
+// A cursor is the position of the last conversation on a page: when it was
+// last active, and its id to break ties. The next page is everything strictly
+// after that position.
+//
+// Activity only ever moves a conversation toward the top. So one already seen
+// never comes back on a later page, and one that becomes active while a reader
+// is paging moves above the cursor: it is absent from the pages still to come
+// and present the next time the first page is read.
+func encodeCursor(s ThreadSummary) string {
+	return base64.RawURLEncoding.EncodeToString([]byte(strconv.FormatInt(s.UpdatedAt.UnixNano(), 10) + ":" + s.ID))
+}
+
+func decodeCursor(c string) (at int64, id string, err error) {
+	raw, err := base64.RawURLEncoding.DecodeString(c)
+	if err != nil {
+		return 0, "", ErrCursor
+	}
+	stamp, id, ok := strings.Cut(string(raw), ":")
+	if !ok || id == "" {
+		return 0, "", ErrCursor
+	}
+	at, err = strconv.ParseInt(stamp, 10, 64)
+	if err != nil {
+		return 0, "", ErrCursor
+	}
+	return at, id, nil
+}
+
+// Threads returns a tenant's conversations, most recently active first. A limit
+// of zero returns them all.
 func (x *Index) Threads(tenant string, limit int) []ThreadSummary {
+	all := x.threads(tenant)
+	if limit > 0 && len(all) > limit {
+		all = all[:limit]
+	}
+	return all
+}
+
+// ThreadPage returns one page of a tenant's conversations, most recently active
+// first, and the cursor for the page after it. The cursor is empty when there
+// is nothing older.
+func (x *Index) ThreadPage(tenant string, q ThreadQuery) ([]ThreadSummary, string, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = DefaultThreadPage
+	}
+	limit = min(limit, MaxThreadPage)
+	var afterAt int64
+	var afterID string
+	if q.Before != "" {
+		var err error
+		if afterAt, afterID, err = decodeCursor(q.Before); err != nil {
+			return nil, "", err
+		}
+	}
+
+	page := []ThreadSummary{}
+	for _, s := range x.threads(tenant) {
+		switch {
+		case q.Origin != "" && s.Origin != q.Origin:
+			continue
+		case q.Agent != "" && !slices.Contains(s.Agents, q.Agent):
+			continue
+		case q.Standing == StandingRunning && s.Active == 0:
+			continue
+		case q.Standing == StandingFailed && s.Failed == 0:
+			continue
+		}
+		if q.Before != "" {
+			at := s.UpdatedAt.UnixNano()
+			// Skip everything at or above the cursor's position.
+			if at > afterAt || (at == afterAt && s.ID <= afterID) {
+				continue
+			}
+		}
+		if len(page) == limit {
+			// One more match exists, so there is a next page.
+			return page, encodeCursor(page[len(page)-1]), nil
+		}
+		page = append(page, s)
+	}
+	return page, "", nil
+}
+
+// threads builds every conversation in a tenant, most recently active first,
+// with the id breaking ties so the order is the same on every read.
+func (x *Index) threads(tenant string) []ThreadSummary {
 	x.mu.RLock()
 	defer x.mu.RUnlock()
 	byID := map[string]*ThreadSummary{}
@@ -451,9 +588,8 @@ func (x *Index) Threads(tenant string, limit int) []ThreadSummary {
 		}
 		out = append(out, s)
 	}
-	slices.SortStableFunc(out, func(a, b ThreadSummary) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
+	slices.SortFunc(out, func(a, b ThreadSummary) int {
+		return cmp.Or(b.UpdatedAt.Compare(a.UpdatedAt), strings.Compare(a.ID, b.ID))
+	})
 	return out
 }

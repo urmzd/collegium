@@ -74,6 +74,14 @@ no permission, grants nothing.
   A housekeeping run never starts another.
 - **An agent's memory never displaces a person's note.** When an agent's notes
   are full, only notes the memory agent wrote make room.
+- **A proposed memory is not a memory.** What the memory agent writes is held
+  as pending and is not sent to any agent until a person approves it, unless
+  the workspace turned approval off. This is saige's default for memory writes.
+- **Memory refuses personal data.** Every note, from a person or an agent,
+  passes saige's memory policy, which rejects text its detector finds personal
+  data in.
+- **Project memory reaches only that project.** A turn is sent a project's
+  shared notes only when its conversation is filed in that project.
 - **Evals are bounded.** A suite holds at most 50 cases, one run of a suite is
   open at a time, cases run one after another, and a case is given two minutes.
 - **Only trusted origins name a schedule.** A run is tied to a schedule only

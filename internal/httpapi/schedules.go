@@ -18,6 +18,8 @@ type schedule struct {
 	Expression string `json:"expression"`
 	Agent      string `json:"agent"`
 	Text       string `json:"text"`
+	// Project files every run the schedule raises under a project.
+	Project string `json:"project,omitempty"`
 }
 
 // scheduleView is a schedule with what a person needs to trust it: whether it
@@ -32,7 +34,10 @@ type scheduleView struct {
 
 func (s *Server) viewOf(sc cron.Schedule, now time.Time) scheduleView {
 	v := scheduleView{
-		schedule:  schedule{Name: sc.Name, Expression: sc.Expression, Agent: sc.Agent, Text: sc.Text},
+		schedule: schedule{
+			Name: sc.Name, Expression: sc.Expression, Agent: sc.Agent, Text: sc.Text,
+			Project: sc.Meta[runs.MetaProject],
+		},
 		Paused:    s.P.Schedules.Paused(sc.Name),
 		CreatedBy: sc.Meta["created_by"],
 		Next:      []time.Time{},
@@ -64,10 +69,18 @@ func (s *Server) createSchedule(w http.ResponseWriter, r *http.Request, who auth
 		s.problem(w, err)
 		return
 	}
+	meta := map[string]string{"created_by": who.Subject}
+	if body.Project != "" {
+		if !s.P.HasProject(who.Tenant, body.Project) {
+			s.problem(w, platform.ErrProjectNotFound)
+			return
+		}
+		meta[runs.MetaProject] = body.Project
+	}
 	sc := cron.Schedule{
 		Name: body.Name, Expression: body.Expression, Agent: body.Agent, Text: body.Text,
 		Tenant: who.Tenant,
-		Meta:   map[string]string{"created_by": who.Subject},
+		Meta:   meta,
 	}
 	if err := s.P.Schedules.Add(sc); err != nil {
 		s.problem(w, err)
@@ -116,8 +129,11 @@ func (s *Server) runSchedule(w http.ResponseWriter, r *http.Request, who auth.Pr
 		Origin: runs.OriginManual,
 		Text:   sc.Text,
 		Actor:  envelope.Actor{ID: who.Subject, Display: who.Name, Bot: who.Kind == auth.Machine},
-		Meta:   map[string]string{"cron_schedule": sc.Name, "cron_expression": sc.Expression},
-		At:     now,
+		Meta: map[string]string{
+			"cron_schedule": sc.Name, "cron_expression": sc.Expression,
+			runs.MetaProject: sc.Meta[runs.MetaProject],
+		},
+		At: now,
 	})
 	if err != nil {
 		s.problem(w, err)

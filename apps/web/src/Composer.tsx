@@ -1,6 +1,6 @@
 import { ArrowUpIcon, FileIcon, XIcon } from "@agent-ui/render-web";
 import { type QueueControls, QueueStrip } from "@agent-ui/web";
-import { type KeyboardEvent, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const MAX_HEIGHT = 260;
 const MAX_FILES = 5;
@@ -55,6 +55,11 @@ function Glyph({ d, size = 18 }: { d: string; size?: number }) {
 const PLUS = "M5 12h14M12 5v14";
 const MIC = "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zM19 10v2a7 7 0 0 1-14 0v-2M12 19v3";
 
+// The send and speak buttons share one size and one place, so nothing moves
+// when one takes over from the other.
+const action =
+  "inline-flex size-9 shrink-0 items-center justify-center rounded-full transition-opacity focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aui-accent";
+
 const tool =
   "inline-flex size-9 items-center justify-center rounded-full text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:opacity-40";
 
@@ -68,12 +73,18 @@ export function Composer({
   queue,
   autoFocus,
   onDraft,
+  leading,
+  trailing,
 }: {
   placeholder: string;
   queue: QueueControls;
   autoFocus?: boolean;
   /** Called as the text changes, for anything that previews it. */
   onDraft?: (text: string) => void;
+  /** Controls beside the plus, such as where the conversation is filed. */
+  leading?: ReactNode;
+  /** Controls before the send or speak button, such as who answers. */
+  trailing?: ReactNode;
 }) {
   const [value, setValue] = useState("");
   const [files, setFiles] = useState<Attached[]>([]);
@@ -183,7 +194,7 @@ export function Composer({
         e.preventDefault();
         send(false);
       }}
-      className="oap-glass flex flex-col gap-1 rounded-[1.5rem] p-2 transition-[border-color,box-shadow] focus-within:border-aui-accent/60 focus-within:ring-4 focus-within:ring-aui-accent-soft"
+      className="flex flex-col gap-1 rounded-[1.25rem] border border-aui-border bg-aui-surface p-2 transition-colors focus-within:border-aui-muted"
     >
       <QueueStrip queue={queue} />
       {files.length > 0 && (
@@ -241,28 +252,37 @@ export function Composer({
         <button type="button" className={tool} aria-label="Attach files" title="Attach text files" onClick={() => picker.current?.click()}>
           <Glyph d={PLUS} />
         </button>
-        <span className="flex-1" />
-        {canDictate && (
+        {leading}
+        <span className="min-w-2 flex-1" />
+        {trailing}
+        {/*
+          One button in one place. With nothing to send it listens, and once
+          there is something to send it sends. While it is listening it stays
+          the stop button, even as words arrive, so dictation can always be
+          ended from where it was started.
+        */}
+        {listening || (!ready && canDictate) ? (
           <button
             type="button"
-            className={`${tool} ${listening ? "bg-aui-accent-soft text-aui-fg" : ""}`}
+            className={`${action} ${listening ? "bg-aui-accent text-aui-accent-fg" : "bg-aui-hover text-aui-fg"}`}
             aria-label={listening ? "Stop dictating" : "Dictate"}
             aria-pressed={listening}
             title={listening ? "Stop dictating" : "Dictate"}
             onClick={dictate}
           >
-            <Glyph d={MIC} />
+            {listening ? <span aria-hidden className="size-2.5 rounded-[2px] bg-current" /> : <Glyph d={MIC} />}
+          </button>
+        ) : (
+          <button
+            type="submit"
+            disabled={!ready}
+            aria-label={queue.running ? "Queue message" : "Send message"}
+            title={queue.running ? "Queue behind the reply in flight" : "Send"}
+            className={`${action} bg-aui-primary text-aui-primary-fg hover:opacity-90 disabled:opacity-40`}
+          >
+            <ArrowUpIcon size={16} strokeWidth={2.5} />
           </button>
         )}
-        <button
-          type="submit"
-          disabled={!ready}
-          aria-label={queue.running ? "Queue message" : "Send message"}
-          title={queue.running ? "Queue behind the reply in flight" : "Send"}
-          className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-aui-primary text-aui-primary-fg shadow-aui-sm transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-aui-accent disabled:opacity-40"
-        >
-          <ArrowUpIcon size={16} strokeWidth={2.5} />
-        </button>
       </div>
     </form>
   );

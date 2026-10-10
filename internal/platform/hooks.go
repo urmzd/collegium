@@ -9,6 +9,7 @@ import (
 
 	"github.com/urmzd/open-agent-platform/pkg/memory"
 	"github.com/urmzd/open-agent-platform/pkg/runs"
+	"github.com/urmzd/open-agent-platform/pkg/usage"
 )
 
 // Housekeeping the platform does around a conversation, by asking an agent.
@@ -43,6 +44,10 @@ const memoryPrompt = "Below is one exchange between a person and the agent %q. "
 
 // ended is called exactly once for every run that ends.
 func (p *Platform) ended(ctx context.Context, run runs.Run) {
+	// Its place under any concurrency limit is free again.
+	if run.Origin != runs.OriginSystem {
+		p.Usage.Append(usage.Entry{Kind: usage.Ended, Tenant: run.Tenant, RunID: run.ID, At: p.now()})
+	}
 	p.raise(run)
 	switch {
 	case run.Origin == runs.OriginSystem:
@@ -59,7 +64,13 @@ func (p *Platform) afterTurn(ctx context.Context, run runs.Run) {
 		p.startHook(ctx, run, cfg.TitleAgent, hookTitle, run.Thread, fmt.Sprintf(titlePrompt, clip(run.Text, 2000)))
 	}
 	if cfg.MemoryAgent != "" {
-		p.startHook(ctx, run, cfg.MemoryAgent, hookMemory, run.Agent,
+		// In a project, what is learned is the project's: every agent and
+		// every conversation there shares it. Outside one, it is the agent's.
+		owner := run.Agent
+		if run.Project != "" && p.HasProject(run.Tenant, run.Project) {
+			owner = memory.ProjectOwner(run.Project)
+		}
+		p.startHook(ctx, run, cfg.MemoryAgent, hookMemory, owner,
 			fmt.Sprintf(memoryPrompt, run.Agent, clip(run.Text, 4000), run.Agent, clip(run.Answer, 4000)))
 	}
 }

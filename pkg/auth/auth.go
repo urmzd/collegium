@@ -50,6 +50,8 @@ const (
 	KnowledgeWrite Permission = "knowledge:write"
 	EvalsRead      Permission = "evals:read"
 	EvalsWrite     Permission = "evals:write"
+	BillingRead    Permission = "billing:read"
+	BillingWrite   Permission = "billing:write"
 )
 
 // Permissions lists every permission, for validating configured scopes.
@@ -57,6 +59,7 @@ func Permissions() []Permission {
 	return []Permission{
 		AgentsRead, AgentsWrite, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
 		AlertsRead, AlertsWrite, KnowledgeRead, KnowledgeWrite, EvalsRead, EvalsWrite,
+		BillingRead, BillingWrite,
 	}
 }
 
@@ -75,10 +78,11 @@ const (
 )
 
 var rolePermissions = map[Role][]Permission{
-	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead},
+	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead, BillingRead},
 	Operator: {
 		AgentsRead, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
 		AlertsRead, AlertsWrite, KnowledgeRead, EvalsRead, EvalsWrite,
+		BillingRead, BillingWrite,
 	},
 	Admin: Permissions(),
 }

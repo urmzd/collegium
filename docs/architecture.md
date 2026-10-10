@@ -108,7 +108,10 @@ stack until that is closed.
 | `pkg/evals`: suites of deterministic checks for agents, retrieval metrics for knowledge, scored by saige | Built, in memory |
 | Conversations: threads, branches, any agent on any turn, replayed history with a configurable limit | Built, in memory |
 | `pkg/pick`: lexical agent picker over name, description and prompt, with a baseline | Built |
-| Projects, workspace settings, `pkg/prefs`: per-person theme, accent and profile picture | Built, in memory |
+| Projects: conversations filed together, shared memory sent to every agent in the project, schedules whose runs are filed there | Built, in memory |
+| Workspace settings, `pkg/prefs`: per-person theme, accent and profile picture | Built, in memory |
+| Memory approval: what the memory agent writes waits for a person, following saige's memory policy | Built |
+| Project membership and per-project access | Not built. Everyone in the workspace sees every project |
 | Web console on agent-ui: chat, inbox, agent editor with revisions, evals, knowledge, schedules, analytics, alerts, settings | Built |
 | Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the only mode is loopback dev auth |
 | Model parameters on an agent (temperature, token and step limits) | Not built. opentag's agent spec has no fields for them |

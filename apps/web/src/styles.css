@@ -42,6 +42,14 @@ body,
   --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 60%);
   /* Lightness of an agent's color, set so it reads on either surface. */
   --oap-mark-l: 0.5;
+  /*
+   * Strokes. The neutral one is the rule. The agent one takes an agent's hue
+   * at a lightness and chroma checked against both planes for every hue:
+   * at least 3.9:1 here and 6.6:1 in the dark theme.
+   */
+  --oap-stroke: var(--oap-rule);
+  --oap-stroke-l: 0.55;
+  --oap-stroke-c: 0.14;
 }
 html[data-theme="dark"] {
   --oap-plane: oklch(0.105 0 0);
@@ -53,6 +61,8 @@ html[data-theme="dark"] {
   --oap-glass-border: oklch(1 0 0 / 9%);
   --oap-bevel: inset 0 1px 0 oklch(1 0 0 / 7%);
   --oap-mark-l: 0.78;
+  --oap-stroke-l: 0.68;
+  --oap-stroke-c: 0.13;
 }
 
 body {
@@ -169,6 +179,118 @@ button.oap-tick:focus-visible {
   .oap-tick[data-status="running"] {
     animation: none;
   }
+}
+
+/*
+ * A stroke is the edge of a surface. Left alone it is the neutral rule. Given
+ * an agent, it takes that agent's hue, so what an agent made or owns is known
+ * by its edge and nothing needs a filled box. It is one flat line: no glow and
+ * no gradient.
+ *
+ * The line also says how the agent stands, by form as well as color:
+ * idle is thin and quiet, done is thin, working is thick and breathes, waiting
+ * on a person is thick, dashed and still, and failed is thick and red.
+ */
+.oap-stroke {
+  --oap-stroke-color: var(--oap-stroke);
+  --oap-stroke-w: 1px;
+  --oap-stroke-style: solid;
+  position: relative;
+}
+.oap-stroke[data-agent] {
+  --oap-stroke-color: oklch(var(--oap-stroke-l) var(--oap-stroke-c) var(--oap-hue));
+}
+.oap-stroke[data-agent][data-state="idle"] {
+  --oap-stroke-color: oklch(var(--oap-stroke-l) var(--oap-stroke-c) var(--oap-hue) / 60%);
+}
+.oap-stroke:is([data-state="working"], [data-state="waiting"], [data-state="failed"]) {
+  --oap-stroke-w: 2px;
+}
+.oap-stroke[data-state="waiting"] {
+  --oap-stroke-style: dashed;
+}
+.oap-stroke[data-state="failed"] {
+  --oap-stroke-color: var(--aui-bad);
+}
+.oap-stroke::before {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  border: 0 var(--oap-stroke-style) var(--oap-stroke-color);
+}
+.oap-stroke[data-edge="start"]::before {
+  inset: 0 auto 0 0;
+  border-left-width: var(--oap-stroke-w);
+}
+.oap-stroke[data-edge="under"]::before {
+  inset: auto 0 0 0;
+  border-bottom-width: var(--oap-stroke-w);
+}
+.oap-stroke[data-edge="around"]::before {
+  inset: 0;
+  border-width: var(--oap-stroke-w);
+  border-radius: inherit;
+}
+/* Only work in flight moves. Waiting on a person never does. */
+.oap-stroke[data-state="working"]::before {
+  animation: oap-stroke-work 1.8s ease-in-out infinite;
+}
+@keyframes oap-stroke-work {
+  50% {
+    opacity: 0.4;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .oap-stroke[data-state="working"]::before {
+    animation: none;
+  }
+}
+
+/*
+ * The usage meter. A track scaled to the largest of the limit, what is spent
+ * and what is projected, so going over is drawn past the limit mark rather
+ * than clipped at it.
+ */
+.oap-meter-track {
+  position: relative;
+  height: var(--oap-meter-h, 6px);
+  border-radius: 2px;
+  background: var(--oap-ink-faint);
+}
+.oap-meter-fill,
+.oap-meter-projected {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 2px;
+}
+.oap-meter-fill {
+  background: var(--aui-fg);
+}
+/* What the period is heading for: hatched, so it is not read as money already spent. */
+.oap-meter-projected {
+  background: repeating-linear-gradient(135deg, var(--oap-ink) 0 2px, transparent 2px 5px);
+}
+[data-usage="warning"] .oap-meter-fill {
+  background: var(--aui-warn);
+}
+[data-usage="over"] .oap-meter-fill {
+  background: var(--aui-bad);
+}
+/* The warn threshold is a short notch. The limit is a full-height line that overhangs the track. */
+.oap-meter-warn,
+.oap-meter-limit {
+  position: absolute;
+  width: 0;
+  border-left: 1px solid var(--aui-bg);
+}
+.oap-meter-warn {
+  inset: 0 auto 0 auto;
+  border-left-style: dotted;
+  border-left-color: var(--aui-muted);
+}
+.oap-meter-limit {
+  inset: -3px auto -3px auto;
+  border-left: 2px solid var(--aui-fg);
 }
 
 /* A switch is a checkbox drawn as a track and a thumb. */

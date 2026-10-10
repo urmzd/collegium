@@ -1,4 +1,4 @@
-import { CheckIcon, ChevronDownIcon, XIcon } from "@agent-ui/render-web";
+import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, XIcon } from "@agent-ui/render-web";
 import { AgentOrb, type OrbSize, type OrbState } from "@agent-ui/web";
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
@@ -129,7 +129,8 @@ export function Page({
 }) {
   return (
     <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
-      <div className="flex w-full max-w-[68rem] flex-col gap-6 px-5 pt-8 pb-12 md:px-10">
+      {/* A container, so rows lay themselves out by the room the page has, not by the window. */}
+      <div className="@container flex w-full max-w-[68rem] flex-col gap-6 px-5 pt-8 pb-12 md:px-10">
         <header className="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
           <div className="min-w-0">
             <h1 className="oap-display text-[1.875rem] leading-[1.15] font-semibold text-aui-fg">{title}</h1>
@@ -386,6 +387,7 @@ export function Popover({
   className,
   align = "left",
   up = false,
+  narrow = false,
   children,
 }: {
   label: string;
@@ -393,6 +395,8 @@ export function Popover({
   className?: string;
   align?: "left" | "right";
   up?: boolean;
+  /** A slimmer panel, for a button in a tight column such as the sidebar. */
+  narrow?: boolean;
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -436,7 +440,7 @@ export function Popover({
           id={id}
           role="dialog"
           aria-label={label}
-          className={`oap-glass-pop aui-pop-in absolute z-40 w-80 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${
+          className={`oap-glass-pop aui-pop-in absolute z-40 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${narrow ? "w-56" : "w-80"} ${
             align === "right" ? "right-0" : "left-0"
           } ${up ? "bottom-full mb-2" : "top-full mt-2"}`}
         >
@@ -724,4 +728,305 @@ export function Menu<T extends string>({
 export function agentOptions(names: string[], none?: string): Option[] {
   const list: Option[] = names.map((n) => ({ value: n, label: n, mark: <AgentMark name={n} size={16} /> }));
   return none === undefined ? list : [{ value: "", label: none }, ...list];
+}
+
+export type StrokeState = "idle" | "working" | "waiting" | "failed" | "done";
+
+/**
+ * A surface known by its edge. With no `agent` the edge is the neutral rule,
+ * which is right for anything a person or the system made. With an `agent` the
+ * edge takes that agent's hue, and `state` says how the agent stands: working
+ * breathes, waiting on a person is dashed and still, failed is red.
+ */
+export function Stroke({
+  agent,
+  state = "idle",
+  edge = "start",
+  className = "",
+  testId = "stroke",
+  children,
+}: {
+  /** The agent that made or owns what is inside. Leave out for people and the system. */
+  agent?: string;
+  state?: StrokeState;
+  /** Where the line is drawn: the leading side, underneath, or all the way around. */
+  edge?: "start" | "under" | "around";
+  className?: string;
+  testId?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      data-testid={testId}
+      data-agent={agent}
+      data-state={agent ? state : undefined}
+      data-edge={edge}
+      className={`oap-stroke ${className}`}
+      style={agent ? ({ "--oap-hue": hueOf(agent) } as CSSProperties) : undefined}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Which stroke state a run's status is. */
+export function strokeOf(status: Run["status"]): StrokeState {
+  return status === "failed" ? "failed" : status === "parked" ? "waiting" : status === "completed" ? "done" : "working";
+}
+
+/** Micro-USD as dollars, with zero shown as $0.00. For budgets, where zero is a real amount. */
+export function dollars(micro: number): string {
+  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(micro / 1_000_000);
+}
+
+export type Period = "day" | "month";
+export type UsageState = "none" | "under" | "warning" | "over";
+
+/** Where spending stands against a limit. Warning starts at `warnAt`, a share of the limit. */
+export function usageOf(spent: number, limit: number | null | undefined, warnAt = 0.8): UsageState {
+  if (!limit || limit <= 0) return "none";
+  return spent > limit ? "over" : spent >= limit * warnAt ? "warning" : "under";
+}
+
+const usageWord: Record<UsageState, string> = {
+  none: "No limit",
+  under: "Under limit",
+  warning: "Near limit",
+  over: "Over limit",
+};
+
+/** A formatter for a meter that counts things: `counted("runs")(12)` is "12 runs". */
+export function counted(unit: string): (amount: number) => string {
+  return (amount) => `${amount.toLocaleString()} ${unit}`;
+}
+
+/**
+ * Use against a limit. The state is always written out, and going over is
+ * drawn past the limit line, so nothing depends on color. Amounts are
+ * micro-USD unless `format` says otherwise. Presentational: it fetches nothing.
+ */
+export function UsageMeter({
+  label,
+  spent,
+  limit,
+  warnAt = 0.8,
+  projected,
+  period,
+  size = "row",
+  format: show = dollars,
+  testId = "usage-meter",
+}: {
+  /** What is being measured, such as a project's name. Read out, and shown at the header size. */
+  label: string;
+  spent: number;
+  /** Leave out, or pass null or 0, when nothing caps the spending. */
+  limit?: number | null;
+  /** The share of the limit where the warning starts. */
+  warnAt?: number;
+  /** What the period is expected to end at, drawn as a lighter extension. */
+  projected?: number;
+  period?: Period;
+  /** `row` fits a table cell. `header` leads a page. */
+  size?: "row" | "header";
+  /** How an amount is written. Dollars from micro-USD unless given. Use `counted("runs")` for a plain count. */
+  format?: (amount: number) => string;
+  testId?: string;
+}) {
+  const state = usageOf(spent, limit, warnAt);
+  const cap = limit && limit > 0 ? limit : 0;
+  const ahead = projected !== undefined && projected > spent ? projected : 0;
+  const scale = Math.max(cap, spent, ahead, 1);
+  const pct = (v: number) => `${Math.min((100 * v) / scale, 100)}%`;
+  const share = cap ? Math.round((100 * spent) / cap) : null;
+  const each = period ? ` a ${period}` : "";
+  const text = cap
+    ? `${show(spent)} of ${show(cap)}${each}, ${share}%. ${state === "over" ? `Over limit by ${show(spent - cap)}` : usageWord[state]}.${
+        ahead ? ` Heading for ${show(ahead)}.` : ""
+      }`
+    : `${show(spent)} used. No limit.`;
+  const note =
+    state === "over" ? `Over by ${show(spent - cap)}` : ahead && cap && ahead > cap ? `Heading for ${show(ahead)}` : usageWord[state];
+  const header = size === "header";
+
+  return (
+    <div data-testid={testId} data-usage={state} className={`flex min-w-0 flex-col ${header ? "gap-2" : "gap-1"}`}>
+      {header && (
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4">
+          <span className="text-aui-xs text-aui-muted">{label}</span>
+          <span className="text-aui-xs text-aui-muted">
+            {cap ? `of ${show(cap)}${each}` : "No limit"}
+          </span>
+        </div>
+      )}
+      <div className="flex items-baseline justify-between gap-3">
+        <span className={`oap-display min-w-0 truncate font-semibold text-aui-fg ${header ? "text-[1.75rem] leading-9" : "text-aui-sm"}`}>
+          {show(spent)}
+          {!header && cap > 0 && <span className="font-normal text-aui-muted"> of {show(cap)}</span>}
+        </span>
+        <span className={`shrink-0 text-aui-xs ${state === "over" || state === "warning" ? "font-medium text-aui-fg" : "text-aui-muted"}`}>
+          {header && !cap ? "" : note}
+        </span>
+      </div>
+      <div
+        role="meter"
+        aria-label={label}
+        aria-valuemin={0}
+        aria-valuemax={cap || Math.max(spent, 1)}
+        aria-valuenow={Math.min(spent, cap || spent)}
+        aria-valuetext={text}
+        className="oap-meter-track"
+        style={header ? ({ "--oap-meter-h": "10px" } as CSSProperties) : undefined}
+      >
+        {ahead > 0 && <span data-testid={`${testId}-projected`} className="oap-meter-projected" style={{ width: pct(ahead) }} />}
+        {/* With no limit there is nothing to fill toward, so the track stays empty. */}
+        {cap > 0 && <span className="oap-meter-fill" style={{ width: pct(spent) }} />}
+        {cap > 0 && warnAt > 0 && warnAt < 1 && <span aria-hidden className="oap-meter-warn" style={{ left: pct(cap * warnAt) }} />}
+        {cap > 0 && scale > cap && <span aria-hidden className="oap-meter-limit" style={{ left: pct(cap) }} />}
+      </div>
+    </div>
+  );
+}
+
+const periods: Option<Period>[] = [
+  { value: "month", label: "a month" },
+  { value: "day", label: "a day" },
+];
+
+/** Dollars typed by a person, as micro-USD. Null when empty, undefined when it is not an amount. */
+export function parseDollars(text: string): number | null | undefined {
+  const t = text.trim().replace(/^\$/, "").replace(/,/g, "");
+  if (t === "") return null;
+  if (!/^\d+(\.\d{0,2})?$|^\.\d{1,2}$/.test(t)) return undefined;
+  return Math.round(Number(t) * 1_000_000);
+}
+
+/**
+ * A spending limit: dollars, and the period they cover. The value is micro-USD,
+ * or null for no limit of its own. When it is null and `inherits` is given, the
+ * field says which limit applies instead.
+ */
+export function LimitField({
+  label,
+  value,
+  period,
+  onChange,
+  inherits,
+  disabled,
+  testId = "limit-field",
+}: {
+  label: string;
+  /** Micro-USD, or null when this scope sets no limit. */
+  value: number | null;
+  period: Period;
+  onChange: (value: number | null, period: Period) => void;
+  /** The limit that applies when this one is empty, and where it comes from. */
+  inherits?: { scope: string; value: number; period: Period };
+  disabled?: boolean;
+  testId?: string;
+}) {
+  const shown = value === null ? "" : (value / 1_000_000).toFixed(2).replace(/\.00$/, "");
+  const [text, setText] = useState(shown);
+  const [bad, setBad] = useState(false);
+  const id = useId();
+
+  // Follow the value when it changes from outside, but not while it is being typed.
+  const last = useRef(value);
+  useEffect(() => {
+    if (last.current !== value) {
+      last.current = value;
+      setText(shown);
+      setBad(false);
+    }
+  }, [value, shown]);
+
+  const type = (next: string) => {
+    setText(next);
+    const parsed = parseDollars(next);
+    setBad(parsed === undefined);
+    if (parsed !== undefined) {
+      last.current = parsed;
+      onChange(parsed, period);
+    }
+  };
+
+  const hint = bad
+    ? "Enter an amount in dollars, such as 250 or 49.50."
+    : value !== null
+      ? undefined
+      : inherits
+        ? `Inherits ${dollars(inherits.value)} a ${inherits.period} from ${inherits.scope}.`
+        : "No limit.";
+
+  return (
+    <div data-testid={testId} data-empty={value === null} className="flex flex-col gap-1">
+      <label htmlFor={id} className="text-aui-xs font-medium text-aui-muted">
+        {label}
+      </label>
+      <div className="flex items-center gap-2">
+        <div
+          className={`flex h-8 min-w-0 flex-1 items-center gap-1 rounded-aui border bg-aui-bg px-2.5 transition-colors focus-within:border-aui-accent focus-within:ring-2 focus-within:ring-aui-ring ${
+            bad ? "border-aui-bad" : "border-aui-border"
+          } ${disabled ? "opacity-50" : ""}`}
+        >
+          <span aria-hidden className="text-aui-sm text-aui-muted">
+            $
+          </span>
+          <input
+            id={id}
+            inputMode="decimal"
+            autoComplete="off"
+            disabled={disabled}
+            value={text}
+            placeholder={inherits ? (inherits.value / 1_000_000).toFixed(2).replace(/\.00$/, "") : "No limit"}
+            aria-invalid={bad}
+            aria-describedby={hint ? `${id}-hint` : undefined}
+            onChange={(e) => type(e.target.value)}
+            className="min-w-0 flex-1 bg-transparent text-aui-sm tabular-nums text-aui-fg outline-none placeholder:text-aui-muted disabled:cursor-not-allowed"
+          />
+        </div>
+        <Menu label={`${label} period`} className="w-28 shrink-0" value={period} options={periods} disabled={disabled} onChange={(p) => onChange(value, p)} />
+      </div>
+      {hint && (
+        <span id={`${id}-hint`} role={bad ? "alert" : undefined} className="text-aui-2xs text-aui-muted">
+          {hint}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export type PolicyAction = "block" | "approve";
+
+const actionWord: Record<PolicyAction, string> = {
+  block: "Blocks at the limit",
+  approve: "Asks for approval",
+};
+
+/** What a policy covers and what it does when its limit is reached. */
+export function PolicyBadge({
+  scope,
+  name,
+  action,
+  testId = "policy-badge",
+}: {
+  /** The kind of thing the policy covers, such as Workspace, Project or Agent. */
+  scope: string;
+  /** Which one, when the scope has many. */
+  name?: string;
+  action: PolicyAction;
+  testId?: string;
+}) {
+  const Icon = action === "block" ? BanIcon : ShieldIcon;
+  return (
+    <span
+      data-testid={testId}
+      data-action={action}
+      className="inline-flex h-6 max-w-full items-center gap-1.5 rounded-full border border-[var(--oap-stroke)] pr-2.5 pl-2 text-aui-xs text-aui-muted"
+    >
+      <Icon size={12} />
+      <span className="truncate">
+        <span className="text-aui-fg">{name ? `${scope} ${name}` : scope}</span>, {actionWord[action].toLowerCase()}
+      </span>
+    </span>
+  );
 }

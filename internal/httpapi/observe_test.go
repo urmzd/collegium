@@ -11,6 +11,7 @@ var everything = []string{
 	"oap:agents:read", "oap:agents:write", "oap:runs:read", "oap:runs:write",
 	"oap:schedules:read", "oap:schedules:write", "oap:alerts:read", "oap:alerts:write",
 	"oap:knowledge:read", "oap:knowledge:write", "oap:evals:read", "oap:evals:write",
+	"oap:billing:read", "oap:billing:write",
 }
 
 func TestObservabilityIsConfinedToATenant(t *testing.T) {
@@ -445,5 +446,296 @@ func TestAgentMemory(t *testing.T) {
 	}
 	if res, _ := f.do(t, nil, "DELETE", "/api/agents/helper/memory/"+note["id"].(string), acme, ""); res.StatusCode != http.StatusNoContent {
 		t.Fatalf("remove = %d", res.StatusCode)
+	}
+}
+
+func TestProjects(t *testing.T) {
+	f := newFixture(t)
+	acme, globex := f.machine(t, "acme", everything...), f.machine(t, "globex", everything...)
+	f.do(t, nil, "POST", "/api/agents", acme, helperSpec)
+
+	if res, out := f.do(t, nil, "POST", "/api/projects", acme, `{"name":"Launch","description":"Q4"}`); res.StatusCode != http.StatusCreated {
+		t.Fatalf("create = %d %v", res.StatusCode, out)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/projects", acme, `{"name":"launch"}`); res.StatusCode != http.StatusConflict {
+		t.Fatalf("a duplicate, differing only in case = %d", res.StatusCode)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/projects", acme, `{"name":"<b>"}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("a bad name = %d", res.StatusCode)
+	}
+
+	// Several conversations, a schedule and a shared note, all in the project.
+	_, one := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"kickoff","project":"Launch"}`)
+	f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"risks","project":"Launch"}`)
+	res, sc := f.do(t, nil, "POST", "/api/schedules", acme, `{"name":"standup","expression":"0 9 * * *","agent":"helper","text":"status","project":"Launch"}`)
+	if res.StatusCode != http.StatusCreated || sc["project"] != "Launch" {
+		t.Fatalf("schedule = %d %v", res.StatusCode, sc)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/schedules", acme, `{"name":"x","expression":"0 9 * * *","agent":"helper","text":"s","project":"Ghost"}`); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("a schedule in a project that does not exist = %d", res.StatusCode)
+	}
+	// A run the schedule raises is filed under its project.
+	_, fired := f.do(t, nil, "POST", "/api/schedules/standup/run", acme, "")
+	if fired["project"] != "Launch" {
+		t.Fatalf("the schedule's run has project %v", fired["project"])
+	}
+	if res, note := f.do(t, nil, "POST", "/api/projects/Launch/memory", acme, `{"text":"The launch date is the first Tuesday of November."}`); res.StatusCode != http.StatusCreated || note["status"] != "approved" {
+		t.Fatalf("note = %d %v", res.StatusCode, note)
+	}
+
+	_, list := f.do(t, nil, "GET", "/api/projects", acme, "")
+	p := list["projects"].([]any)[0].(map[string]any)
+	if p["conversations"].(float64) != 3 || p["schedules"].(float64) != 1 || p["notes"].(float64) != 1 {
+		t.Fatalf("project = %v", p)
+	}
+
+	// The next turn in the project is sent what the project knows. A turn
+	// outside it is not.
+	_, inside := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"when is it","after":"`+one["id"].(string)+`"}`)
+	_, outside := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"when is it"}`)
+	sent := func(id any) string {
+		r, err := f.p.Runs.Get("acme", id.(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r.Tag().Text
+	}
+	if !strings.Contains(sent(inside["id"]), "first Tuesday of November") {
+		t.Fatalf("a turn in the project was not sent its shared memory: %q", sent(inside["id"]))
+	}
+	if strings.Contains(sent(outside["id"]), "November") {
+		t.Fatal("a turn outside the project was sent its memory")
+	}
+
+	// Another tenant has no such project.
+	if _, other := f.do(t, nil, "GET", "/api/projects", globex, ""); len(other["projects"].([]any)) != 0 {
+		t.Errorf("other tenant lists projects: %v", other)
+	}
+	for _, tc := range []struct{ method, path, body string }{
+		{"GET", "/api/projects/Launch/memory", ""},
+		{"POST", "/api/projects/Launch/memory", `{"text":"x"}`},
+		{"POST", "/api/projects/Launch/memory/approve", `{"ids":["m1"]}`},
+		{"DELETE", "/api/projects/Launch", ""},
+	} {
+		if res, _ := f.do(t, nil, tc.method, tc.path, globex, tc.body); res.StatusCode != http.StatusNotFound {
+			t.Errorf("other tenant %s %s = %d, want 404", tc.method, tc.path, res.StatusCode)
+		}
+	}
+	viewer := f.signIn(t, "oap-viewers")
+	if res, _ := f.do(t, viewer, "POST", "/api/projects", "", `{"name":"Mine"}`); res.StatusCode != http.StatusForbidden {
+		t.Errorf("a viewer made a project: %d", res.StatusCode)
+	}
+
+	// Deleting a project drops its shared memory and keeps its conversations.
+	if res, _ := f.do(t, nil, "DELETE", "/api/projects/Launch", acme, ""); res.StatusCode != http.StatusNoContent {
+		t.Fatalf("delete = %d", res.StatusCode)
+	}
+	if got := f.p.Memory.List("acme", "project:Launch"); len(got) != 0 {
+		t.Fatalf("the project's memory outlived it: %v", got)
+	}
+	if res, _ := f.do(t, nil, "GET", "/api/threads/"+one["id"].(string), acme, ""); res.StatusCode != http.StatusOK {
+		t.Fatalf("a conversation was lost with its project: %d", res.StatusCode)
+	}
+}
+
+func TestThreadsPage(t *testing.T) {
+	f := newFixture(t)
+	acme := f.machine(t, "acme", everything...)
+	f.do(t, nil, "POST", "/api/agents", acme, helperSpec)
+	for _, text := range []string{"one", "two", "three"} {
+		f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"`+text+`"}`)
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// With no parameters the old shape still works, and next is present.
+	_, all := f.do(t, nil, "GET", "/api/threads", acme, "")
+	if len(all["threads"].([]any)) != 3 {
+		t.Fatalf("threads = %v", all)
+	}
+	if next, present := all["next"]; !present || next != nil {
+		t.Fatalf("next = %v (present %v), want null", next, present)
+	}
+
+	_, first := f.do(t, nil, "GET", "/api/threads?limit=2&origin=api", acme, "")
+	cursor, _ := first["next"].(string)
+	if len(first["threads"].([]any)) != 2 || cursor == "" {
+		t.Fatalf("first page = %v", first)
+	}
+	_, second := f.do(t, nil, "GET", "/api/threads?limit=2&origin=api&before="+cursor, acme, "")
+	if len(second["threads"].([]any)) != 1 || second["next"] != nil {
+		t.Fatalf("second page = %v", second)
+	}
+	if _, none := f.do(t, nil, "GET", "/api/threads?origin=cron", acme, ""); len(none["threads"].([]any)) != 0 {
+		t.Fatalf("origin filter = %v", none)
+	}
+	for _, bad := range []string{"limit=0", "limit=many", "standing=sleepy", "before=not-a-cursor!"} {
+		if res, _ := f.do(t, nil, "GET", "/api/threads?"+bad, acme, ""); res.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s = %d, want 400", bad, res.StatusCode)
+		}
+	}
+	// A cursor carries no access: another tenant using it sees only its own.
+	globex := f.machine(t, "globex", everything...)
+	if _, other := f.do(t, nil, "GET", "/api/threads?before="+cursor, globex, ""); len(other["threads"].([]any)) != 0 {
+		t.Fatalf("another tenant paged into these threads: %v", other)
+	}
+}
+
+func TestBillingPolicies(t *testing.T) {
+	f := newFixture(t)
+	acme, globex := f.machine(t, "acme", everything...), f.machine(t, "globex", everything...)
+	f.do(t, nil, "POST", "/api/agents", acme, helperSpec)
+	f.do(t, nil, "POST", "/api/projects", acme, `{"name":"Launch"}`)
+
+	res, tenantPolicy := f.do(t, nil, "PUT", "/api/policies", acme, `{"scope":{"kind":"tenant"},"period":"day","max_runs":100}`)
+	if res.StatusCode != http.StatusOK || tenantPolicy["version"].(float64) != 1 || tenantPolicy["action"] != "block" {
+		t.Fatalf("tenant policy = %d %v", res.StatusCode, tenantPolicy)
+	}
+	for name, body := range map[string]string{
+		"more than the tenant allows":   `{"scope":{"kind":"project","name":"Launch"},"period":"day","max_runs":500}`,
+		"a project that does not exist": `{"scope":{"kind":"project","name":"Ghost"},"period":"day","max_runs":5}`,
+		"an agent that does not exist":  `{"scope":{"kind":"agent","name":"ghost"},"period":"day","max_runs":5}`,
+		"no limits":                     `{"scope":{"kind":"tenant"},"period":"day"}`,
+		"approval, which is not built":  `{"scope":{"kind":"tenant"},"period":"day","max_runs":5,"action":"approve"}`,
+	} {
+		if res, _ := f.do(t, nil, "PUT", "/api/policies", acme, body); res.StatusCode != http.StatusBadRequest && res.StatusCode != http.StatusNotFound {
+			t.Errorf("%s = %d", name, res.StatusCode)
+		}
+	}
+	if res, _ := f.do(t, nil, "PUT", "/api/policies", acme, `{"scope":{"kind":"project","name":"Launch"},"period":"day","max_runs":2}`); res.StatusCode != http.StatusOK {
+		t.Fatalf("project policy = %d", res.StatusCode)
+	}
+
+	// Two runs fit in the project. The third is refused with the reason, the
+	// policy and its version, and when the count starts again.
+	for range 2 {
+		if res, out := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"go","project":"Launch"}`); res.StatusCode != http.StatusAccepted {
+			t.Fatalf("a run under the limit = %d %v", res.StatusCode, out)
+		}
+	}
+	res, refused := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"go","project":"Launch"}`)
+	if res.StatusCode != http.StatusTooManyRequests || refused["limit"] != "runs" || refused["remaining"].(float64) != 0 || refused["resets_at"] == nil {
+		t.Fatalf("refusal = %d %v", res.StatusCode, refused)
+	}
+	pol := refused["policy"].(map[string]any)
+	if pol["version"].(float64) != 1 || pol["scope"].(map[string]any)["name"] != "Launch" {
+		t.Fatalf("the refusal names the wrong policy: %v", pol)
+	}
+	// Outside the project the run is held only to the tenant's limit.
+	if res, _ := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"go"}`); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("a run outside the project = %d", res.StatusCode)
+	}
+
+	_, usage := f.do(t, nil, "GET", "/api/usage", acme, "")
+	var launch map[string]any
+	for _, s := range usage["scopes"].([]any) {
+		if s.(map[string]any)["scope"].(map[string]any)["kind"] == "project" {
+			launch = s.(map[string]any)
+		}
+	}
+	if launch["state"] != "over" || launch["runs"].(map[string]any)["used"].(float64) != 2 || launch["spend"].(map[string]any)["metered"] != false {
+		t.Fatalf("usage = %v", launch)
+	}
+	_, notices := f.do(t, nil, "GET", "/api/usage/notices", acme, "")
+	if first := notices["notices"].([]any)[0].(map[string]any); first["kind"] != "refused" || first["version"].(float64) != 1 {
+		t.Fatalf("notices = %v", notices)
+	}
+	_, alerts := f.do(t, nil, "GET", "/api/alerts", acme, "")
+	found := false
+	for _, a := range alerts["alerts"].([]any) {
+		found = found || a.(map[string]any)["kind"] == "budget"
+	}
+	if !found {
+		t.Fatalf("no budget alert was raised: %v", alerts)
+	}
+
+	// Every change is on record with who, before and after.
+	f.do(t, nil, "PUT", "/api/policies", acme, `{"scope":{"kind":"project","name":"Launch"},"period":"day","max_runs":5}`)
+	_, history := f.do(t, nil, "GET", "/api/policies/history", acme, "")
+	latest := history["changes"].([]any)[0].(map[string]any)
+	if latest["by"] != "svc-acme" || latest["before"].(map[string]any)["max_runs"].(float64) != 2 || latest["after"].(map[string]any)["version"].(float64) != 2 {
+		t.Fatalf("history = %v", latest)
+	}
+	// Raising the limit lets the next run in.
+	if res, _ := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"go","project":"Launch"}`); res.StatusCode != http.StatusAccepted {
+		t.Fatalf("after raising the limit = %d", res.StatusCode)
+	}
+
+	// Another tenant sees none of it, and only an admin may change a policy.
+	for path, key := range map[string]string{"/api/policies": "policies", "/api/policies/history": "changes", "/api/usage": "scopes", "/api/usage/notices": "notices"} {
+		if _, out := f.do(t, nil, "GET", path, globex, ""); len(out[key].([]any)) != 0 {
+			t.Errorf("other tenant GET %s = %v", path, out)
+		}
+	}
+	if res, _ := f.do(t, nil, "DELETE", "/api/policies?kind=project&name=Launch", globex, ""); res.StatusCode != http.StatusNotFound {
+		t.Errorf("other tenant deleted the policy: %d", res.StatusCode)
+	}
+	viewer := f.signIn(t, "oap-viewers")
+	if res, _ := f.do(t, viewer, "GET", "/api/usage", "", ""); res.StatusCode != http.StatusOK {
+		t.Errorf("a viewer cannot read usage: %d", res.StatusCode)
+	}
+	if res, _ := f.do(t, viewer, "PUT", "/api/policies", "", `{"scope":{"kind":"tenant"},"period":"day","max_runs":1}`); res.StatusCode != http.StatusForbidden {
+		t.Errorf("a viewer changed a policy: %d", res.StatusCode)
+	}
+	if res, _ := f.do(t, nil, "DELETE", "/api/policies?kind=project&name=Launch", acme, ""); res.StatusCode != http.StatusNoContent {
+		t.Errorf("delete = %d", res.StatusCode)
+	}
+}
+
+func TestOnboardingFlags(t *testing.T) {
+	f := newFixture(t)
+	admin, viewer := f.signIn(t, "oap-admins"), f.signIn(t, "oap-viewers")
+
+	_, me := f.do(t, admin, "GET", "/api/me", "", "")
+	if me["first_admin"] != true {
+		t.Fatalf("an admin in a workspace nobody set up: first_admin = %v", me["first_admin"])
+	}
+	if _, v := f.do(t, viewer, "GET", "/api/me", "", ""); v["first_admin"] != false {
+		t.Fatalf("a viewer was called the first admin")
+	}
+	if _, prefs := f.do(t, admin, "GET", "/api/preferences", "", ""); prefs["onboarded_at"] != nil {
+		t.Fatalf("onboarded before onboarding: %v", prefs)
+	}
+
+	// Only an admin names the workspace, and the server says who and when.
+	if res, _ := f.do(t, viewer, "PUT", "/api/settings", "", `{"workspace_name":"Mine"}`); res.StatusCode != http.StatusForbidden {
+		t.Fatalf("a viewer set the workspace up: %d", res.StatusCode)
+	}
+	res, saved := f.do(t, admin, "PUT", "/api/settings", "", `{"workspace_name":" Acme Robotics ","setup_by":"someone-else","setup_at":"2001-01-01T00:00:00Z"}`)
+	if res.StatusCode != http.StatusOK || saved["workspace_name"] != "Acme Robotics" || saved["setup_by"] != "00u-ada" {
+		t.Fatalf("setup = %d %v", res.StatusCode, saved)
+	}
+	first := saved["setup_at"]
+	if first == nil || strings.HasPrefix(first.(string), "2001") {
+		t.Fatalf("setup_at came from the client: %v", first)
+	}
+	if res, _ := f.do(t, admin, "PUT", "/api/settings", "", `{"workspace_name":"<b>x</b>"}`); res.StatusCode != http.StatusBadRequest {
+		t.Fatalf("markup in a workspace name = %d", res.StatusCode)
+	}
+	// A later write does not move it, and nobody is the first admin any more.
+	_, again := f.do(t, admin, "PUT", "/api/settings", "", `{"workspace_name":"Acme"}`)
+	if again["setup_at"] != first || again["setup_by"] != "00u-ada" {
+		t.Fatalf("setup moved: %v", again)
+	}
+	if _, me := f.do(t, admin, "GET", "/api/me", "", ""); me["first_admin"] != false {
+		t.Fatal("still the first admin after setup")
+	}
+	if _, read := f.do(t, viewer, "GET", "/api/settings", "", ""); read["workspace_name"] != "Acme" {
+		t.Fatalf("a viewer cannot read the workspace name: %v", read)
+	}
+
+	// Onboarding is per person, set once, with the server's time.
+	_, done := f.do(t, admin, "PUT", "/api/preferences", "", `{"display_name":"Ada","theme":"dark","accent":"purple","onboarded":true}`)
+	at := done["onboarded_at"]
+	if at == nil || done["display_name"] != "Ada" {
+		t.Fatalf("onboarding = %v", done)
+	}
+	_, later := f.do(t, admin, "PUT", "/api/preferences", "", `{"display_name":"Ada L","theme":"dark","accent":"purple"}`)
+	if later["onboarded_at"] != at {
+		t.Fatalf("a later save moved or cleared onboarded_at: %v", later)
+	}
+	// Both sign-ins in this fixture are the same person, so the other caller
+	// here is a machine in the same workspace.
+	if _, other := f.do(t, nil, "GET", "/api/preferences", f.machine(t, "acme", everything...), ""); other["onboarded_at"] != nil {
+		t.Fatal("one caller finishing onboarding marked another")
 	}
 }
