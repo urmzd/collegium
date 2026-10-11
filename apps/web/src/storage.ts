@@ -71,13 +71,7 @@ export const contentUrl = (id: string, inline = false) => `${at(id)}/content${in
 const INLINE = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
 export const showsInline = (file: Stored) => INLINE.has(file.mime);
 
-/** 1536 as "1.5 KB". Whole bytes below a kilobyte, one decimal above. */
-export function bytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 ** 2) return `${(n / 1024).toFixed(n < 10 * 1024 ? 1 : 0)} KB`;
-  if (n < 1024 ** 3) return `${(n / 1024 ** 2).toFixed(1)} MB`;
-  return `${(n / 1024 ** 3).toFixed(1)} GB`;
-}
+export { bytes } from "./format.ts";
 
 export const kindWord: Record<Stored["kind"], string> = {
   document: "Document",

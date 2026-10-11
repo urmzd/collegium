@@ -5,6 +5,8 @@ import { type Run, turnOf } from "./adapter.ts";
 import { api, type Span } from "./api.ts";
 import { CopyAs } from "./CopyAs.tsx";
 import { itemActions } from "./itemActions.tsx";
+import { LimitsPanel } from "./Limits.tsx";
+import { forRun, type Limits } from "./limits.ts";
 import { toolOf } from "./copyas.ts";
 import { useRunTurn } from "./Runs.tsx";
 import { AgentMark, AgentTint, button, cause, elapsed, Empty, isEnded, SkeletonRows, Status, Stroke, strokeOf, took } from "./ui.tsx";
@@ -156,10 +158,13 @@ export function ActivityPanel({
   selected,
   loading,
   leaving,
+  limits,
   onSelect,
   onClose,
   onJump,
 }: {
+  /** The conversation's limits and usage. A selected run then shows what it draws on. */
+  limits?: Limits;
   /** The panel is closing: it slides back out before it is removed. See `Presence` in ui.tsx. */
   leaving?: boolean;
   /** One per turn of the conversation, oldest first. */
@@ -315,6 +320,15 @@ export function ActivityPanel({
             </section>
           )}
 
+          {limits && (
+            <details data-testid="activity-limits" className="border-[var(--collegium-rule)] border-y py-1">
+              <summary className="cursor-pointer list-none rounded-aui-sm py-1 text-aui-xs text-aui-muted hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent">
+                Limits it draws on
+              </summary>
+              <LimitsPanel data={forRun(limits, run.id)} />
+            </details>
+          )}
+
           {called.length > 0 && (
             <section className="flex flex-col gap-1" data-testid="activity-called">
               <h4 className="text-aui-xs text-aui-muted">Agents it called</h4>
@@ -358,9 +372,11 @@ export function Activity({
   stamp,
   focus,
   leaving,
+  limits,
   onClose,
   onJump,
 }: {
+  limits?: Limits;
   leaving?: boolean;
   turns: Run[];
   stamp: string;
@@ -410,5 +426,5 @@ export function Activity({
     return () => window.removeEventListener("keydown", onKey);
   }, [selected, onClose]);
 
-  return <ActivityPanel trees={trees} selected={selected} loading={loading} leaving={leaving} onSelect={setSelected} onClose={onClose} onJump={onJump} />;
+  return <ActivityPanel trees={trees} selected={selected} loading={loading} leaving={leaving} limits={limits} onSelect={setSelected} onClose={onClose} onJump={onJump} />;
 }

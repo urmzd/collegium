@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { test } from "node:test";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -8,6 +8,10 @@ import { ActivityPanel, ordered, ordinals, trailOf } from "./Activity.tsx";
 import { isEnded } from "./format.ts";
 import { sampleTrees } from "./activity.fixtures.ts";
 import { Alerts } from "./Alerts.tsx";
+import { LimitsPanel } from "./Limits.tsx";
+import { amount, binding, byAgent, byRun, forRun, scopeWords } from "./limits.ts";
+import { overLimit, parentBound, sessionBound, unlimited } from "./limits.fixtures.ts";
+import { bindingWords, SessionGauge } from "./SessionGauge.tsx";
 import { StorageUsed, StoredDetail, StoredList } from "./Storage.tsx";
 import { bytes, contentUrl, matches, showsInline } from "./storage.ts";
 import { memoryStorage, sampleFiles, sampleUse } from "./storage.fixtures.ts";
@@ -964,4 +968,124 @@ test("a stopped run is over, is not a failure, and says why when the platform do
   const out = html(<ActivityPanel trees={trees} selected={null} onSelect={() => {}} onClose={() => {}} />);
   assert.doesNotMatch(out, /data-testid="activity-running"/, "a stopped run does not count as running");
   assert.match(out, /data-run="r2b"[^>]*data-status="stopped"/);
+});
+
+const panel = (data: Parameters<typeof LimitsPanel>[0]["data"], over: Partial<Parameters<typeof LimitsPanel>[0]> = {}) =>
+  html(<LimitsPanel data={data} onAnalytics={() => {}} onRaise={() => {}} {...over} />);
+
+test("limits: the fullest limit is the one that binds, and each scope has its words", () => {
+  const b = binding(sessionBound().limits);
+  assert.ok(b);
+  assert.deepEqual([b.scope.kind, b.measure], ["session", "spend"]);
+  assert.equal(binding([]), null);
+  assert.equal(scopeWords({ kind: "session" }), "Session limit");
+  assert.equal(scopeWords({ kind: "run", name: "lead" }), "From lead");
+  assert.equal(scopeWords({ kind: "project", name: "Launch" }), "Project Launch");
+  assert.equal(scopeWords({ kind: "agent", name: "oncall" }), "Agent oncall");
+  assert.equal(scopeWords({ kind: "tenant" }), "Workspace limit");
+  assert.equal(bindingWords(b), "Session limit: $2.25 of $3.00, 75%");
+  assert.equal(amount("runs", 1), "1 run");
+  assert.equal(amount("concurrent", 4), "4 at once");
+  assert.equal(amount("tokens", 18_400), "18.4k tokens");
+  assert.equal(amount("storage", 1536), "1.5 KB");
+});
+
+test("limits: usage by agent and by run, largest first, and one run's share of it", () => {
+  const { by_run } = sessionBound();
+  assert.deepEqual(byAgent(by_run, "spend").map((a) => [a.agent, a.runs]), [["releaser", 1], ["lead", 2], ["oncall", 1], ["helper", 1]]);
+  assert.equal(byAgent(by_run, "spend")[1]?.used, 670_000);
+  assert.deepEqual(byRun(by_run, "spend").map((r) => r.run), ["r2a", "r2", "r2b", "r3", "r2a1"]);
+  assert.deepEqual(byAgent(by_run, "storage"), [], "a measure nothing used has no rows");
+  assert.deepEqual(forRun(sessionBound(), "r2a").by_run.map((r) => r.run), ["r2a", "r2a1"], "a run and the runs under it");
+});
+
+test("LimitsPanel: a session limit binds, and says so", () => {
+  const out = panel(sessionBound());
+  assert.equal(attr(out, "data-binding"), "session:spend");
+  assert.equal(out.match(/data-testid="limit-row"/g)?.length, 3);
+  assert.ok(out.indexOf('data-measure="spend"') < out.indexOf('data-measure="concurrent"'), "fullest first");
+  assert.match(out, /Session limit, spend/);
+  assert.match(out, /Project Launch, runs/);
+  assert.match(out, /Workspace limit, runs at once/);
+  assert.match(out, /\$2\.25 of \$3\.00, 75%\. Under limit\./);
+  assert.match(out, /Session limit on spend is the fullest, so it is the one that stops things first\./);
+  assert.match(out, /data-testid="limits-raise"/, "this reader may raise it");
+  assert.match(out, />Raise Limit</);
+});
+
+test("LimitsPanel: where the usage went, by agent then by run", () => {
+  const out = panel(sessionBound());
+  assert.match(out, /Where the spend went/);
+  assert.equal(out.match(/data-testid="limits-agent"/g)?.length, 4);
+  assert.ok(out.indexOf(">releaser<") < out.indexOf(">oncall<"), "largest first");
+  assert.match(out, /\$1\.10/);
+  assert.match(out, /By run \(5\)/);
+  assert.match(out, /Attached, failed/);
+  assert.match(out, /Delegated, done/);
+  assert.match(out, />Open in Analytics</);
+  assert.doesNotMatch(panel(sessionBound(), { onAnalytics: undefined }), />Open in Analytics</);
+});
+
+test("LimitsPanel: a child with no limit of its own shows its parent's", () => {
+  const out = panel(parentBound());
+  assert.equal(attr(out, "data-binding"), "run:spend");
+  assert.match(out, /From lead, spend/);
+  assert.match(out, /\$1\.28 of \$1\.50, 85%\. Near limit\./);
+  assert.doesNotMatch(out, /limits-raise/, "there is no session limit here to raise");
+  assert.equal(out.match(/data-testid="limits-agent"/g)?.length, 2);
+});
+
+test("LimitsPanel: with no limits it says so, shows no meter, and still shows what ran", () => {
+  const out = panel(unlimited());
+  assert.equal(attr(out, "data-binding"), "none");
+  assert.match(out, /Nothing limits this\./);
+  assert.doesNotMatch(out, /role="meter"/, "never an empty meter");
+  assert.match(out, /Where the runs went/);
+  const bare = panel({ limits: [], by_run: [] });
+  assert.doesNotMatch(bare, /Where the/);
+});
+
+test("LimitsPanel: over the limit is said in words, and who can raise it when this reader cannot", () => {
+  const out = panel(overLimit());
+  assert.match(out, /data-usage="over"/);
+  assert.match(out, /Over by \$0\.60/);
+  assert.match(out, /data-testid="limits-raise-by"/);
+  assert.match(out, /An admin can raise the session limit\./);
+  assert.doesNotMatch(out, />Raise Limit</);
+});
+
+test("SessionGauge: the bottom edge follows the binding limit, and without one it is the turn's budget as before", () => {
+  const bound = html(<SessionGauge limits={sessionBound()} />);
+  assert.equal(attr(bound, "data-binding"), "session:spend");
+  assert.match(bound, /Budget: Session limit: \$2\.25 of \$3\.00, 75%/);
+  const child = html(<SessionGauge limits={parentBound()} />);
+  assert.match(child, /From lead: \$1\.28 of \$1\.50, 85%/);
+  const none = html(<SessionGauge limits={unlimited()} />);
+  assert.equal(attr(none, "data-binding"), "none");
+  assert.match(none, /The latest turn holds no budget\./);
+  const plain = html(<SessionGauge budget={{ used: 500_000, limit: 2_000_000 }} />);
+  assert.match(plain, /\$0\.50 of \$2\.00 handed to calls, 25%/);
+});
+
+test("Activity: a selected run shows the limits it draws on, with only its own runs", () => {
+  const out = html(<ActivityPanel trees={sampleTrees()} selected="r2a" limits={sessionBound()} onSelect={() => {}} onClose={() => {}} />);
+  assert.match(out, /data-testid="activity-limits"/);
+  assert.match(out, /Limits it draws on/);
+  const within = out.slice(out.indexOf('data-testid="activity-limits"'));
+  assert.equal(within.slice(0, within.indexOf("</details>")).match(/data-testid="limits-agent"/g)?.length, 2, "releaser and the helper it called");
+  assert.doesNotMatch(html(<ActivityPanel trees={sampleTrees()} selected="r2a" onSelect={() => {}} onClose={() => {}} />), /activity-limits/);
+});
+
+test("every custom property the console reads is one it defines", () => {
+  const dir = new URL("./", import.meta.url);
+  const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+  const sources = readdirSync(dir).filter((f) => /\.(tsx|ts)$/.test(f) && !f.includes(".test."));
+  const code = sources.map((f) => readFileSync(new URL(f, dir), "utf8")).join("\n");
+  // Defined in the stylesheet, or set inline on an element as a custom property.
+  const defined = new Set([...css.matchAll(/(--[a-z][a-z0-9-]*)\s*:/g), ...code.matchAll(/"(--[a-z][a-z0-9-]*)"\s*:/g)].map((m) => m[1]));
+  const read = new Set([...code.matchAll(/var\((--[a-z][a-z0-9-]*)/g), ...css.matchAll(/var\((--[a-z][a-z0-9-]*)/g)].map((m) => m[1]));
+  // vultus owns these: its theme defines the --aui-* tokens and Tailwind the --tw-* ones.
+  const missing = [...read].filter((name) => name && !defined.has(name) && !/^--(aui|tw|color|radius|text|font|shadow)-/.test(name));
+  assert.deepEqual(missing, [], "read but never defined");
+  assert.doesNotMatch(code, /\boap-/, "the old prefix is gone");
 });
