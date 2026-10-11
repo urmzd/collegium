@@ -9,7 +9,10 @@ import type { Me, Preferences, Settings } from "./api.ts";
 import { InboxPage } from "./InboxPage.tsx";
 import { memoryTransport } from "./mail.fixtures.ts";
 import { Onboarding } from "./Onboarding.tsx";
+import { LimitsPanel } from "./Limits.tsx";
+import { overLimit, parentBound, sessionBound, unlimited } from "./limits.fixtures.ts";
 import { RunItem } from "./RunItem.tsx";
+import { SessionGauge } from "./SessionGauge.tsx";
 import { Storage, StorageUsed, StoredList } from "./Storage.tsx";
 import { memoryStorage, sampleUse } from "./storage.fixtures.ts";
 import {
@@ -164,6 +167,23 @@ function Gallery() {
               </>
             );
           })()}
+        </div>
+      </Section>
+
+      <Section title="Limits in the gear: session bound, parent bound, none, and over">
+        <div className="flex flex-wrap items-center gap-6" data-testid="gallery-gauges">
+          {[sessionBound(), parentBound(), unlimited(), overLimit()].map((l, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a fixed list of four states
+            <SessionGauge key={i} limits={l} onAnalytics={() => {}} onRaise={() => {}} />
+          ))}
+        </div>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+          {[sessionBound(), parentBound(), unlimited(), overLimit()].map((l, i) => (
+            // biome-ignore lint/suspicious/noArrayIndexKey: a fixed list of four states
+            <div key={i} className="collegium-glass rounded-aui-lg p-1.5">
+              <LimitsPanel data={l} onAnalytics={() => {}} onRaise={() => {}} />
+            </div>
+          ))}
         </div>
       </Section>
 

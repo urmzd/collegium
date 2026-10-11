@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import type { Run } from "./adapter.ts";
 import { api } from "./api.ts";
-import { button, dollars, Popover, Switch, type UsageState, usageOf } from "./ui.tsx";
+import { LimitsPanel } from "./Limits.tsx";
+import { amount, binding, type Limit, type Limits, scopeWords, share } from "./limits.ts";
+import { button, dollars, type Period, Popover, Switch, type UsageState, usageOf } from "./ui.tsx";
 
 /** How much of something is used. A limit of 0 means nothing caps it. */
 export type Fill = { used: number; limit: number };
@@ -32,6 +34,15 @@ export function gaugeWords(context: Fill | undefined, budget: Fill | undefined, 
           ? `The latest turn holds no budget. The usual limit is ${dollars(usual)}.`
           : "The latest turn holds no budget.",
   };
+}
+
+/**
+ * The limit that will stop things first, in words: whose it is, and how full.
+ * "Session limit: $2.25 of $3.00, 75%".
+ */
+export function bindingWords(limit: Limit): string {
+  const each = limit.period && limit.period !== "session" ? ` a ${limit.period}` : "";
+  return `${scopeWords(limit.scope)}: ${amount(limit.measure, limit.used)} of ${amount(limit.measure, limit.limit)}${each}, ${Math.round(share(limit) * 100)}%`;
 }
 
 const ink: Record<UsageState, string> = {
@@ -71,8 +82,12 @@ const trigger =
  * Where a conversation stands, as two short lines. The top edge fills as the
  * context window does. The bottom edge fills as the latest turn hands its
  * budget to the agents it calls, and a notch on it marks the usual limit. An
- * edge with nothing to measure is dashed. Opening it says both in words. The
- * gear beside it holds compaction: on its own past a threshold, or now.
+ * edge with nothing to measure is dashed. Opening it says both in words.
+ *
+ * When `limits` is given, the bottom edge fills against the limit that will
+ * stop things first, whoever's it is: the session's, the calling run's, the
+ * project's, the agent's or the workspace's. The gear then opens the limits
+ * in force with where the usage went, above compaction.
  * Presentational: it fetches nothing.
  */
 export function SessionGauge({
@@ -80,7 +95,16 @@ export function SessionGauge({
   budget,
   usual,
   compaction,
+  limits,
+  onAnalytics,
+  onRaise,
 }: {
+  /** The limits that govern this conversation, resolved by the platform, with where the usage went. */
+  limits?: Limits;
+  /** Open Analytics on this conversation. */
+  onAnalytics?: () => void;
+  /** Raise the session's spend limit, when the reader may. */
+  onRaise?: (microUsd: number, period: Period) => void;
   /** Tokens in the context window. Leave out until the platform reports them. */
   context?: Fill;
   /** Micro-USD the latest turn handed on, against what it holds. */
@@ -92,14 +116,18 @@ export function SessionGauge({
 }) {
   const c = shareOf(context);
   const b = shareOf(budget);
-  const words = gaugeWords(context, budget, usual);
+  const bound = limits ? binding(limits.limits) : null;
+  const lease = gaugeWords(context, budget, usual);
+  const words = bound ? { context: lease.context, budget: bindingWords(bound) } : lease;
   // The notch sits on the budget edge's own scale, so it reads as "this turn against the usual".
   const scale = Math.max(budget?.limit ?? 0, usual ?? 0);
-  const notch = usual && scale > 0 ? X0 + ((X1 - X0) * usual) / scale : null;
-  const held = budget && scale > 0 ? (budget.limit / scale) * (b ?? 0) : b;
+  // A binding limit takes the bottom edge. The usual-limit notch belongs to the turn's own budget, so it goes.
+  const notch = !bound && usual && scale > 0 ? X0 + ((X1 - X0) * usual) / scale : null;
+  const held = bound ? Math.min(share(bound), 1) : budget && scale > 0 ? (budget.limit / scale) * (b ?? 0) : b;
+  const heldState = bound ? usageOf(bound.used, bound.limit) : usageOf(budget?.used ?? 0, budget?.limit);
 
   return (
-    <div data-testid="session-gauge" className="flex shrink-0 items-center">
+    <div data-testid="session-gauge" data-binding={bound ? `${bound.scope.kind}:${bound.measure}` : "none"} className="flex shrink-0 items-center">
       <Popover
         label={`Context: ${words.context} Budget: ${words.budget}`}
         align="right"
@@ -108,7 +136,7 @@ export function SessionGauge({
         button={
           <svg aria-hidden="true" focusable="false" width={24} height={16} viewBox="0 0 24 16" fill="none" strokeWidth={1.75} strokeLinecap="round">
             <Edge y={5} fill={c} state={usageOf(context?.used ?? 0, context?.limit)} />
-            <Edge y={11} fill={held} state={usageOf(budget?.used ?? 0, budget?.limit)} />
+            <Edge y={11} fill={held} state={heldState} />
             {notch !== null && <path d={`M${notch} 8.5V13.5`} stroke="currentColor" strokeWidth={1} />}
           </svg>
         }
@@ -120,14 +148,31 @@ export function SessionGauge({
               <dd className="text-aui-muted">{words.context}</dd>
             </div>
             <div>
-              <dt className="text-aui-fg">Budget</dt>
+              <dt className="text-aui-fg">{bound ? "Limit" : "Budget"}</dt>
               <dd className="text-aui-muted">{words.budget}</dd>
             </div>
           </dl>
         )}
       </Popover>
-      <Popover label="Compaction" align="right" className={trigger} button={<GearIcon />}>
+      <Popover label={limits ? "Limits and compaction" : "Compaction"} align="right" className={trigger} button={<GearIcon />}>
         {(close) => (
+          <div className="aui-scroll flex max-h-[70vh] flex-col overflow-y-auto">
+            {limits && (
+              <div className="border-[var(--collegium-rule)] border-b pb-1">
+                <LimitsPanel
+                  data={limits}
+                  onRaise={onRaise}
+                  onAnalytics={
+                    onAnalytics
+                      ? () => {
+                          onAnalytics();
+                          close();
+                        }
+                      : undefined
+                  }
+                />
+              </div>
+            )}
           <div className="flex flex-col gap-2 px-2 py-1.5">
             <Switch
               label="Compact automatically"
@@ -149,6 +194,7 @@ export function SessionGauge({
             </button>
             {!compaction && <p className="text-aui-xs text-aui-muted">Compaction is not built yet. The platform does not count tokens.</p>}
           </div>
+          </div>
         )}
       </Popover>
     </div>
@@ -159,7 +205,17 @@ export function SessionGauge({
  * The gauge for a conversation, from its latest turn. It asks once for the
  * workspace's limits, to mark the usual budget.
  */
-export function SessionGaugeFor({ tail }: { tail: Run | undefined }) {
+export function SessionGaugeFor({
+  tail,
+  limits,
+  onAnalytics,
+  onRaise,
+}: {
+  tail: Run | undefined;
+  limits?: Limits;
+  onAnalytics?: () => void;
+  onRaise?: (microUsd: number, period: Period) => void;
+}) {
   const [usual, setUsual] = useState<number | undefined>();
 
   useEffect(() => {
@@ -173,5 +229,13 @@ export function SessionGaugeFor({ tail }: { tail: Run | undefined }) {
     };
   }, []);
 
-  return <SessionGauge budget={tail && tail.lease > 0 ? { used: tail.granted, limit: tail.lease } : undefined} usual={usual} />;
+  return (
+    <SessionGauge
+      budget={tail && tail.lease > 0 ? { used: tail.granted, limit: tail.lease } : undefined}
+      usual={usual}
+      limits={limits}
+      onAnalytics={onAnalytics}
+      onRaise={onRaise}
+    />
+  );
 }

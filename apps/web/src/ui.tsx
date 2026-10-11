@@ -2,7 +2,7 @@ import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, XIcon } from "@vultus/
 import { AgentOrb, type OrbSize, type OrbState } from "@vultus/web";
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
-import { cause, elapsed, took } from "./format.ts";
+import { cause, dollars, elapsed, took } from "./format.ts";
 
 export const field =
   "w-full rounded-aui border border-aui-border bg-aui-bg px-2.5 py-1.5 text-aui-sm text-aui-fg outline-none placeholder:text-aui-muted focus-visible:border-aui-accent focus-visible:ring-2 focus-visible:ring-aui-ring";
@@ -856,10 +856,7 @@ export function strokeOf(status: Run["status"]): StrokeState {
   return status === "failed" ? "failed" : status === "parked" ? "waiting" : status === "completed" ? "done" : status === "stopped" ? "idle" : "working";
 }
 
-/** Micro-USD as dollars, with zero shown as $0.00. For budgets, where zero is a real amount. */
-export function dollars(micro: number): string {
-  return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(micro / 1_000_000);
-}
+export { dollars };
 
 export type Period = "day" | "month";
 export type UsageState = "none" | "under" | "warning" | "over";
