@@ -78,6 +78,13 @@ no permission, grants nothing.
 - **Redirects stay on this site.** `return_to` must be a local path.
 - **Cross-origin writes are refused** before they reach a handler, using Go's
   `http.CrossOriginProtection`.
+- **A surface answers only for people it was given.** A Slack app built on the
+  API answers a question, or asks for a run, for a Slack person (`act_as`) only
+  through a Slack client that names the app's own credential as its `machine`
+  and maps that person in `people`. Anyone unmapped is refused (403) and the
+  app does not ask. The answer is recorded as the mapped principal, with the
+  credential as `Via`: a credential never approves a call in a run it raised
+  as itself, whoever it names. Mapping a person is `clients:write`.
 - **Lineage cannot be forged.** Only the platform's call path mints a tag with
   origin `agent`. A trigger's tag claiming it is dropped.
 - **An agent calls only who its spec allows.** The caller's pinned revision
@@ -188,9 +195,14 @@ decided per message:
 | Alert, reached limit | `alerts:read` | `alerts:write` to acknowledge, `billing:write` to raise a limit |
 | Failed run | `runs:read` | `runs:write` |
 | Proposed memory | `agents:read` | `agents:write` |
+| A question a run waits on (approval, choice, reply) | `runs:read`, and addressed to them | `runs:write`, and the runtime agrees they may answer |
 
 A message a caller may not see answers 404, not 403, and is left out of their
-count. The right is checked before saying whether a part is still open. A
+count. A question is addressed to the people its run's pinned spec lets answer
+it (`approvers` or `answerers`, by subject or `role:<name>`), and never to the
+person who asked for an approval's run or its tree. Someone who can see the run
+but may not answer is refused with 403 on `answerQuestion`, and nothing is
+recorded. See [People in the loop](architecture.md#people-in-the-loop). The right is checked before saying whether a part is still open. A
 change is pushed to the browser as an id only, and only to callers who may see
 that kind.
 

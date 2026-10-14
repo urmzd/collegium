@@ -14,6 +14,7 @@ import (
 	saigetypes "github.com/urmzd/saige/agent/types"
 
 	"github.com/urmzd/collegium/internal/platform"
+	"github.com/urmzd/collegium/pkg/artifacts"
 	"github.com/urmzd/collegium/pkg/auth"
 	"github.com/urmzd/collegium/pkg/call"
 	"github.com/urmzd/collegium/pkg/inbox"
@@ -552,4 +553,42 @@ grant operator to subject "olu"
 		t.Fatalf("answered for olu as %+v", o)
 	}
 	await(t, p, run.ID, runs.Completed)
+}
+
+// An agent whose spec lists publish_artifact under approvals publishes nothing
+// until a person approves, and nothing at all when they deny it.
+func TestPublishingWaitsForApproval(t *testing.T) {
+	script := func(id string) [][]saigetypes.Delta {
+		return [][]saigetypes.Delta{
+			agenttest.ToolCallResponse(id+"-w", platform.ToolFileWrite, map[string]any{"path": "plan.md", "content": "# Plan"}),
+			agenttest.ToolCallResponse(id+"-p", platform.ToolPublish, map[string]any{"path": "plan.md"}),
+			say("Done."),
+		}
+	}
+	approvals := func(s *agentspec.AgentSpec) { s.Approvals = []string{platform.ToolPublish} }
+	p := stage(t, &cast{continues: true,
+		says:  map[string][][]saigetypes.Delta{"writer": script("a"), "other": script("b")},
+		tools: map[string][]string{"writer": {platform.ToolFileWrite, platform.ToolPublish}, "other": {platform.ToolFileWrite, platform.ToolPublish}},
+		shape: map[string]func(*agentspec.AgentSpec){"writer": approvals, "other": approvals},
+	}, platform.Config{})
+	ctx := t.Context()
+	for _, c := range []struct {
+		agent, action string
+		published     int
+	}{{"writer", platform.ActApprove, 1}, {"other", platform.ActDeny, 0}} {
+		run := ask(t, p, "api-"+c.agent, c.agent)
+		if run.Question == nil || run.Question.Tool == nil || run.Question.Tool.Name != platform.ToolPublish {
+			t.Fatalf("%s parked on %+v", c.agent, run.Question)
+		}
+		if page, _, _ := p.Artifacts.Page(tenant, artifacts.Query{Thread: run.Thread}); len(page) != 0 {
+			t.Fatalf("published before anyone approved: %+v", page)
+		}
+		if _, err := p.AnswerQuestion(ctx, olu, run.ID, run.Question.ID, platform.QuestionAnswer{Action: c.action}); err != nil {
+			t.Fatal(err)
+		}
+		await(t, p, run.ID, runs.Completed)
+		if page, _, _ := p.Artifacts.Page(tenant, artifacts.Query{Thread: run.Thread}); len(page) != c.published {
+			t.Fatalf("after %s, %d files were published", c.action, len(page))
+		}
+	}
 }

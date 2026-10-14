@@ -16,7 +16,7 @@ one per agent are all the same record with different values.
 | `default_agent` | Answers a request that named no agent. |
 | `agents` | The agents the client may route to, besides its default. |
 | `bots` | A Slack bot user id, or a GitHub login, to the agent it stands for. |
-| `slack` | `sessions`, `commands`. |
+| `slack` | `sessions`, `commands`, and `machine` and `people` (see [People a Slack app answers for](#people-a-slack-app-answers-for)). |
 | `github` | `auto_labels`, `checks`, `guides`, `mutations`, `read_repositories`. |
 | `enabled` | A disabled client answers nothing and carries nothing. |
 
@@ -38,6 +38,26 @@ A client lends its actions (posting a message, reading a pull request) under the
 same rule. A run gets the actions of the client that raised it. On another
 surface it gets the oldest client in its workspace that may route to its agent,
 so a Slack run reads GitHub only through a GitHub client that lists its agent.
+
+## People a Slack app answers for
+
+A Slack app built on the API (`apps/slack`) signs in as a machine. To ask for
+a run or answer a question as the Slack person who clicked, it sends
+`act_as: {"client": "<id>", "user": "<Slack user id>"}`. That is honoured only
+when the client:
+
+| Field | Meaning |
+|-------|---------|
+| `slack.machine` | The subject of the credential the app signs in with. No other credential may act for the client's people. |
+| `slack.people` | Slack user ids in the client's team, each mapped to the principal it is in this workspace, by subject. At most 500. |
+
+Anyone the map does not name is refused with 403, and the app does not ask on
+their behalf. A disabled client maps nobody. The mapped principal's roles, for
+`role:<name>` approvers, are what the workspace's authorization policy grants
+their subject (`grant ... to subject "..."` or `anyone`), since a Slack click
+carries no sign-in. Who may answer is then the run's spec's to say, as for
+anyone. A run asked for this way is the person's, so they do not approve its
+calls.
 
 ## Routing a request to a client
 
