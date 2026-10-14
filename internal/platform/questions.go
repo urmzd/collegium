@@ -238,6 +238,10 @@ func (p *Platform) raiseQuestion(ctx context.Context, run runs.Run, q payload.Qu
 	return m, true
 }
 
+// recordWait bounds how long an answer waits for the runtime to record a
+// question it has already announced.
+const recordWait = 2 * time.Second
+
 // expiryGrace is how long after a question's deadline its run is woken to
 // take the default. The worker's own poll wakes it too, later.
 const expiryGrace = 50 * time.Millisecond
@@ -454,8 +458,15 @@ func (p *Platform) AnswerQuestion(ctx context.Context, who auth.Principal, runID
 	if !ok {
 		// The question's event may not have been folded in yet. The
 		// runtime's record of it is the authority.
-		q, pending, qerr := p.rt.PendingQuestion(ctx, who.Tenant, runID)
-		if qerr != nil || !pending || q.ID != questionID {
+		// The event announces the question a moment before the runtime's
+		// record of it is written, so the run's own report is used first.
+		q, pending := payload.Question{}, false
+		if run.Question != nil && run.Question.ID == questionID {
+			q, pending = *run.Question, true
+		} else if got, ok, qerr := p.rt.PendingQuestion(ctx, who.Tenant, runID); qerr == nil && ok {
+			q, pending = got, true
+		}
+		if !pending || q.ID != questionID {
 			return inbox.Message{}, fmt.Errorf("%w: run %q has no question %q", inbox.ErrNotFound, runID, questionID)
 		}
 		if m, ok = p.raiseQuestion(ctx, run, q, ""); !ok {
@@ -495,9 +506,20 @@ func (p *Platform) answer(ctx context.Context, who auth.Principal, m inbox.Messa
 		return inbox.Message{}, err
 	}
 	actx := context.WithValue(ctx, answeringKey{}, answering{subject: reader.Subject, roles: reader.Roles})
-	got, first, err := p.rt.Answer(actx, runtime.AnswerRequest{
+	req := runtime.AnswerRequest{
 		Tenant: who.Tenant, RunID: q.Run, QuestionID: q.ID, Answer: ans, By: reader.Subject, Via: who.Subject,
-	})
+	}
+	got, first, err := p.rt.Answer(actx, req)
+	// A question answered the moment it is announced may not be recorded yet.
+	// It is asked again for a short while, never past the request.
+	for deadline := time.Now().Add(recordWait); errors.Is(err, runtime.ErrNoQuestion) && time.Now().Before(deadline); {
+		select {
+		case <-ctx.Done():
+			return inbox.Message{}, ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
+		got, first, err = p.rt.Answer(actx, req)
+	}
 	switch {
 	case errors.Is(err, runtime.ErrNotAllowed):
 		p.log.Info("platform: an answer was refused", "tenant", who.Tenant, "by", reader.Subject, "via", who.Subject, "run", q.Run, "question", q.ID)
