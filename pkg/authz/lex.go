@@ -108,11 +108,10 @@ func isWordPart(c byte) bool {
 // next returns the next token, skipping blanks and comments.
 func (l *lexer) next() (token, *Error) {
 	for l.off < len(l.src) {
-		c := l.src[l.off]
-		switch {
-		case c == ' ' || c == '\t' || c == '\r' || c == '\n':
+		switch l.src[l.off] {
+		case ' ', '\t', '\r', '\n':
 			l.advance(1)
-		case c == '#':
+		case '#':
 			for l.off < len(l.src) && l.src[l.off] != '\n' {
 				l.advance(1)
 			}
@@ -155,16 +154,16 @@ func (l *lexer) scanString(pos Pos) (token, *Error) {
 	var b strings.Builder
 	for l.off < len(l.src) {
 		c := l.src[l.off]
-		switch {
-		case c == '"':
+		switch c {
+		case '"':
 			l.advance(1)
 			if !utf8.ValidString(b.String()) {
 				return token{}, l.errorf(pos, "string is not valid UTF-8")
 			}
 			return token{kind: tokString, text: b.String(), pos: pos}, nil
-		case c == '\n':
+		case '\n':
 			return token{}, l.errorf(pos, `string is not closed, expected '"' before the end of the line`)
-		case c == '\\':
+		case '\\':
 			if l.off+1 >= len(l.src) || (l.src[l.off+1] != '"' && l.src[l.off+1] != '\\') {
 				return token{}, l.errorf(Pos{l.line, l.col}, `unknown escape, expected \" or \\`)
 			}
