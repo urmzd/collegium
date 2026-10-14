@@ -60,6 +60,11 @@ type Server struct {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	// Installed webhook credentials authorize these routes, not browser roles.
+	// Each connector verifies its signature before parsing and is tenant-bound.
+	mux.Handle("POST /connectors/github", s.P.Webhook("github"))
+	mux.Handle("POST /connectors/slack", s.P.Webhook("slack"))
+	mux.Handle("POST /connectors/slack/commands", s.P.Webhook("slack"))
 
 	mux.HandleFunc("GET /auth/login", s.Authn.handleLogin)
 	mux.HandleFunc("GET /auth/callback", s.Authn.handleCallback)

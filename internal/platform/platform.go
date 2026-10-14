@@ -61,6 +61,9 @@ var ErrForbidden = errors.New("platform: forbidden")
 // Config is what a running platform needs. Nothing here reads the environment,
 // so a test can build a second platform in the same process.
 type Config struct {
+	// Connections composes installed integrations after the registry exists.
+	// Nil leaves external integrations disabled.
+	Connections func(registry.Store) ([]Connection, error)
 	// Workspace is the directory agents write artifacts under. Empty takes a
 	// directory under the user's cache.
 	Workspace string
@@ -119,7 +122,9 @@ type Platform struct {
 	ledger  *ledger.Memory
 	queue   *dqueue.Memory
 
-	settings settings
+	settings        settings
+	connections     map[string]*boundPeer
+	connectionTools map[string]*connector.Registry
 
 	// admission serializes letting a run in. It is taken inside calls, never
 	// the other way round.
@@ -171,6 +176,38 @@ func New(cfg Config) (*Platform, error) {
 	if err := p.sinks.Register(clock); err != nil {
 		return nil, fmt.Errorf("platform: register cron: %w", err)
 	}
+	p.connections = make(map[string]*boundPeer)
+	p.connectionTools = make(map[string]*connector.Registry)
+	if cfg.Connections != nil {
+		connections, err := cfg.Connections(p.Agents)
+		if err != nil {
+			return nil, fmt.Errorf("platform: connections: %w", err)
+		}
+		for _, connection := range connections {
+			if connection.Tenant == "" || connection.Peer == nil {
+				return nil, fmt.Errorf("platform: connection needs tenant and peer")
+			}
+			bound := &boundPeer{Peer: connection.Peer, tenant: connection.Tenant}
+			if err := p.sinks.Register(bound); err != nil {
+				return nil, err
+			}
+			p.connections[bound.Name()] = bound
+			if s, ok := connection.Peer.(surfaceStopper); ok {
+				tenant := connection.Tenant
+				s.OnStop(func(ctx context.Context, runID, who string) error {
+					return p.stopFromSurface(ctx, tenant, bound.Name(), runID, who)
+				})
+			}
+			reg := p.connectionTools[connection.Tenant]
+			if reg == nil {
+				reg = connector.NewRegistry()
+				p.connectionTools[connection.Tenant] = reg
+			}
+			if err := reg.Register(connection.Peer); err != nil {
+				return nil, err
+			}
+		}
+	}
 
 	p.deliver = router.New(p.broker, p.sinks, router.WithLogger(log))
 
@@ -218,7 +255,7 @@ func (p *Platform) executor() (runtime.Executor, error) {
 	tools := tool.NewRegistry()
 	plane := controlplane.NewMemory(inproc.NewFactory(tools, ws), metrics.Nop())
 	exec, err := runtime.NewSandbox(plane, tools, registry.NewSpecs(p.Agents),
-		runtime.WithCatalog(p.fileTools(runtime.Connectors(p.sinks))),
+		runtime.WithCatalog(p.fileTools(p.connectorTools)),
 		runtime.WithDelegator(p.attach),
 		// A run waiting on an attached run of the same agent holds one of
 		// that agent's nodes, so there are as many as there are places.
@@ -440,6 +477,7 @@ func (p *Platform) Run(ctx context.Context) error {
 	}
 
 	loop("router", func() error { return p.deliver.Run(ctx) })
+	loop("connector flush", func() error { return p.flushConnections(ctx) })
 	loop("sandbox sweep", func() error {
 		tick := time.NewTicker(time.Hour)
 		defer tick.Stop()

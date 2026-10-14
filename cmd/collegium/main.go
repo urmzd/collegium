@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -52,6 +53,7 @@ func run(args []string) error {
 
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8080", "listen address")
+	webhookAddr := fs.String("webhook-addr", "", "optional separate listener exposing only signed connector webhooks")
 	authMode := fs.String("auth", "oidc", `who may call: "oidc", or "dev" for a loopback-only preview with no sign-in`)
 	tenant := fs.String("tenant", "default", "tenant every caller is confined to, unless -tenant-claim is set")
 	tenantClaim := fs.String("tenant-claim", "", "token claim that carries the caller's tenant")
@@ -66,6 +68,7 @@ func run(args []string) error {
 	seed := fs.Bool("seed", false, "create two example agents that need no model key")
 	builtinProvider := fs.String("builtin-provider", "", `model provider for the agents the platform provides, such as "anthropic" or "ollama". Empty means none are provided`)
 	builtinModel := fs.String("builtin-model", "", "model for the agents the platform provides")
+	agentSpecs := fs.String("agent-specs", "", "comma-separated agent JSON files to register on startup")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -111,6 +114,9 @@ func run(args []string) error {
 	}
 
 	p, err := platform.New(platform.Config{
+		Connections: func(store registry.Store) ([]platform.Connection, error) {
+			return connections(store, *tenant, log)
+		},
 		Limits:          call.Limits{MaxDepth: *maxDepth, MaxFanOut: *maxFanOut},
 		Log:             log,
 		BuiltinProvider: *builtinProvider,
@@ -118,6 +124,25 @@ func run(args []string) error {
 	})
 	if err != nil {
 		return err
+	}
+	for _, path := range list(*agentSpecs) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("agent spec %s: %w", path, err)
+		}
+		var spec agentspec.AgentSpec
+		if err := json.Unmarshal(raw, &spec); err != nil {
+			return fmt.Errorf("agent spec %s: %w", path, err)
+		}
+		if spec.Model == "YOUR_MODEL_ID" {
+			spec.Model = os.Getenv("COLLEGIUM_AGENT_MODEL")
+		}
+		if spec.Model == "" {
+			return fmt.Errorf("agent spec %s needs a model or COLLEGIUM_AGENT_MODEL", path)
+		}
+		if _, err := p.Agents.Create(ctx, *tenant, spec, "startup"); err != nil {
+			return fmt.Errorf("agent spec %s: %w", path, err)
+		}
 	}
 	if *seed {
 		if err := seedAgents(ctx, p, *tenant); err != nil {
@@ -135,7 +160,17 @@ func run(args []string) error {
 		MaxHeaderBytes:    1 << 16,
 	}
 
-	errc := make(chan error, 2)
+	errc := make(chan error, 3)
+	var ingress *http.Server
+	if *webhookAddr != "" {
+		ingress = &http.Server{Addr: *webhookAddr, Handler: p.IngressHandler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 15 * time.Second, WriteTimeout: 30 * time.Second, IdleTimeout: 2 * time.Minute, MaxHeaderBytes: 1 << 16}
+		go func() {
+			log.Info("webhook ingress listening", "addr", *webhookAddr)
+			if err := ingress.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				errc <- err
+			}
+		}()
+	}
 	go func() { errc <- p.Run(ctx) }()
 	if *seed {
 		go func() {
@@ -165,6 +200,9 @@ func run(args []string) error {
 	shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdown)
+	if ingress != nil {
+		_ = ingress.Shutdown(shutdown)
+	}
 	return err
 }
 
