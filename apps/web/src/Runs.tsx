@@ -1,5 +1,6 @@
 import { emptyTurn, reduce, type Turn } from "@vultus/core";
 import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { replay as fold } from "@collegium/adapter";
 import { adapter, type BusEvent, type Run, turnOf } from "./adapter.ts";
 import { api, subscribe } from "./api.ts";
 import { AgentMark, agentOptions, ago, Chip, elapsed, Empty, hueOf, isEnded, Menu, Page, rows, SearchField, Segmented, Status, Tape, took } from "./ui.tsx";
@@ -16,9 +17,7 @@ const make = () => adapter({ hue: hueOf });
 
 /** A finished run's turn, rebuilt from the events the journal still holds. Undefined when it holds none. */
 export function replay(run: Run, events: BusEvent[]): Turn | undefined {
-  if (events.length === 0) return undefined;
-  const to = make();
-  return events.reduce<Turn>((turn, e) => to(e).reduce(reduce, turn), emptyTurn(run.id, { name: run.agent }));
+  return fold(run, events, { hue: hueOf });
 }
 
 export function useRunTurn(run: Run | undefined): Turn | undefined {

@@ -1,0 +1,384 @@
+import type { ArtifactKind, Task, Turn, TurnEvent } from "@vultus/core";
+
+/**
+ * The one place mandatum's wire format meets vultus's event model, for every
+ * surface: the console and the Slack app both read runs through this file, so
+ * the same run is the same turn in both. Everything above it speaks TurnEvent,
+ * and everything below it speaks envelopes.
+ */
+
+/** An mandatum envelope.Event as the platform's event stream sends it. */
+export interface BusEvent {
+  seq: number;
+  topic: string;
+  run_id: string;
+  tenant: string;
+  agent: string;
+  rev: number;
+  origin: string;
+  kind: string;
+  /** Base64 of the kind-specific JSON body. */
+  payload?: string;
+  at: string;
+}
+
+/** A run as the platform's index reports it. */
+export interface Run {
+  id: string;
+  tenant: string;
+  agent: string;
+  rev: number;
+  origin: string;
+  text: string;
+  actor?: { id: string; display?: string; bot?: boolean };
+  root: string;
+  parent?: string;
+  depth: number;
+  mode?: "subagent" | "handoff" | "delegate";
+  /** The schedule that raised the run, if one did. */
+  schedule?: string;
+  /** The conversation the run belongs to. */
+  thread: string;
+  /** The turn this one follows. Runs sharing a prev are branches. */
+  prev?: string;
+  /** Why the agent was chosen, when the platform picked it. */
+  picked?: string;
+  project?: string;
+  lease: number;
+  granted: number;
+  calls: number;
+  /** Stopped is ended from outside: by a person, or because the run it was attached to ended. */
+  status: "accepted" | "running" | "parked" | "completed" | "failed" | "stopped";
+  /** Set on a run another run called. Attached runs end with their caller, delegated ones do not. */
+  lifecycle?: "attached" | "delegated";
+  /** Why a stopped run was stopped. */
+  cause?: string;
+  /** The run has its answer and is waiting for runs attached to it. */
+  finishing?: boolean;
+  answer?: string;
+  error?: string;
+  reason?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Decode an event body. Bodies are UTF-8 JSON, base64-encoded by Go. */
+export function body<T>(e: BusEvent): Partial<T> {
+  if (!e.payload) return {};
+  try {
+    const bytes = Uint8Array.from(atob(e.payload), (c) => c.charCodeAt(0));
+    return JSON.parse(new TextDecoder().decode(bytes)) as Partial<T>;
+  } catch {
+    return {};
+  }
+}
+
+interface Lifecycle {
+  error: string;
+  terminal: boolean;
+  reason: string;
+  text: string;
+}
+interface Tool {
+  id: string;
+  name: string;
+  phase: string;
+  result: string;
+  error: string;
+}
+/** What the platform reports when an agent publishes a file. */
+interface Published {
+  name: string;
+  summary: string;
+  error: string;
+  data: {
+    id: string;
+    title: string;
+    kind: ArtifactKind;
+    mime: string;
+    size: number;
+    version: number;
+    description?: string;
+    preview?: string;
+  };
+}
+/** The tool an agent publishes a file with. */
+const PUBLISH = "publish_artifact";
+/** The tool an agent hands work to another agent with, without waiting for it. */
+const HAND_ON = "delegate_task";
+/** mandatum names the tool that hands work to another agent after that agent. */
+const DELEGATE = /^tag_(.+)$/;
+
+/** The agent a tool call hands work to, when the tool is a call to another agent. */
+export function delegateOf(tool?: string): string | undefined {
+  return DELEGATE.exec(tool ?? "")?.[1];
+}
+
+interface Cite {
+  label: string;
+  text: string;
+  index: number;
+  source: { document_title?: string; source_uri?: string; section_heading?: string };
+}
+
+/**
+ * Returns a function that turns one run's envelopes into TurnEvents. It is
+ * stateful because two facts span events: whether text already streamed (the
+ * completed event repeats the whole answer), and each tool call's name.
+ */
+export function adapter(
+  opts: {
+    /** An agent's colour, 0 to 360, so a call to it reads as that agent. */
+    hue?: (agent: string) => number;
+    /**
+     * Where a platform path such as `/api/artifacts/a1/content` is reached from
+     * this surface. The console is served by the platform, so it leaves paths
+     * as they are. A surface elsewhere returns an absolute address, or
+     * undefined when it has none to offer, and the link is left out.
+     */
+    href?: (path: string) => string | undefined;
+  } = {},
+): (e: BusEvent) => TurnEvent[] {
+  const href = opts.href ?? ((path: string) => path);
+  let streamed = false;
+  const tools = new Map<string, string>();
+  // Publish calls that have not reported yet, oldest first. A file is shown
+  // from the moment the agent starts publishing it, and the report that
+  // follows fills in the same card rather than adding a second one.
+  const publishing: string[] = [];
+
+  // A call to another agent is that agent doing a step, not a tool. The
+  // called agent runs inside this turn and has no run of its own to open.
+  // The run each call to another agent started, by tool call. The platform
+  // says which run it was on the caller's stream, after the call opens.
+  const started = new Map<string, { run: string; agent: string }>();
+  // Calls to another agent that have not been told their run yet, per tool.
+  const calling = new Map<string, string[]>();
+  // What each task last looked like, so a later fact adds to it.
+  const shown = new Map<string, Partial<Task>>();
+
+  const task = (id: string, name: string | undefined, rest: Partial<Task>): Task => {
+    const all = { ...shown.get(id), ...rest };
+    shown.set(id, all);
+    const run = started.get(id);
+    const to = delegateOf(name) ?? run?.agent;
+    return to
+      ? {
+          id,
+          title: to,
+          status: "in_progress",
+          tool: name,
+          ...all,
+          subagent: { name: to, runId: run?.run, summary: all.output, hue: opts.hue?.(to) },
+        }
+      : { id, title: title(name), status: "in_progress", tool: name, ...all };
+  };
+
+  return (e) => {
+    switch (e.kind) {
+      case "lifecycle.accepted":
+        streamed = false;
+        tools.clear();
+        started.clear();
+        calling.clear();
+        shown.clear();
+        return [{ type: "turn.started", turnId: e.run_id, agent: { name: e.agent } }];
+      case "lifecycle.started":
+      case "lifecycle.resumed":
+        return [{ type: "activity", activity: "thinking" }];
+      case "lifecycle.parked":
+        // Blocked on a person or an event. vultus does not animate waiting.
+        return [{ type: "activity", activity: "waiting" }];
+      case "delta.text": {
+        const text = body<{ text: string }>(e).text ?? "";
+        if (!text) return [];
+        // The first words of an answer are the moment it starts composing.
+        const first = !streamed;
+        streamed = true;
+        return first
+          ? [
+              { type: "activity", activity: "composing" },
+              { type: "text.delta", text },
+            ]
+          : [{ type: "text.delta", text }];
+      }
+      case "delta.thinking": {
+        const text = body<{ text: string }>(e).text ?? "";
+        return text ? [{ type: "reasoning.delta", text }] : [];
+      }
+      case "delta.tool.call": {
+        const t = body<Tool>(e);
+        if (!t.id) return [];
+        tools.set(t.id, t.name ?? "tool");
+        const out: TurnEvent[] = [
+          { type: "activity", activity: doing(t.name) },
+          { type: "task.upserted", task: task(t.id, t.name, {}) },
+        ];
+        if (t.name && (delegateOf(t.name) || t.name === HAND_ON)) {
+          calling.set(t.name, [...(calling.get(t.name) ?? []), t.id]);
+        }
+        if (t.name === PUBLISH) {
+          publishing.push(t.id);
+          out.push({
+            type: "attachment.upserted",
+            attachment: { type: "artifact", id: t.id, title: "Publishing a file", kind: "document", phase: "generating" },
+          });
+        }
+        return out;
+      }
+      case "delta.tool.done": {
+        const t = body<Tool>(e);
+        if (!t.id) return [];
+        const name = t.name ?? tools.get(t.id);
+        return [
+          { type: "activity", activity: "thinking" },
+          { type: "task.upserted", task: task(t.id, name, { status: t.error ? "error" : "complete", output: t.error || t.result }) },
+        ];
+      }
+      case "action.taken": {
+        const p = body<Published>(e);
+        const called = p.data as unknown as { run?: string; agent?: string } | undefined;
+        if (p.name && called?.run && (delegateOf(p.name) || p.name === HAND_ON)) {
+          // Which run a call to another agent started. From here the step
+          // can be opened as that run.
+          const id = calling.get(p.name)?.shift();
+          if (!id) return [];
+          started.set(id, { run: called.run, agent: called.agent ?? delegateOf(p.name) ?? "" });
+          return [{ type: "task.upserted", task: task(id, p.name, {}) }];
+        }
+        if (p.name !== PUBLISH) return [];
+        // The card the call opened, or a new one if this is all that is left
+        // of the run's record.
+        const id = publishing.shift() ?? p.data?.id ?? `published-${e.seq}`;
+        const a = p.data;
+        if (p.error || !a) {
+          return [
+            {
+              type: "attachment.upserted",
+              attachment: {
+                type: "artifact",
+                id,
+                title: p.summary || "File",
+                kind: "document",
+                phase: "failed",
+                error: lastLine(p.error) || "The file could not be published.",
+              },
+            },
+          ];
+        }
+        const content = `/api/artifacts/${encodeURIComponent(a.id)}/content`;
+        return [
+          {
+            type: "attachment.upserted",
+            attachment: {
+              type: "artifact",
+              id,
+              title: a.title,
+              kind: a.kind,
+              phase: "ready",
+              mimeType: a.mime,
+              sizeBytes: a.size,
+              version: a.version,
+              // Inline is honored only for types that cannot run script. For
+              // everything else this link downloads, like the one below it.
+              url: href(`${content}?inline=1`),
+              downloadUrl: href(content),
+              description: a.description,
+              previewText: a.preview,
+            },
+          },
+        ];
+      }
+      case "delta.citation": {
+        const c = body<Cite>(e);
+        return [
+          {
+            type: "citation.added",
+            citation: {
+              id: c.label ?? String(c.index ?? e.seq),
+              title: c.source?.document_title ?? c.source?.section_heading ?? "Source",
+              url: c.source?.source_uri,
+              snippet: c.text,
+            },
+          },
+        ];
+      }
+      case "lifecycle.completed": {
+        const out: TurnEvent[] = [];
+        const text = body<Lifecycle>(e).text;
+        if (!streamed && text) out.push({ type: "text.delta", text });
+        out.push({ type: "turn.completed" });
+        return out;
+      }
+      case "lifecycle.failed": {
+        const l = body<Lifecycle>(e);
+        // A failed attempt may still be retried by the durable engine. Only a
+        // terminal failure ends the turn.
+        if (!l.terminal) return [];
+        return [
+          {
+            type: "turn.failed",
+            failure: { kind: "internal", message: lastLine(l.error) || "The run failed.", reference: e.run_id },
+          },
+        ];
+      }
+      default:
+        return [];
+    }
+  };
+}
+
+/** What a tool call looks like from outside: looking something up, handing work on, or acting. */
+function doing(tool?: string): "searching" | "delegating" | "calling" {
+  const name = (tool ?? "").toLowerCase();
+  if (/^(delegate|call|agent|tag)[_:.]|subagent|handoff/.test(name)) return "delegating";
+  if (/search|recall|retriev|lookup|find|read|fetch|get/.test(name)) return "searching";
+  return "calling";
+}
+
+/** Runtime errors nest one per line, and the cause is the last. */
+function lastLine(error?: string): string {
+  const lines = (error ?? "").split("\n").filter((l) => l.trim());
+  return lines[lines.length - 1]?.trim() ?? "";
+}
+
+/** A tool name as a person would read it: "github.comment" becomes "Github comment". */
+function title(name?: string): string {
+  if (!name) return "Tool call";
+  const words = name.replace(/[._-]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * The turn to show before any event arrives, built from the run record. Old
+ * runs fall out of the bus's retention, so their record is all there is.
+ */
+export function turnOf(run: Run): Turn {
+  const status =
+    run.status === "completed"
+      ? "done"
+      : run.status === "failed"
+        ? "failed"
+        : run.status === "stopped"
+          ? "stopped"
+        : run.status === "parked"
+          ? "waiting"
+          : run.status === "running"
+            ? "working"
+            : "queued";
+  return {
+    id: run.id,
+    agent: { name: run.agent },
+    status,
+    text: run.answer ?? "",
+    tasks: [],
+    citations: [],
+    interrupts: [],
+    notices: [],
+    activity: run.status === "parked" ? "waiting" : undefined,
+    failure:
+      run.status === "failed"
+        ? { kind: "internal", message: lastLine(run.error) || "The run failed.", reference: run.id }
+        : undefined,
+  };
+}

@@ -28,4 +28,5 @@ dev: build
 
 # The web console, proxying /api and /auth to the server from `make dev`.
 web:
+	cd packages/adapter && pnpm install
 	cd apps/web && pnpm install && pnpm dev
