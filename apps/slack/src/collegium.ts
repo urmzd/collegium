@@ -15,17 +15,22 @@ import {
 
 export type { BusEvent, Run };
 
-/** Who the platform says is calling. */
+/** Who the platform says is calling, as `GET /api/me` answers. */
 export interface Me {
-  subject: string;
-  tenant: string;
-  kind: "user" | "machine";
+  principal: { subject: string; tenant: string; kind: "user" | "machine"; name?: string };
   permissions: string[];
+  first_admin?: boolean;
 }
 
 export interface Agent {
   name: string;
   description?: string;
+}
+
+/** An agent revision, as `GET /api/agents` lists them. Only the fields this app reads. */
+export interface Revision {
+  spec: Agent;
+  rev?: number;
 }
 
 /** The part of a client record this app reads: who answers, and who may. */
@@ -39,24 +44,23 @@ export interface ClientRecord {
   identity?: { team?: string; app_id?: string };
 }
 
-/** The Slack person a turn is for. The platform cannot record this through its API yet. */
-export interface Actor {
-  id: string;
-  display?: string;
-}
-
-export interface TurnRequest {
+/**
+ * The body of `POST /api/runs`, and nothing more: the route refuses fields it
+ * does not know, so who asked in Slack, the client and the thread cannot be
+ * sent. See the README for what the API would need.
+ */
+export interface RunRequest {
   /** Who should answer. Empty lets the platform pick. */
-  agent: string;
+  agent?: string;
   text: string;
   /** The turn this one follows. Left out, it starts a conversation. */
   after?: string;
-  /** The same key again joins the run it started instead of starting another. */
-  idempotencyKey: string;
-  actor?: Actor;
-  /** The client this surface is, so its limits and allow-list apply. */
-  client?: string;
-  metadata?: Record<string, string>;
+  project?: string;
+}
+
+/** Every call takes an optional signal, as the generated client's methods do. */
+export interface CallOptions {
+  signal?: AbortSignal;
 }
 
 /** The inbox changed. It names a message and nothing more. */
@@ -90,27 +94,39 @@ export class CollegiumError extends Error {
   }
 }
 
+/**
+ * What this app asks of collegium. The names and shapes follow the generated
+ * `@collegium/client` (`createClient`), so swapping it in is mechanical. Where
+ * this interface answers null for a 404, the generated client throws: the
+ * swap wraps those three calls.
+ */
 export interface Collegium {
-  me(): Promise<Me>;
-  agents(): Promise<Agent[]>;
+  getMe(options?: CallOptions): Promise<Me>;
+  listAgents(options?: CallOptions): Promise<{ agents: Revision[]; builtin?: string[] }>;
   /** One client record, or null when it does not exist for this caller. */
-  client(id: string): Promise<ClientRecord | null>;
-  /** Start a conversation or continue one. */
-  startTurn(turn: TurnRequest): Promise<Run>;
+  getClient(id: string, options?: CallOptions): Promise<ClientRecord | null>;
+  /** Start a conversation or continue one. The key goes only in the `Idempotency-Key` header. */
+  createRun(body: RunRequest, idempotencyKey?: string, options?: CallOptions): Promise<Run>;
   /** A run's record, or null when it does not exist for this caller. */
-  run(id: string): Promise<Run | null>;
+  getRun(id: string, options?: CallOptions): Promise<Run | null>;
   /** Every turn of a conversation, or null when there is no such conversation. */
-  conversation(id: string): Promise<Run[] | null>;
+  getThread(id: string, options?: CallOptions): Promise<{ turns: Run[] } | null>;
+  stopRun(id: string, options?: CallOptions): Promise<Run>;
   /**
    * A run's events as they happen, from its first. The stream also carries
    * inbox notices for the whole workspace. It ends when the signal aborts.
    */
-  events(run: { id: string; agent: string }, signal: AbortSignal): AsyncIterable<StreamItem>;
+  runEvents(
+    run: { agent: string; id: string },
+    options: CallOptions & { from?: number },
+  ): AsyncIterable<StreamItem>;
   /** Inbox notices alone, for as long as the signal allows. */
-  notices(signal: AbortSignal): AsyncIterable<InboxNotice>;
-  /** Stop a run and everything attached to it. */
-  stop(id: string): Promise<Run>;
-  /** The inbox: list, read one, and carry out a decision. */
+  notices(options: CallOptions): AsyncIterable<InboxNotice>;
+  /**
+   * The inbox, through the shared adapter's transport: `listInbox`,
+   * `getInboxMessage` and `resolveInboxPart` (plus read, dismiss and snooze)
+   * in the generated client.
+   */
   inbox: Transport;
 }
 
@@ -218,14 +234,14 @@ const sleep = (ms: number, signal: AbortSignal) =>
  *
  * | Call | Route |
  * |------|-------|
- * | me | `GET /api/me` |
- * | agents | `GET /api/agents` |
- * | client | `GET /api/clients/{id}` |
- * | startTurn | `POST /api/runs` with an `Idempotency-Key` header |
- * | run | `GET /api/runs/{id}` |
- * | conversation | `GET /api/threads/{id}` |
- * | events, notices | `GET /api/events?topic=` as server-sent events |
- * | stop | `POST /api/runs/{id}/stop` |
+ * | getMe | `GET /api/me` |
+ * | listAgents | `GET /api/agents` |
+ * | getClient | `GET /api/clients/{id}` |
+ * | createRun | `POST /api/runs` with an `Idempotency-Key` header |
+ * | getRun | `GET /api/runs/{id}` |
+ * | getThread | `GET /api/threads/{id}` |
+ * | runEvents, notices | `GET /api/events?topic=` as server-sent events, resumed with `from` |
+ * | stopRun | `POST /api/runs/{id}/stop` |
  * | inbox | `GET /api/inbox`, `GET /api/inbox/{id}`, `POST /api/inbox/{id}/read`, `/dismiss`, `/snooze`, `/parts/{part}/resolve` |
  */
 export function httpCollegium(cfg: {
@@ -303,11 +319,16 @@ export function httpCollegium(cfg: {
    * bus still holds, so run events are told apart by their sequence number and
    * each is handed on once.
    */
-  async function* stream(topic: string, signal: AbortSignal): AsyncGenerator<StreamItem> {
+  async function* stream(
+    topic: string,
+    signal: AbortSignal,
+    from?: number,
+  ): AsyncGenerator<StreamItem> {
     const seen = new Map<string, number>();
     while (!signal.aborted) {
       try {
-        const res = await send("GET", `/api/events?topic=${enc(topic)}`, {
+        const query = `topic=${enc(topic)}${from === undefined ? "" : `&from=${from}`}`;
+        const res = await send("GET", `/api/events?${query}`, {
           signal,
           headers: { accept: "text/event-stream" },
         });
@@ -340,42 +361,24 @@ export function httpCollegium(cfg: {
     }
   }
 
+  const never = new AbortController().signal;
   return {
-    me: async () => {
-      const r = await http<{
-        principal: { subject: string; tenant: string; kind: "user" | "machine" };
-        permissions: string[];
-      }>("GET", "/api/me");
-      return { ...r.principal, permissions: r.permissions ?? [] };
-    },
-    agents: async () => {
-      const r = await http<{ agents: { spec: Agent }[] }>("GET", "/api/agents");
-      return (r.agents ?? []).map((a) => ({
-        name: a.spec.name,
-        description: a.spec.description,
-      }));
-    },
-    client: (id) => orNull(http<ClientRecord>("GET", `/api/clients/${enc(id)}`)),
-    startTurn: (t) =>
-      // The route refuses fields it does not know, so the actor, the client and
-      // the metadata are not sent until it accepts them. See the README.
-      http<Run>(
-        "POST",
-        "/api/runs",
-        { agent: t.agent, text: t.text, ...(t.after ? { after: t.after } : {}) },
-        { "Idempotency-Key": t.idempotencyKey },
-      ),
-    run: (id) => orNull(http<Run>("GET", `/api/runs/${enc(id)}`)),
-    conversation: async (id) =>
-      (await orNull(http<{ turns: Run[] }>("GET", `/api/threads/${enc(id)}`)))?.turns ?? null,
-    events: (run, signal) => stream(`agent:${run.agent}:${run.id}`, signal),
-    notices: async function* (signal) {
+    getMe: () => http<Me>("GET", "/api/me"),
+    listAgents: () => http<{ agents: Revision[]; builtin?: string[] }>("GET", "/api/agents"),
+    getClient: (id) => orNull(http<ClientRecord>("GET", `/api/clients/${enc(id)}`)),
+    createRun: (body, key) =>
+      http<Run>("POST", "/api/runs", body, key ? { "Idempotency-Key": key } : undefined),
+    getRun: (id) => orNull(http<Run>("GET", `/api/runs/${enc(id)}`)),
+    getThread: (id) => orNull(http<{ turns: Run[] }>("GET", `/api/threads/${enc(id)}`)),
+    stopRun: (id) => http<Run>("POST", `/api/runs/${enc(id)}/stop`),
+    runEvents: (run, options) =>
+      stream(`agent:${run.agent}:${run.id}`, options.signal ?? never, options.from),
+    notices: async function* (options) {
       // No agent can be named this, so the topic carries no run and the stream is the inbox's alone.
-      for await (const item of stream("agent:_inbox", signal)) {
+      for await (const item of stream("agent:_inbox", options.signal ?? never)) {
         if (item.type === "inbox") yield item.notice;
       }
     },
-    stop: (id) => http<Run>("POST", `/api/runs/${enc(id)}/stop`),
     inbox: mailTransport(http as Http),
   };
 }

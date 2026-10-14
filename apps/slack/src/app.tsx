@@ -218,7 +218,7 @@ export class App {
 
   /** Follow the inbox for as long as the signal allows, and show what concerns this app's threads. */
   async watchInbox(signal: AbortSignal): Promise<void> {
-    for await (const notice of this.collegium.notices(signal)) {
+    for await (const notice of this.collegium.notices({ signal })) {
       await this.track(
         this.onNotice(notice).catch((e: Error) => this.log(`inbox notice failed: ${e.message}`)),
       );
@@ -229,7 +229,7 @@ export class App {
 
   private async agents(): Promise<Agent[]> {
     if (this.agentList && Date.now() - this.agentList.at < 30_000) return this.agentList.agents;
-    const agents = await this.collegium.agents();
+    const agents = (await this.collegium.listAgents()).agents.map((r) => r.spec);
     this.agentList = { at: Date.now(), agents };
     return agents;
   }
@@ -238,7 +238,7 @@ export class App {
   private async routing(): Promise<Routing> {
     if (!this.opts.clientId) return { defaultAgent: this.opts.defaultAgent };
     if (!this.clientRecord || Date.now() - this.clientRecord.at >= 30_000) {
-      const found = await this.collegium.client(this.opts.clientId);
+      const found = await this.collegium.getClient(this.opts.clientId);
       // A client that is gone, or is for another surface or team, routes to nothing.
       const ours =
         found &&
@@ -371,7 +371,7 @@ export class App {
    */
   private async place(job: Job): Promise<{ key: string; after?: string } | "duplicate"> {
     const first = threadKey(job.session);
-    const turns = await this.collegium.conversation(runId(this.opts.subject, first));
+    const turns = (await this.collegium.getThread(runId(this.opts.subject, first)))?.turns;
     // The first run in a thread is keyed by the thread, which is what names the conversation.
     if (!turns || turns.length === 0) return { key: first };
     if (job.key === first) return "duplicate";
@@ -441,20 +441,12 @@ export class App {
         );
         return "stopped" as const;
       }
-      run = await this.collegium.startTurn({
-        agent,
-        text,
-        after: placed.after,
-        idempotencyKey: placed.key,
-        actor: { id: job.user },
-        client: this.opts.clientId,
-        metadata: {
-          "slack.team": job.session.team,
-          "slack.channel": job.session.channel,
-          "slack.thread": job.session.threadTs,
-          "slack.user": job.user,
-        },
-      });
+      // Who asked, the client and the thread are known here and have nowhere to go:
+      // the route takes none of them. See the README.
+      run = await this.collegium.createRun(
+        { agent, text, ...(placed.after ? { after: placed.after } : {}) },
+        placed.key,
+      );
     } catch (e) {
       if (!(e instanceof CollegiumError)) throw e;
       const refusal = e.refusal;
@@ -479,7 +471,7 @@ export class App {
     live.run = run;
     if (live.stopped) {
       // Stop was pressed while the run was being started, so it is told now.
-      const told = await this.collegium.stop(run.id).catch(() => undefined);
+      const told = await this.collegium.stopRun(run.id).catch(() => undefined);
       items.push({ type: "stopped", run: told });
     }
     this.requesters.set(run.id, job.user);
@@ -514,13 +506,13 @@ export class App {
   ): Promise<Turn> {
     (async () => {
       try {
-        for await (const item of this.collegium.events(run, signal)) items.push(item);
+        for await (const item of this.collegium.runEvents(run, { signal })) items.push(item);
       } catch (e) {
         if (!signal.aborted) items.push({ type: "broken", error: e as Error });
       }
     })();
     const read = async () => {
-      const record = await this.collegium.run(run.id).catch(() => null);
+      const record = await this.collegium.getRun(run.id).catch(() => null);
       if (record && !signal.aborted) items.push({ type: "record", run: record });
     };
     const poll = setInterval(read, this.pollMs);
@@ -591,13 +583,13 @@ export class App {
     const ids = new Set<string>();
     if (following) ids.add(following.id);
     const conversation = runId(this.opts.subject, threadKey(session));
-    const turns = await this.collegium.conversation(conversation).catch(() => null);
+    const turns = (await this.collegium.getThread(conversation).catch(() => null))?.turns;
     for (const t of turns ?? []) if (!t.parent && !terminal(t.status)) ids.add(t.id);
 
     const stopped: Run[] = [];
     for (const id of ids) {
       try {
-        stopped.push(await this.collegium.stop(id));
+        stopped.push(await this.collegium.stopRun(id));
       } catch (e) {
         this.log(`stop of ${id} failed: ${(e as Error).message}`);
       }
@@ -661,7 +653,7 @@ export class App {
     const message = await this.collegium.inbox.get(ui.payload.turnId).catch(() => null);
     if (message) return this.onMail(p, ui, message);
     if (ui.id === ActionId.retry || ui.id === ActionId.resume) {
-      const run = await this.collegium.run(ui.payload.turnId);
+      const run = await this.collegium.getRun(ui.payload.turnId);
       if (!run || !this.again(run, p.user.id, p.message?.ts)) {
         await this.whisper(p, defaultCopy.cantRetry);
       }
@@ -713,7 +705,7 @@ export class App {
     const part = message.parts.find((x) => partMatches(x, ui.payload.target));
     let request = toRequest(message, ui);
     if (ui.id === ActionId.retry && part?.type === "failure" && part.failure.reference) {
-      const run = await this.collegium.run(part.failure.reference);
+      const run = await this.collegium.getRun(part.failure.reference);
       if (run && this.again(run, p.user.id, p.message?.ts)) {
         request = { call: "resolve", partId: part.id, action: "acknowledge" };
       }
@@ -754,7 +746,7 @@ export class App {
     // A failed turn already says so in its own message, with Retry.
     if (message.kind === "failure" || message.parts.some((p) => p.type === "failure")) return;
     const about = message.about.find((s) => s.kind === "run");
-    const run = about ? await this.collegium.run(about.id) : null;
+    const run = about ? await this.collegium.getRun(about.id) : null;
     const session = run ? sessionOf(this.opts.subject, run.thread) : null;
     if (!session || session.team !== this.opts.team) return;
     const view = renderToSlack(<MessageView message={forSlack(message)} />);

@@ -310,6 +310,10 @@ export function adapter(
         out.push({ type: "turn.completed" });
         return out;
       }
+      case "lifecycle.stopped":
+        // The run was stopped and the platform says so on its stream. Until it
+        // does, a stopped run is ended from its record (see `settled`).
+        return [{ type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" }];
       case "lifecycle.failed": {
         const l = body<Lifecycle>(e);
         // A failed attempt may still be retried by the durable engine. Only a

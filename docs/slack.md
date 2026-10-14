@@ -31,6 +31,7 @@ The app works around each of these and says where in its README.
 |---------|--------------|----------|
 | `actor` on `POST /api/runs` | Runs are recorded as the app's machine, not the Slack person | Accept `actor: {id, display}` from a machine holding a new `runs:act-for` permission, recorded beside the machine |
 | `client` on `POST /api/runs`, or a machine bound to a client | The client's run limits and allow-list are not applied by the platform | Bind a machine credential to one client (a `client` claim, or a `client_id` on the token mapped in the client record) so the platform places its runs as it places webhook runs |
+| `metadata` on `POST /api/runs` | The Slack team, channel and thread a run answers are not on the run; the app derives them from the run id instead | Accept a bounded `metadata` map (string keys and values, a few hundred bytes) and return it on the run, so a surface can find its own place without encoding it in the idempotency key |
 | A picker that knows a client's allow-list | A client with a list and no default answers nothing | `GET /api/pick?client=` and the same rule in `POST /api/runs` |
 | The run a retry started, in the resolve response | Retry from Slack starts its own run and acknowledges the inbox part | Return `{message, run}` from `POST /api/inbox/{id}/parts/{part}/resolve` |
 | A stream of inbox notices alone | The app subscribes to a topic no agent can have | `GET /api/inbox/events` |

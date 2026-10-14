@@ -13,14 +13,14 @@ async function main() {
   const collegium = httpCollegium({ baseUrl: config.collegium.url, token: config.collegium.token });
 
   // The credential decides the workspace. The configured name only has to agree with it.
-  const me = await collegium.me();
+  const { principal: me, permissions } = await collegium.getMe();
   if (me.tenant !== config.collegium.tenant) {
     throw new Error(
       "The collegium credential is for another workspace than COLLEGIUM_TENANT. Refusing to start.",
     );
   }
   const lacking = [...NEEDED, ...(config.collegium.client ? ["clients:read"] : [])].filter(
-    (p) => !me.permissions.includes(p),
+    (p) => !permissions.includes(p),
   );
   if (lacking.length > 0) {
     throw new Error(`The collegium credential lacks ${lacking.join(", ")}.`);

@@ -69,8 +69,6 @@ test("a mention becomes one run, streamed natively, with the session kept in ste
   assert.equal(asked?.agent, "lead");
   assert.equal(asked?.text, "what changed in the last deploy?");
   assert.equal(asked?.after, undefined);
-  assert.deepEqual(asked?.actor, { id: USER });
-  assert.equal(asked?.metadata?.["slack.thread"], TS);
   assert.equal(w.collegium.last.id, `api-${SUBJECT}-${KEY}`);
 
   // Before any event: seen, processing, and a stream opened in the mention's thread.
@@ -264,9 +262,7 @@ test("stop mid-run stops the run, confirms in the thread, settles the session an
 test("stop after a restart still finds the run, through collegium", async () => {
   const w = world();
   // A run an earlier process started and is no longer there to follow.
-  const run = (
-    await w.collegium.startTurn({ agent: "lead", text: "slow question", idempotencyKey: KEY })
-  ).id;
+  const run = (await w.collegium.createRun({ agent: "lead", text: "slow question" }, KEY)).id;
   w.collegium.emit(run, "lifecycle.started");
 
   // This process follows nothing. The session still names the conversation.
@@ -316,6 +312,19 @@ test("a run stopped from the console ends in Slack, though it publishes no final
   w.collegium.set(run, { status: "stopped", cause: "Stopped by dana" });
   await w.app.idle();
   assert.match(textIn(blocksOf(w.slack.of("chat.stopStream")[0])), new RegExp(defaultCopy.stopped));
+  assert.deepEqual(w.slack.statuses, ["processing", "active"]);
+});
+
+test("a stopped event on the stream ends the turn, once the platform publishes one", async () => {
+  const w = world();
+  await deliver(w, mention("question", TS));
+  await emit(w, "lifecycle.accepted");
+  await emit(w, "delta.text", { text: "Half an answer." });
+  await emit(w, "lifecycle.stopped", { cause: "Stopped by dana" });
+  await w.app.idle();
+  const final = textIn(blocksOf(w.slack.of("chat.stopStream")[0]));
+  assert.match(final, new RegExp(defaultCopy.stopped));
+  assert.match(final, new RegExp(defaultCopy.stopPhase.confirmed));
   assert.deepEqual(w.slack.statuses, ["processing", "active"]);
 });
 
@@ -449,7 +458,6 @@ test("as a client, the app routes only to its default agent and its list", async
     "helper",
     "a name outside the list is not read as an agent",
   );
-  assert.equal(w.collegium.started[0]?.client, "docs-bot");
   await emit(w, "lifecycle.accepted");
   await emit(w, "lifecycle.completed", { text: "ok" });
   await w.app.idle();

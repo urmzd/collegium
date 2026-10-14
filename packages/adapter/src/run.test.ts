@@ -184,3 +184,11 @@ test("a surface that is not the platform's own origin places file links itself",
   assert.equal(none?.type === "attachment.upserted" && none.attachment.type === "artifact" && none.attachment.url, undefined);
   assert.equal(none?.type === "attachment.upserted" && none.attachment.type === "artifact" && none.attachment.phase, "ready");
 });
+
+test("a stopped event ends the turn as stopped, confirmed", () => {
+  const to = adapter();
+  assert.deepEqual(to(ev("lifecycle.stopped", { cause: "Stopped by dana" })), [
+    { type: "turn.stopped" },
+    { type: "stop.updated", stop: "confirmed" },
+  ]);
+});

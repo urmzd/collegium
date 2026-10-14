@@ -75,7 +75,7 @@ async function finish(c: Collegium, run: { id: string; agent: string }, patience
   const timer = setTimeout(() => stop.abort(), patience);
   const f = follow(run);
   const kinds: string[] = [];
-  for await (const item of c.events(run, stop.signal)) {
+  for await (const item of c.runEvents(run, { signal: stop.signal })) {
     if (item.type !== "event" || item.event.run_id !== run.id) continue;
     kinds.push(item.event.kind);
     f.apply(item.event);
@@ -88,20 +88,21 @@ async function finish(c: Collegium, run: { id: string; agent: string }, patience
 
 test("the stand-in client against the real routes", { skip: !enabled }, async () => {
   const c = client();
-  const me = await c.me();
+  const me = (await c.getMe()).principal;
   assert.equal(me.subject, "dev");
   assert.equal(me.tenant, "default");
-  for (const p of ["runs:read", "runs:write", "agents:read"]) assert.ok(me.permissions.includes(p));
+  const { permissions } = await c.getMe();
+  for (const p of ["runs:read", "runs:write", "agents:read"]) assert.ok(permissions.includes(p));
 
-  const agents = await c.agents();
-  assert.ok(agents.some((a) => a.name === "lead"));
+  const { agents } = await c.listAgents();
+  assert.ok(agents.some((a) => a.spec.name === "lead"));
 
   // The run id is the caller and the key, and the first run names its conversation.
   const key = threadKey({ team: TEAM, channel: CHANNEL, threadTs: "1700000000.000100" });
-  const run = await c.startTurn({ agent: "lead", text: "hello", idempotencyKey: key });
+  const run = await c.createRun({ agent: "lead", text: "hello" }, key);
   assert.equal(run.id, runId(me.subject, key));
   assert.equal(run.thread, run.id);
-  const again = await c.startTurn({ agent: "lead", text: "hello", idempotencyKey: key });
+  const again = await c.createRun({ agent: "lead", text: "hello" }, key);
   assert.equal(again.id, run.id, "the same key joins the run it started");
 
   const { turn, kinds } = await finish(c, run);
@@ -110,24 +111,19 @@ test("the stand-in client against the real routes", { skip: !enabled }, async ()
   assert.equal(turn.status, "done");
   assert.match(turn.text, /offline provider/);
 
-  const next = await c.startTurn({
-    agent: "",
-    text: "and then?",
-    after: run.id,
-    idempotencyKey: `${key}-2`,
-  });
+  const next = await c.createRun({ agent: "", text: "and then?", after: run.id }, `${key}-2`);
   assert.equal(next.thread, run.id);
   assert.equal(next.prev, run.id);
   assert.ok(next.picked, "an empty agent is the platform's picker");
   await finish(c, next);
-  const turns = await c.conversation(run.id);
+  const turns = (await c.getThread(run.id))?.turns;
   assert.deepEqual(turns?.map((t) => t.id).sort(), [run.id, next.id].sort());
 
-  assert.equal(await c.run("api-dev-no-such-run"), null);
-  assert.equal(await c.conversation("api-dev-no-such-run"), null);
-  assert.equal(await c.client("no-such-client"), null);
+  assert.equal(await c.getRun("api-dev-no-such-run"), null);
+  assert.equal(await c.getThread("api-dev-no-such-run"), null);
+  assert.equal(await c.getClient("no-such-client"), null);
   // Stopping a run that has ended changes nothing.
-  assert.equal((await c.stop(run.id)).status, "completed");
+  assert.equal((await c.stopRun(run.id)).status, "completed");
 
   const page = await c.inbox.list({ limit: 5, state: "open" });
   assert.ok(Array.isArray(page.messages));
@@ -135,7 +131,7 @@ test("the stand-in client against the real routes", { skip: !enabled }, async ()
   // The inbox-only stream opens and closes cleanly.
   const quiet = new AbortController();
   setTimeout(() => quiet.abort(), 300);
-  for await (const _ of c.notices(quiet.signal)) {
+  for await (const _ of c.notices({ signal: quiet.signal })) {
     // Nothing is raised here.
   }
 });
@@ -145,7 +141,7 @@ test(
   { skip: !enabled },
   async () => {
     const c = client();
-    const me = await c.me();
+    const me = (await c.getMe()).principal;
     const slack = new FakeSlack();
     const app = new App(slack, c, {
       team: TEAM,
@@ -165,7 +161,7 @@ test(
     await waitFor(() => slack.methods.includes("chat.stopStream"));
     await app.idle();
     const id = runId(me.subject, threadKey({ team: TEAM, channel: CHANNEL, threadTs: ts }));
-    assert.equal((await c.run(id))?.status, "completed");
+    assert.equal((await c.getRun(id))?.status, "completed");
     assert.match(slack.streamed, /offline provider/);
     assert.deepEqual(slack.statuses, ["processing", "active"]);
     assert.equal(slack.of("reactions.add").at(-1)?.name, "white_check_mark");
@@ -188,7 +184,7 @@ test(
     await fresh.handle(mention("@helper and you?", "1700001000.000100", { thread_ts: ts }));
     await waitFor(() => slack.of("chat.stopStream").length === 2);
     await fresh.idle();
-    const turns = (await c.conversation(id)) ?? [];
+    const turns = (await c.getThread(id))?.turns ?? [];
     const reply = turns.find((t) => t.id !== id);
     assert.equal(reply?.agent, "helper");
     assert.equal(reply?.prev, id);
@@ -221,16 +217,18 @@ test(
       }),
     });
     assert.equal(made.status, 201);
-    const run = await c.startTurn({
-      agent: "nomodel",
-      text: "hello",
-      idempotencyKey: "server-test-fail",
-    });
+    const run = await c.createRun(
+      {
+        agent: "nomodel",
+        text: "hello",
+      },
+      "server-test-fail",
+    );
     // No event says the last attempt was the last: the ledger ends the run, and its record says so.
-    let record = await c.run(run.id);
+    let record = await c.getRun(run.id);
     for (let i = 0; i < 300 && record?.status !== "failed"; i++) {
       await new Promise((r) => setTimeout(r, 100));
-      record = await c.run(run.id);
+      record = await c.getRun(run.id);
     }
     assert.equal(record?.status, "failed");
     const { turn, kinds } = await finish(c, run, 1_000);

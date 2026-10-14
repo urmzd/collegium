@@ -11,9 +11,15 @@ import {
   type Collegium,
   CollegiumError,
   type InboxNotice,
+  type RunRequest,
   type StreamItem,
-  type TurnRequest,
 } from "./collegium.ts";
+
+/** A run asked for: the body and the key, as `createRun` takes them. */
+export interface Asked extends RunRequest {
+  idempotencyKey: string;
+}
+
 import { type Envelope, type SlackApi, SlackError } from "./slack.ts";
 
 export const TEAM = "T01ABCDEF";
@@ -106,9 +112,9 @@ const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64");
 export class FakeCollegium implements Collegium {
   readonly runs = new Map<string, Run>();
   /** Every turn asked for, including ones that joined an existing run. */
-  readonly asked: TurnRequest[] = [];
+  readonly asked: Asked[] = [];
   /** Turns that started a run. */
-  readonly started: TurnRequest[] = [];
+  readonly started: Asked[] = [];
   readonly stops: string[] = [];
   readonly resolved: { id: string; path: string; body: unknown }[] = [];
   agentList: Agent[] = [
@@ -141,22 +147,21 @@ export class FakeCollegium implements Collegium {
     return f;
   }
 
-  async me() {
+  async getMe() {
     return {
-      subject: SUBJECT,
-      tenant: "acme",
-      kind: "machine" as const,
+      principal: { subject: SUBJECT, tenant: "acme", kind: "machine" as const },
       permissions: ["runs:read", "runs:write", "agents:read"],
     };
   }
-  async agents() {
-    return this.agentList;
+  async listAgents() {
+    return { agents: this.agentList.map((spec) => ({ spec, rev: 1 })), builtin: [] };
   }
-  async client(id: string) {
+  async getClient(id: string) {
     return this.clients.get(id) ?? null;
   }
 
-  async startTurn(t: TurnRequest): Promise<Run> {
+  async createRun(body: RunRequest, key = "random"): Promise<Run> {
+    const t: Asked = { ...body, idempotencyKey: key };
     this.asked.push(t);
     if (this.refuse) {
       const e = this.refuse;
@@ -194,24 +199,24 @@ export class FakeCollegium implements Collegium {
     return run;
   }
 
-  async run(id: string) {
+  async getRun(id: string) {
     return this.runs.get(id) ?? null;
   }
 
-  async conversation(id: string) {
+  async getThread(id: string) {
     const turns = [...this.runs.values()].filter((r) => r.thread === id);
-    return turns.length > 0 ? turns : null;
+    return turns.length > 0 ? { turns } : null;
   }
 
-  events(run: { id: string }, signal: AbortSignal) {
-    return this.feed(run.id).read(signal);
+  runEvents(run: { id: string }, options: { signal?: AbortSignal }) {
+    return this.feed(run.id).read(options.signal ?? new AbortController().signal);
   }
 
-  notices(signal: AbortSignal) {
-    return this.notes.read(signal);
+  notices(options: { signal?: AbortSignal }) {
+    return this.notes.read(options.signal ?? new AbortController().signal);
   }
 
-  async stop(id: string): Promise<Run> {
+  async stopRun(id: string): Promise<Run> {
     this.stops.push(id);
     if (this.stopFails) throw new CollegiumError(500, "something went wrong on our side");
     const run = this.runs.get(id);

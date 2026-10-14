@@ -160,22 +160,14 @@ function fakeFetch(answers: (Response | (() => Response))[]) {
 const json = (body: unknown, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-test("startTurn sends only what the route accepts, with the key as a header", async () => {
+test("createRun sends only the body the route accepts, with the key as a header", async () => {
   const { fn, asked } = fakeFetch([json({ id: "api-svc-k1", agent: "lead" }, 202)]);
   const c = httpCollegium({
     baseUrl: "http://collegium.test/",
     token: staticToken("t0k"),
     fetch: fn,
   });
-  await c.startTurn({
-    agent: "lead",
-    text: "hello",
-    after: "api-svc-k0",
-    idempotencyKey: "k1",
-    actor: { id: "U01ABCDEF" },
-    client: "docs-bot",
-    metadata: { "slack.user": "U01ABCDEF" },
-  });
+  await c.createRun({ agent: "lead", text: "hello", after: "api-svc-k0" }, "k1");
   assert.equal(asked[0]?.url, "http://collegium.test/api/runs");
   const headers = asked[0]?.init.headers as Record<string, string>;
   assert.equal(headers["Idempotency-Key"], "k1");
@@ -206,14 +198,14 @@ test("a refusal carries the limit, a missing object is null, and an error keeps 
   ]);
   const c = httpCollegium({ baseUrl: "http://collegium.test", token: staticToken(), fetch: fn });
   await assert.rejects(
-    c.startTurn({ agent: "", text: "x", idempotencyKey: "k" }),
+    c.createRun({ agent: "", text: "x" }, "k"),
     (e: CollegiumError) =>
       e.status === 429 && e.refusal?.limit === "runs" && e.refusal.policy?.version === 3,
   );
-  assert.equal(await c.run("nope"), null);
-  assert.equal(await c.conversation("nope"), null);
+  assert.equal(await c.getRun("nope"), null);
+  assert.equal(await c.getThread("nope"), null);
   await assert.rejects(
-    c.stop("r1"),
+    c.stopRun("r1"),
     (e: CollegiumError) => e.status === 403 && e.refusal === undefined,
   );
 });
@@ -242,7 +234,7 @@ test("the event stream hands each event on once across a reconnect, and ends on 
   });
   const stop = new AbortController();
   const got: string[] = [];
-  for await (const item of c.events({ id: "r1", agent: "lead" }, stop.signal)) {
+  for await (const item of c.runEvents({ id: "r1", agent: "lead" }, { signal: stop.signal })) {
     got.push(item.type === "event" ? item.event.kind : `inbox:${item.notice.id}`);
     if (item.type === "event" && item.event.kind === "lifecycle.completed") stop.abort();
   }
@@ -259,7 +251,10 @@ test("an event stream the caller may not read is an error, not a retry loop", as
     reconnectMs: 0,
   });
   await assert.rejects(async () => {
-    for await (const _ of c.events({ id: "r1", agent: "lead" }, new AbortController().signal)) {
+    for await (const _ of c.runEvents(
+      { id: "r1", agent: "lead" },
+      { signal: new AbortController().signal },
+    )) {
       // nothing arrives
     }
   }, /403/);
@@ -284,7 +279,7 @@ test("a machine token is asked for once, kept, and asked for again when refused"
     json({ principal: { subject: "slack-app", tenant: "acme", kind: "machine" }, permissions: [] }),
   ]);
   const c = httpCollegium({ baseUrl: "http://collegium.test", token, fetch: api.fn });
-  assert.equal((await c.me()).subject, "slack-app");
+  assert.equal((await c.getMe()).principal.subject, "slack-app");
   assert.equal(issued.asked.length, 2, "the refusal asks the provider again");
   assert.equal(
     (api.asked[1]?.init.headers as Record<string, string>).authorization,
