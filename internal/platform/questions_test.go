@@ -2,6 +2,7 @@ package platform_test
 
 import (
 	"errors"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -591,4 +592,140 @@ func TestPublishingWaitsForApproval(t *testing.T) {
 			t.Fatalf("after %s, %d files were published", c.action, len(page))
 		}
 	}
+}
+
+// A person a surface answers for needs runs:write themselves: a viewer is no
+// approver because a machine relays their click. And only the credential the
+// client names may relay at all.
+func TestAMappedPersonNeedsTheirOwnRightToAnswer(t *testing.T) {
+	f := &fakes{}
+	p := stage(t, &cast{continues: true,
+		says:  map[string][][]saigetypes.Delta{"deployer": {writing("plan.md", "ship"), say("Written.")}},
+		tools: map[string][]string{"deployer": {platform.ToolFileWrite}},
+		shape: map[string]func(*agentspec.AgentSpec){"deployer": func(s *agentspec.AgentSpec) { s.Approvals = []string{platform.ToolFileWrite} }},
+	}, f.config())
+	in := slackClient("app", "A0APP", team, "deployer")
+	in.Slack.Machine, in.Slack.People = "svc-slack", map[string]string{"U0OLU": "olu", "U0VIC": "vic"}
+	create(t, p, tenant, in)
+	pol, err := auth.ParsePolicy("test", `
+role viewer { allow read on * }
+role operator extends viewer { allow write on runs }
+grant operator to subject "olu"
+grant viewer to subject "vic"
+`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scopes := []auth.Permission{auth.RunsRead, auth.RunsWrite}
+	machine := auth.Principal{Subject: "svc-slack", Tenant: tenant, Kind: auth.Machine, Scopes: scopes}.WithPolicy(pol)
+	other := auth.Principal{Subject: "svc-other", Tenant: tenant, Kind: auth.Machine, Scopes: scopes}.WithPolicy(pol)
+	ctx := t.Context()
+	run := ask(t, p, "api-1", "deployer")
+	m := questionFor(t, p, run.ID)
+	approve := func(who auth.Principal, user string) error {
+		_, err := p.AnswerQuestion(ctx, who, run.ID, run.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove, ActAs: &platform.ActAs{Client: "app", User: user}})
+		return err
+	}
+	// Signed in, vic is refused for want of runs:write. Relayed, he is too.
+	if _, err := p.AnswerQuestion(ctx, vic, run.ID, run.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove}); !errors.Is(err, platform.ErrForbidden) {
+		t.Fatalf("vic signed in = %v", err)
+	}
+	if err := approve(machine, "U0VIC"); !errors.Is(err, platform.ErrForbidden) || !strings.Contains(err.Error(), "runs:write") {
+		t.Fatalf("vic through the app = %v, want forbidden for want of runs:write", err)
+	}
+	// olu may, but not through a credential the client does not name.
+	if err := approve(other, "U0OLU"); !errors.Is(err, platform.ErrForbidden) {
+		t.Fatalf("another credential for olu = %v, want forbidden", err)
+	}
+	if got, _ := p.Runs.Get(tenant, run.ID); got.Status != runs.Parked || len(p.Inbox.History(tenant, m.ID)) != 1 {
+		t.Fatalf("a refused answer changed something: %s, %d changes", got.Status, len(p.Inbox.History(tenant, m.ID)))
+	}
+	if err := approve(machine, "U0OLU"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, run.ID, runs.Completed)
+}
+
+// A run a Slack connector raised is the Slack user's, and that user is the
+// principal their client maps them to: she does not see the approval, and
+// cannot approve it, in the console or through the Slack app.
+func TestAConnectorRunsRequesterIsKnownByTheirMappedName(t *testing.T) {
+	f := &fakes{}
+	p := stage(t, &cast{continues: true,
+		says:  map[string][][]saigetypes.Delta{"deployer": {writing("plan.md", "ship"), say("Written.")}},
+		tools: map[string][]string{"deployer": {platform.ToolFileWrite}},
+		shape: map[string]func(*agentspec.AgentSpec){"deployer": func(s *agentspec.AgentSpec) { s.Approvals = []string{platform.ToolFileWrite} }},
+	}, f.config())
+	in := slackClient("app", "A0APP", team, "deployer")
+	// mentionOf's Slack user is U0HUMAN1: ada, in this workspace.
+	in.Slack.Machine, in.Slack.People = "svc-slack", map[string]string{"U0HUMAN1": "ada", "U0OLU": "olu"}
+	create(t, p, tenant, in)
+	if code := signedSlack(p.IngressHandler(), "secret-app", mentionOf("A0APP", team, "Ev1", "C01", "1700000000.000100")); code != http.StatusOK {
+		t.Fatalf("mention = %d", code)
+	}
+	var run runs.Run
+	within(t, "the mention parked on its approval", func() bool {
+		r, ok := runOf(p, tenant, "deployer")
+		run = r
+		return ok && r.Status == runs.Parked && r.Question != nil
+	})
+	if run.Client != "app" || run.Actor.ID != "U0HUMAN1" {
+		t.Fatalf("run = client %q, actor %q", run.Client, run.Actor.ID)
+	}
+	m := questionFor(t, p, run.ID)
+	ada := auth.Principal{Subject: "ada", Tenant: tenant, Kind: auth.User, Roles: []auth.Role{auth.Operator}}
+	if sees(p, ada, m.ID) || !sees(p, olu, m.ID) {
+		t.Fatal("the approval is addressed to the person whose Slack message raised it")
+	}
+	if _, err := p.AnswerQuestion(t.Context(), ada, run.ID, run.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove}); !errors.Is(err, platform.ErrForbidden) {
+		t.Fatalf("ada in the console = %v, want forbidden", err)
+	}
+	pol, _ := auth.ParsePolicy("test", "role operator { allow * on runs }\ngrant operator to anyone\n")
+	machine := auth.Principal{Subject: "svc-slack", Tenant: tenant, Kind: auth.Machine, Scopes: []auth.Permission{auth.RunsRead, auth.RunsWrite}}.WithPolicy(pol)
+	if _, err := p.AnswerQuestion(t.Context(), machine, run.ID, run.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove, ActAs: &platform.ActAs{Client: "app", User: "U0HUMAN1"}}); !errors.Is(err, platform.ErrForbidden) {
+		t.Fatalf("ada through the Slack app = %v, want forbidden", err)
+	}
+	if got, _ := p.Runs.Get(tenant, run.ID); got.Status != runs.Parked || len(p.Inbox.History(tenant, m.ID)) != 1 {
+		t.Fatal("a refused self-approval changed something")
+	}
+	if _, err := p.AnswerQuestion(t.Context(), machine, run.ID, run.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove, ActAs: &platform.ActAs{Client: "app", User: "U0OLU"}}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, run.ID, runs.Completed)
+}
+
+// Whoever started a tree does not approve a call deep in it: ada asks the
+// lead, the lead tags the helper, and the helper's approval is someone else's.
+// She is told so, not told the question does not exist.
+func TestThePersonWhoStartedTheTreeCannotApproveInIt(t *testing.T) {
+	p := stage(t, &cast{continues: true,
+		says: map[string][][]saigetypes.Delta{
+			"lead":   {tagging("helper", "Write the plan"), say("Done.")},
+			"helper": {writing("plan.md", "ship"), say("Written.")},
+		},
+		spawn: map[string][]string{"lead": {"helper"}},
+		tools: map[string][]string{"helper": {platform.ToolFileWrite}},
+		shape: map[string]func(*agentspec.AgentSpec){"helper": func(s *agentspec.AgentSpec) { s.Approvals = []string{platform.ToolFileWrite} }},
+	}, platform.Config{Limits: call.Limits{MaxDepth: 2, MaxFanOut: 4}})
+	ctx := t.Context()
+	first, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-1", Agent: "lead", Text: "Go", Actor: envelope.Actor{ID: admin.Subject}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper := called(t, p, first.ID, "helper", runs.Parked)
+	m := questionFor(t, p, helper.ID)
+	if sees(p, admin, m.ID) {
+		t.Fatal("the person who started the tree is asked to approve a call in it")
+	}
+	_, err = p.AnswerQuestion(ctx, admin, helper.ID, helper.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove})
+	if !errors.Is(err, platform.ErrForbidden) || !strings.Contains(err.Error(), "someone else must approve") {
+		t.Fatalf("ada approving = %v, want a refusal that says why", err)
+	}
+	if got, _ := p.Runs.Get(tenant, helper.ID); got.Status != runs.Parked {
+		t.Fatalf("the helper is %s", got.Status)
+	}
+	if _, err := p.AnswerQuestion(ctx, olu, helper.ID, helper.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove}); err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, first.ID, runs.Completed)
 }

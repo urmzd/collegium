@@ -182,6 +182,12 @@ type Platform struct {
 	// asked once however many of its calls cross it.
 	halting sync.Map
 
+	// wakers are the timers that wake parked runs at their questions'
+	// deadlines, stopped with the platform.
+	wakers     sync.Mutex
+	wakerSet   map[*time.Timer]struct{}
+	wakersDone bool
+
 	// admission serializes letting a run in. It is taken inside calls, never
 	// the other way round.
 	admission sync.Mutex
@@ -602,6 +608,7 @@ func (s *Stream) Close() error { return s.inner.Close() }
 func (p *Platform) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer p.stopWakers()
 
 	// Subscribe before anything can publish, so the journal and the index
 	// never miss the first event of the first run.

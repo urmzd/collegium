@@ -16,6 +16,7 @@ import (
 
 	"github.com/urmzd/collegium/pkg/auth"
 	"github.com/urmzd/collegium/pkg/authz"
+	"github.com/urmzd/collegium/pkg/clients"
 	"github.com/urmzd/collegium/pkg/inbox"
 	"github.com/urmzd/collegium/pkg/runs"
 )
@@ -115,8 +116,19 @@ func (p *Platform) rolesOf(ctx context.Context, _ string, principal string) ([]s
 }
 
 // requesterNames is every name the person whose request raised a run goes
-// by, as the runtime compares an approver against them.
-func requesterNames(tag envelope.Tag) []string {
+// by: the actor's id and its id qualified by the trigger, as the runtime
+// compares an approver against them, and the principal a client maps that
+// person to. A Slack connector raises a run as the Slack user ("U0ADA"), who
+// is a principal ("ada") only through the client's people map: without it,
+// ada could approve her own call from the console. The runtime knows nothing
+// of the map (mandatum's AnswerRequest has no requester alias), so the
+// platform holds this rule itself, before it asks the runtime.
+//
+// A GitHub connector's actor is a GitHub login, which no client maps to a
+// principal, so a person approving a call their own GitHub event raised
+// cannot be detected.
+func (p *Platform) requesterNames(run runs.Run) []string {
+	tag := run.Tag()
 	id := strings.TrimSpace(tag.Actor.ID)
 	if id == "" {
 		return nil
@@ -124,6 +136,29 @@ func requesterNames(tag envelope.Tag) []string {
 	out := []string{id}
 	if tag.Origin != "" {
 		out = append(out, tag.Origin+":"+id)
+	}
+	if run.Client != "" {
+		if c, err := p.Clients.Get(run.Tenant, run.Client); err == nil && c.Surface == clients.Slack && c.Slack != nil {
+			if who := c.Slack.People[id]; who != "" {
+				out = append(out, who)
+			}
+		}
+	}
+	return out
+}
+
+// selfApprovers are the people who may not approve a call in a run: whoever
+// asked for the run, and whoever started the tree it is in, by every name
+// they go by. Empty when the run's spec allows self-approval.
+func (p *Platform) selfApprovers(run runs.Run, selfApproval bool) []string {
+	if selfApproval {
+		return nil
+	}
+	out := p.requesterNames(run)
+	if run.Root != "" && run.Root != run.ID {
+		if root, err := p.Runs.Get(run.Tenant, run.Root); err == nil {
+			out = append(out, p.requesterNames(root)...)
+		}
 	}
 	return out
 }
@@ -144,16 +179,9 @@ func (p *Platform) addressOf(ctx context.Context, run runs.Run, q payload.Questi
 	switch q.Kind {
 	case payload.QuestionApproval:
 		allowed = rev.Spec.Approvers
-		if !rev.Spec.SelfApproval {
-			// Whoever asked for the call does not approve it, and neither
-			// does whoever asked for the work it is part of.
-			excluded = requesterNames(run.Tag())
-			if run.Root != "" && run.Root != run.ID {
-				if root, err := p.Runs.Get(run.Tenant, run.Root); err == nil {
-					excluded = append(excluded, requesterNames(root.Tag())...)
-				}
-			}
-		}
+		// Whoever asked for the call does not approve it, and neither does
+		// whoever asked for the work it is part of.
+		excluded = p.selfApprovers(run, rev.Spec.SelfApproval)
 	default:
 		allowed = rev.Spec.Answerers
 	}
@@ -255,13 +283,42 @@ func (p *Platform) wakeAtExpiry(tenant, runID string, q payload.Question) {
 	if q.ExpiresAt.IsZero() || p.queue == nil {
 		return
 	}
-	time.AfterFunc(max(q.ExpiresAt.Sub(p.now()), 0)+expiryGrace, func() {
+	p.wakers.Lock()
+	defer p.wakers.Unlock()
+	if p.wakersDone {
+		return
+	}
+	if p.wakerSet == nil {
+		p.wakerSet = map[*time.Timer]struct{}{}
+	}
+	var t *time.Timer
+	t = time.AfterFunc(max(q.ExpiresAt.Sub(p.now()), 0)+expiryGrace, func() {
+		p.wakers.Lock()
+		_, live := p.wakerSet[t]
+		delete(p.wakerSet, t)
+		p.wakers.Unlock()
+		if !live {
+			return
+		}
 		run, err := p.Runs.Get(tenant, runID)
 		if err != nil || run.Status != runs.Parked || run.Question == nil || run.Question.ID != q.ID {
 			return
 		}
 		_ = p.queue.Enqueue(context.Background(), runID, 0)
 	})
+	p.wakerSet[t] = struct{}{}
+}
+
+// stopWakers cancels every wake still to come. A platform that has stopped
+// wakes nothing: the worker's poll wakes the run on the next start.
+func (p *Platform) stopWakers() {
+	p.wakers.Lock()
+	defer p.wakers.Unlock()
+	p.wakersDone = true
+	for t := range p.wakerSet {
+		t.Stop()
+	}
+	p.wakerSet = nil
 }
 
 // observeQuestion folds the lifecycle events that concern questions into the
@@ -427,11 +484,45 @@ func (p *Platform) answerer(who auth.Principal, as *ActAs) (inbox.Reader, string
 	if !ok {
 		return inbox.Reader{}, "", fmt.Errorf("%w: that person is not mapped to anyone in this workspace", ErrForbidden)
 	}
+	return p.mapped(who, subject), string(c.Surface) + ":" + as.User, nil
+}
+
+// mapped is who a person a surface answers for is: their subject, and the
+// roles the workspace's policy grants it. A Slack click carries no sign-in,
+// so those grants are all that is known of them.
+func (p *Platform) mapped(who auth.Principal, subject string) inbox.Reader {
 	var held []string
 	for _, r := range who.Policy().Roles(authz.Identity{Subject: subject, Tenant: who.Tenant}) {
 		held = append(held, string(r))
 	}
-	return inbox.Reader{Subject: subject, Roles: held}, string(c.Surface) + ":" + as.User, nil
+	return inbox.Reader{Subject: subject, Roles: held}
+}
+
+// mayResume reports whether a person a surface answers for holds runs:write
+// themselves. The credential holding it is not enough: a viewer is no
+// approver because a machine relays their click.
+func mayResume(who auth.Principal, person inbox.Reader) bool {
+	roles := make([]auth.Role, 0, len(person.Roles))
+	for _, r := range person.Roles {
+		roles = append(roles, auth.Role(r))
+	}
+	return auth.Principal{Subject: person.Subject, Tenant: who.Tenant, Kind: auth.User, Roles: roles}.WithPolicy(who.Policy()).Can(auth.RunsWrite)
+}
+
+// isSelfApproval reports whether the person answering, or the credential
+// answering for them, asked for the run or the tree it is in, unless the
+// run's pinned spec allows self-approval. A spec that cannot be read refuses.
+func (p *Platform) isSelfApproval(ctx context.Context, tenant, runID, by, via string) (bool, error) {
+	run, err := p.Runs.Get(tenant, runID)
+	if err != nil {
+		return false, err
+	}
+	rev, err := p.Agents.Get(ctx, tenant, run.Agent, run.Rev)
+	if err != nil {
+		return false, fmt.Errorf("%w: the rules of this run cannot be read, so nobody approves its calls", ErrForbidden)
+	}
+	names := p.selfApprovers(run, rev.Spec.SelfApproval)
+	return slices.Contains(names, by) || slices.Contains(names, via), nil
 }
 
 // ActsFor returns the principal a surface's credential asks for: the person
@@ -491,6 +582,22 @@ func (p *Platform) answer(ctx context.Context, who auth.Principal, m inbox.Messa
 	if err != nil {
 		p.log.Warn("platform: an answer for someone a surface could not name was refused", "tenant", who.Tenant, "by", who.Subject, "run", q.Run, "question", q.ID)
 		return inbox.Message{}, err
+	}
+	if a.ActAs != nil && !mayResume(who, reader) {
+		p.log.Info("platform: an answer was refused", "tenant", who.Tenant, "by", reader.Subject, "via", who.Subject, "run", q.Run, "question", q.ID, "why", "no runs:write")
+		return inbox.Message{}, fmt.Errorf("%w: %s may not resume runs (answering needs %s)", ErrForbidden, reader.Subject, auth.RunsWrite)
+	}
+	if q.Kind == payload.QuestionApproval {
+		// Checked here, from the run as it stands, not only from whom the
+		// message was addressed to when it was raised: the runtime does not
+		// know a requester by the names a client maps them to, nor who
+		// started the tree.
+		if self, err := p.isSelfApproval(ctx, who.Tenant, q.Run, reader.Subject, who.Subject); err != nil {
+			return inbox.Message{}, err
+		} else if self {
+			p.log.Info("platform: an answer was refused", "tenant", who.Tenant, "by", reader.Subject, "via", who.Subject, "run", q.Run, "question", q.ID, "why", "self-approval")
+			return inbox.Message{}, fmt.Errorf("%w: %s asked for this work, so someone else must approve its calls", ErrForbidden, reader.Subject)
+		}
 	}
 	if !m.For(reader) {
 		return inbox.Message{}, fmt.Errorf("%w: %s may not answer this question", ErrForbidden, reader.Subject)
