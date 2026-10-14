@@ -1,15 +1,14 @@
-import { ANY_AGENT, type UiAction } from "@vultus/core";
+import { ANY_AGENT, type Tone, type UiAction } from "@vultus/core";
 import { Home } from "@vultus/components";
 import { WebSurface } from "@vultus/render-web";
-import { type MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { explainedPermission } from "./access.ts";
 import type { Run } from "./adapter.ts";
-import { type AccessDecision, ApiError, api, type Client, type Me, type Revision } from "./api.ts";
+import { type AccessDecision, type Alert, ApiError, api, type Client, type Me, type Revision } from "./api.ts";
 import { type Attached, readAttached, withAttached } from "./Composer.tsx";
 import { isEnded } from "./format.ts";
-import { buildHome, destinationOf, homeIntent } from "./home.ts";
+import { buildHome, homeIntent, NOTIFICATION_WINDOW } from "./home.ts";
 import { type PlatformMessage, transport } from "./mail.ts";
-import { Problem } from "./ui.tsx";
 
 /**
  * Where a person lands. The page is vultus's `Home`; this fetches what it
@@ -22,6 +21,7 @@ export function HomePage({
   agents,
   runs,
   inboxCount,
+  alerts,
   signal,
   onThread,
   onReview,
@@ -32,13 +32,15 @@ export function HomePage({
   agents: Revision[];
   runs: Run[];
   inboxCount: number;
+  /** The tenant's alerts as the console holds them, or null when the person may not read alerts. */
+  alerts: Alert[] | null;
   /** Changes when the inbox may have changed. */
   signal: unknown;
   /** A conversation was started from the ask box. */
   onThread: (id: string) => void;
   onReview: (message: string) => void;
   /** A console view, by the name `?view=` uses. */
-  onNavigate: (view: string, params?: URLSearchParams) => void;
+  onNavigate: (view: string) => void;
 }) {
   const can = (p: string) => (me.permissions ?? []).includes(p);
   const [waiting, setWaiting] = useState<PlatformMessage[]>([]);
@@ -51,13 +53,21 @@ export function HomePage({
   const picker = useRef<HTMLInputElement>(null);
   const readsInbox = can("runs:read");
   const readsClients = can("clients:read");
+  // Shown under the ask box, by vultus's Prompt.
+  const notices = useMemo(() => {
+    const out: { tone: Tone; text: string }[] = [];
+    if (problem) out.push({ tone: "bad", text: problem });
+    if (files.length > 0) out.push({ tone: "info", text: `Sent with your question: ${files.map((f) => f.name).join(", ")}.` });
+    if (notice) out.push({ tone: "warn", text: notice });
+    return out;
+  }, [problem, files, notice]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: signal is the reason to look again
   useEffect(() => {
     if (!readsInbox) return;
     let live = true;
     transport
-      .list({ limit: 30, state: "open" })
+      .list({ limit: NOTIFICATION_WINDOW, state: "open" })
       .then((page) => live && setWaiting(page.messages))
       .catch(() => {});
     return () => {
@@ -88,12 +98,14 @@ export function HomePage({
         agents,
         waiting,
         waitingCount: inboxCount,
+        alerts,
         running: runs.filter((r) => !isEnded(r)).length,
         clients: readsClients ? (clients ?? []) : null,
         decision,
         answeredBy,
+        notices,
       }),
-    [me, name, agents, waiting, inboxCount, runs, clients, readsClients, decision, answeredBy],
+    [me, name, agents, waiting, inboxCount, alerts, runs, clients, readsClients, decision, answeredBy, notices],
   );
 
   const ask = (text: string) => {
@@ -125,20 +137,9 @@ export function HomePage({
     }
   };
 
-  // Links into the console open in place, not in a new tab.
-  const onClickCapture = (e: MouseEvent<HTMLDivElement>) => {
-    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    const link = (e.target as HTMLElement).closest("a");
-    const to = link && destinationOf(link.getAttribute("href") ?? "", window.location.origin);
-    if (!to) return;
-    e.preventDefault();
-    onNavigate(to.view, to.params);
-  };
-
   return (
     <div className="aui-scroll collegium-fade min-h-0 flex-1 overflow-y-auto">
-      {/* biome-ignore lint/a11y/noStaticElementInteractions: delegates clicks on the links inside, which are the controls */}
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-5 pt-14 pb-16 md:px-8" onClickCapture={onClickCapture}>
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-5 pt-14 pb-16 md:px-8">
         <input
           ref={picker}
           type="file"
@@ -156,19 +157,6 @@ export function HomePage({
             });
           }}
         />
-        {/* Above the page, so what went wrong with a question is seen without scrolling. */}
-        <div className="sticky top-0 z-10 flex flex-col gap-2 empty:hidden">
-          <Problem message={problem} />
-          {(files.length > 0 || notice) && (
-            <p className="collegium-glass rounded-aui px-3 py-2 text-aui-xs text-aui-muted">
-              {files.length > 0 && `Sent with your question: ${files.map((f) => f.name).join(", ")}. `}
-              {notice}
-            </p>
-          )}
-        </div>
-        <p className="sr-only" aria-live="polite">
-          {files.length > 0 ? `${files.length} attached` : ""}
-        </p>
         <WebSurface onAction={onAction}>
           <Home home={home} />
         </WebSurface>

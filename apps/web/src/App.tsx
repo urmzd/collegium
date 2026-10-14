@@ -145,8 +145,18 @@ function initial(): ReturnType<typeof fromAddress> {
   }
 }
 
+/** The alert an address names, as `?view=alerts&alert=<id>`. */
+function linkedAlert(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("view") === "alerts" ? params.get("alert") : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Keep the address naming the view on screen, so a reload or a copied link comes back to it. */
-function address(view: View, section: Section, permission: string) {
+function address(view: View, section: Section, permission: string, alert: string | null) {
   try {
     const url = new URL(window.location.href);
     const named = view === "settings" && SECTIONS.includes(section) ? section : LINKABLE.includes(view) ? view : null;
@@ -155,6 +165,8 @@ function address(view: View, section: Section, permission: string) {
     if (named === "access") url.searchParams.set("permission", permission);
     else url.searchParams.delete("permission");
     if (view !== "inbox") url.searchParams.delete("message");
+    if (view === "alerts" && alert) url.searchParams.set("alert", alert);
+    else url.searchParams.delete("alert");
     if (url.href !== window.location.href) window.history.replaceState(null, "", url);
   } catch {
     // The address just does not follow.
@@ -187,6 +199,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [builtin, setBuiltin] = useState<string[]>([]);
   const [schedules, setSchedules] = useState<ScheduleView[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  // Set once the first list of alerts is in, so a linked alert that is not in it can be called missing.
+  const [alertsLoaded, setAlertsLoaded] = useState(false);
+  const [alertId, setAlertId] = useState<string | null>(linkedAlert);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [suites, setSuites] = useState<SuiteView[]>([]);
@@ -240,8 +255,12 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     if (can("evals:read")) api.suites().then(setSuites).catch(() => {});
   }, [can]);
   const loadAlerts = useCallback(() => {
-    if (!can("alerts:read")) return;
-    api.alerts().then(setAlerts).catch(() => {});
+    if (!can("alerts:read")) return setAlertsLoaded(true);
+    api
+      .alerts()
+      .then(setAlerts)
+      .catch(() => {})
+      .finally(() => setAlertsLoaded(true));
     api.alertRules().then(setRules).catch(() => {});
   }, [can]);
   const loadSchedules = useCallback(() => {
@@ -352,7 +371,11 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     }
     setView(to.view);
   };
-  useEffect(() => address(view, section, explain), [view, section, explain]);
+  useEffect(() => address(view, section, explain, alertId), [view, section, explain, alertId]);
+  // An alert is open only on the Alerts page; leaving it closes the alert.
+  useEffect(() => {
+    if (view !== "alerts") setAlertId(null);
+  }, [view]);
   const openAlerts = alerts.filter((a) => !a.acked_by).length;
   const stats = useMemo(() => new Map((day?.by_agent ?? []).map((g) => [g.name, g])), [day]);
   const editing = agents.find((a) => a.spec.name === agentName) ?? null;
@@ -428,6 +451,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
               agents={agents}
               runs={runs}
               inboxCount={inboxCounts.open}
+              alerts={can("alerts:read") ? alerts : null}
               signal={inboxTick}
               onThread={(id) => {
                 openThread(id);
@@ -582,6 +606,10 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
           {view === "alerts" && (
             <Alerts
               alerts={alerts}
+              // Someone who may not read alerts has none to wait for.
+              loaded={alertsLoaded || !can("alerts:read")}
+              selected={alertId}
+              onSelect={setAlertId}
               rules={rules}
               agents={agents}
               canWrite={can("alerts:write")}

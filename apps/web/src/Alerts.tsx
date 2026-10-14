@@ -1,5 +1,6 @@
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 import { type Alert, type AlertRule, ApiError, api, type Revision } from "./api.ts";
+import { alertNamed } from "./links.ts";
 import { agentOptions, ago, button, card, Empty, field, Label, Menu, Page, Problem, primary, rows } from "./ui.tsx";
 
 const kindLabel: Record<AlertRule["kind"], string> = {
@@ -44,6 +45,9 @@ function Severity({ level }: { level: AlertRule["severity"] }) {
  */
 export function Alerts({
   alerts,
+  loaded = true,
+  selected = null,
+  onSelect,
   rules,
   agents,
   canWrite,
@@ -51,6 +55,12 @@ export function Alerts({
   onOpenInbox,
 }: {
   alerts: Alert[];
+  /** False until the first list is in, so a linked alert is not called missing too early. */
+  loaded?: boolean;
+  /** The alert a link opened, by id: `?view=alerts&alert=<id>`. */
+  selected?: string | null;
+  /** Open another alert, or close it with null. */
+  onSelect?: (id: string | null) => void;
   rules: AlertRule[];
   agents: Revision[];
   canWrite: boolean;
@@ -64,6 +74,7 @@ export function Alerts({
   const [problem, setProblem] = useState<string | null>(null);
   const open = alerts.filter((a) => !a.acked_by).length;
   const newest = [...alerts].sort((x, y) => y.at.localeCompare(x.at));
+  const shown = alertNamed(alerts, selected);
 
   const act = (p: Promise<unknown>, fallback: string) => {
     setProblem(null);
@@ -83,6 +94,10 @@ export function Alerts({
       }
     >
       <Problem message={problem} />
+      {selected && loaded && !shown && (
+        <Problem message="That alert is not here. It may have aged out, or you may not have access to it." />
+      )}
+      {shown && <AlertCard alert={shown} onClose={() => onSelect?.(null)} onOpenInbox={onOpenInbox} />}
 
       <p data-testid="alerts-open" className="text-aui-sm text-aui-muted">
         {open === 0 ? "Nothing a rule raised is open." : `${open} ${open === 1 ? "message a rule raised is" : "messages rules raised are"} open.`}{" "}
@@ -136,7 +151,11 @@ export function Alerts({
                   {fired.length > 0 && (
                     <ul className="pt-1">
                       {fired.slice(0, 3).map((a) => (
-                        <li key={a.id} className="flex items-baseline gap-3 py-0.5 text-aui-sm">
+                        <li
+                          key={a.id}
+                          aria-current={a.id === selected ? "true" : undefined}
+                          className={`flex items-baseline gap-3 py-0.5 text-aui-sm ${a.id === selected ? "font-medium" : ""}`}
+                        >
                           {onOpenInbox ? (
                             <button type="button" className={`${linkish} min-w-0 truncate text-left`} onClick={() => onOpenInbox(a)}>
                               {a.title}
@@ -169,6 +188,41 @@ export function Alerts({
         </ul>
       )}
     </Page>
+  );
+}
+
+/** The alert a link opened: what fired, how serious, when, and where to resolve it. */
+function AlertCard({ alert, onClose, onOpenInbox }: { alert: Alert; onClose: () => void; onOpenInbox?: (alert?: Alert) => void }) {
+  const heading = useRef<HTMLHeadingElement>(null);
+  // Reached from a link, so the alert is where the reader starts.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: once per alert
+  useEffect(() => {
+    heading.current?.focus();
+  }, [alert.id]);
+  return (
+    <section data-testid="alert-open" aria-labelledby={`alert-${alert.id}`} className={`${card} flex flex-col gap-2`}>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <h2 id={`alert-${alert.id}`} ref={heading} tabIndex={-1} className="collegium-display text-aui-lg font-semibold text-aui-fg outline-none">
+          {alert.title}
+        </h2>
+        <Severity level={alert.severity} />
+      </div>
+      {alert.body && <p className="text-aui-sm text-aui-muted">{alert.body}</p>}
+      <p className="text-aui-xs text-aui-muted">
+        Raised by the rule {alert.rule || "for limits"}
+        {alert.agent ? ` on ${alert.agent}` : ""}, {ago(alert.at)}. {alert.acked_by ? `Acknowledged by ${alert.acked_by}.` : "Open."}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {onOpenInbox && (
+          <button type="button" className={primary} onClick={() => onOpenInbox(alert)}>
+            Open Its Message
+          </button>
+        )}
+        <button type="button" className={button} onClick={onClose}>
+          Close
+        </button>
+      </div>
+    </section>
   );
 }
 
