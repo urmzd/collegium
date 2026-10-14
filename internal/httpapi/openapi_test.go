@@ -5,13 +5,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"go/ast"
+	gotypesconst "go/constant"
+	"go/importer"
 	"go/parser"
 	gotoken "go/token"
+	"go/types"
 	"io"
 	"net/http"
 	"os"
-	"path/filepath"
+	"os/exec"
 	"reflect"
 	"slices"
 	"sort"
@@ -97,6 +101,7 @@ func loadSpec(t *testing.T) *apiSpec {
 		t.Fatal(err)
 	}
 	s := &apiSpec{doc: obj(parsed), ops: map[string]specOp{}}
+	closeObjects(s.doc)
 
 	// Response schemas are copied under one flat key each, so they compile
 	// by a pointer with no path template in it. Their $refs still resolve:
@@ -148,6 +153,62 @@ func loadSpec(t *testing.T) *apiSpec {
 	return s
 }
 
+// closeObjects makes every object schema in the test's copy of the spec
+// refuse properties it does not name, so a key added to a handler's map or
+// inline struct fails validation instead of reaching clients unnoticed. Only
+// this copy changes: the published spec stays open, as JSON Schema is by
+// default, so a client keeps accepting fields added later.
+//
+// A schema used as a member of an allOf is left open, because it sees only
+// its own properties; the schema that composes it is closed instead, and
+// unevaluatedProperties there counts what every member evaluated.
+func closeObjects(doc map[string]any) {
+	members := map[string]bool{}
+	var collect func(v any)
+	collect = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, part := range sliceOf(x["allOf"]) {
+				if ref, isRef := obj(part)["$ref"].(string); isRef {
+					members[ref] = true
+				}
+			}
+			for _, child := range x {
+				collect(child)
+			}
+		case []any:
+			for _, child := range x {
+				collect(child)
+			}
+		}
+	}
+	collect(doc)
+	var walk func(v any, member bool)
+	walk = func(v any, member bool) {
+		switch x := v.(type) {
+		case map[string]any:
+			_, hasProps := x["properties"]
+			_, hasExtra := x["additionalProperties"]
+			_, composes := x["allOf"]
+			if !member && !hasExtra && (hasProps || composes) {
+				x["unevaluatedProperties"] = false
+			}
+			for key, child := range x {
+				walk(child, key == "allOf")
+			}
+		case []any:
+			for _, child := range x {
+				// The elements of an allOf are its members.
+				walk(child, member)
+			}
+		}
+	}
+	for name, schema := range obj(obj(doc["components"])["schemas"]) {
+		walk(schema, members["#/components/schemas/"+name])
+	}
+	walk(doc["paths"], false)
+}
+
 func (s *apiSpec) component(t *testing.T, name string) *jsonschema.Schema {
 	t.Helper()
 	compiled, err := s.c.Compile("openapi.json#/components/schemas/" + name)
@@ -159,67 +220,114 @@ func (s *apiSpec) component(t *testing.T, name string) *jsonschema.Schema {
 
 type route struct{ method, path, permission string }
 
-// registeredRoutes reads the route table out of this package's source: every
-// mux.Handle and mux.HandleFunc call, with the permission its s.authed names.
-// It fails on a registration it cannot read, so a new way of adding a route
-// cannot slip past the contract.
+// registeredRoutes reads the route table out of this package's source, with
+// types: every call of (*http.ServeMux).Handle or HandleFunc, whatever the
+// receiver is called, with the permission its (*Server).authed is given. It
+// fails on anything it cannot resolve to a constant (a pattern or permission
+// computed at run time, a method value taken from a mux, a route on
+// http.DefaultServeMux, an authed handler not passed straight to a mux), so a
+// route cannot slip past the contract by being written differently.
 func registeredRoutes(t *testing.T) []route {
 	t.Helper()
-	perms := permissionConstants(t)
 	fset := gotoken.NewFileSet()
 	pkgs, err := parser.ParseDir(fset, ".", func(fi os.FileInfo) bool { return !strings.HasSuffix(fi.Name(), "_test.go") }, 0) //nolint:staticcheck // one directory of syntax is all this needs
 	if err != nil {
 		t.Fatal(err)
 	}
-	var out []route
+	var files []*ast.File
 	for _, pkg := range pkgs {
-		for _, file := range pkg.Files {
-			ast.Inspect(file, func(n ast.Node) bool {
-				call, isCall := n.(*ast.CallExpr)
-				if !isCall {
-					return true
-				}
-				sel, isSel := call.Fun.(*ast.SelectorExpr)
-				if !isSel || (sel.Sel.Name != "Handle" && sel.Sel.Name != "HandleFunc") {
-					return true
-				}
-				if recv, isIdent := sel.X.(*ast.Ident); !isIdent || recv.Name != "mux" {
-					return true
-				}
-				where := fset.Position(call.Pos()).String()
-				lit, isLit := call.Args[0].(*ast.BasicLit)
-				if !isLit {
-					t.Fatalf("%s: a route whose pattern is not a string literal cannot be checked against the spec", where)
-				}
-				pattern, _ := strconv.Unquote(lit.Value)
-				method, path, hasMethod := strings.Cut(pattern, " ")
-				if !hasMethod {
-					// "/api/" and "/" are fallbacks, not operations.
-					return true
-				}
-				r := route{method: method, path: path, permission: permPublic}
-				if inner, isCall := call.Args[1].(*ast.CallExpr); isCall {
-					if fn, isSel := inner.Fun.(*ast.SelectorExpr); isSel && fn.Sel.Name == "authed" {
-						switch arg := inner.Args[0].(type) {
-						case *ast.BasicLit:
-							if arg.Value != `""` {
-								t.Fatalf("%s: a permission written as a literal cannot be checked against the spec", where)
-							}
-							r.permission = permAuthenticated
-						case *ast.SelectorExpr:
-							value, known := perms[arg.Sel.Name]
-							if !known {
-								t.Fatalf("%s: auth.%s is not a permission constant", where, arg.Sel.Name)
-							}
-							r.permission = value
-						default:
-							t.Fatalf("%s: cannot read the permission this route checks", where)
-						}
+		for _, f := range pkg.Files {
+			files = append(files, f)
+		}
+	}
+	info := &types.Info{Types: map[ast.Expr]types.TypeAndValue{}, Uses: map[*ast.Ident]types.Object{}, Selections: map[*ast.SelectorExpr]*types.Selection{}}
+	conf := types.Config{Importer: exportImporter(t, fset)}
+	if _, err := conf.Check("github.com/urmzd/collegium/internal/httpapi", fset, files, info); err != nil {
+		t.Fatalf("type-checking the package: %v", err)
+	}
+
+	isFunc := func(obj types.Object, names ...string) bool {
+		fn, ok := obj.(*types.Func)
+		return ok && slices.Contains(names, fn.FullName())
+	}
+	register := []string{"(*net/http.ServeMux).Handle", "(*net/http.ServeMux).HandleFunc", "net/http.Handle", "net/http.HandleFunc"}
+	authed := "(*github.com/urmzd/collegium/internal/httpapi.Server).authed"
+	constant := func(e ast.Expr) (string, bool) {
+		tv := info.Types[e]
+		if tv.Value == nil || tv.Value.Kind() != gotypesconst.String {
+			return "", false
+		}
+		return gotypesconst.StringVal(tv.Value), true
+	}
+
+	// Every place the registering functions or authed are named, and which
+	// of those are the callee of a call this reader understood.
+	named := map[*ast.Ident]string{}
+	for id, obj := range info.Uses {
+		switch {
+		case isFunc(obj, register...):
+			named[id] = "a route registration"
+		case isFunc(obj, authed):
+			named[id] = "a use of authed"
+		}
+	}
+	understood := map[*ast.Ident]bool{}
+	callee := func(call *ast.CallExpr) *ast.Ident {
+		switch fn := call.Fun.(type) {
+		case *ast.SelectorExpr:
+			return fn.Sel
+		case *ast.Ident:
+			return fn
+		}
+		return nil
+	}
+
+	var out []route
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, isCall := n.(*ast.CallExpr)
+			if !isCall {
+				return true
+			}
+			id := callee(call)
+			if id == nil || !isFunc(info.Uses[id], register...) {
+				return true
+			}
+			where := fset.Position(call.Pos()).String()
+			if isFunc(info.Uses[id], "net/http.Handle", "net/http.HandleFunc") {
+				t.Fatalf("%s: a route on http.DefaultServeMux is not served by Server.Handler", where)
+			}
+			understood[id] = true
+			pattern, ok := constant(call.Args[0])
+			if !ok {
+				t.Fatalf("%s: a route whose pattern is not a constant cannot be checked against the spec", where)
+			}
+			method, path, hasMethod := strings.Cut(pattern, " ")
+			if !hasMethod {
+				// "/api/" and "/" are fallbacks, not operations.
+				return true
+			}
+			r := route{method: method, path: path, permission: permPublic}
+			if inner, isCall := call.Args[1].(*ast.CallExpr); isCall {
+				if aid := callee(inner); aid != nil && isFunc(info.Uses[aid], authed) {
+					understood[aid] = true
+					perm, ok := constant(inner.Args[0])
+					if !ok {
+						t.Fatalf("%s: the permission this route checks is not a constant", where)
+					}
+					r.permission = permAuthenticated
+					if perm != "" {
+						r.permission = perm
 					}
 				}
-				out = append(out, r)
-				return true
-			})
+			}
+			out = append(out, r)
+			return true
+		})
+	}
+	for id, what := range named {
+		if !understood[id] {
+			t.Errorf("%s: %s the route reader cannot follow. Register routes as mux.HandleFunc(\"METHOD /path\", s.authed(perm, h))", fset.Position(id.Pos()), what)
 		}
 	}
 	if len(out) < 50 {
@@ -228,32 +336,30 @@ func registeredRoutes(t *testing.T) []route {
 	return out
 }
 
-// permissionConstants maps each auth.Permission constant's name to its value.
-func permissionConstants(t *testing.T) map[string]string {
+// exportImporter imports packages from the compiler's export data, which
+// `go list -export` builds or finds in the build cache. It is the standard
+// library's own importer pointed at the module's dependencies, so reading the
+// route table with types needs no dependency beyond the go command.
+func exportImporter(t *testing.T, fset *gotoken.FileSet) types.Importer {
 	t.Helper()
-	fset := gotoken.NewFileSet()
-	file, err := parser.ParseFile(fset, filepath.Join("..", "..", "pkg", "auth", "auth.go"), nil, 0)
+	cmd := exec.Command("go", "list", "-export", "-deps", "-f", "{{.ImportPath}}={{.Export}}", ".")
+	raw, err := cmd.Output()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("go list -export: %v", err)
 	}
-	out := map[string]string{}
-	ast.Inspect(file, func(n ast.Node) bool {
-		spec, isValue := n.(*ast.ValueSpec)
-		if !isValue || len(spec.Names) != 1 || len(spec.Values) != 1 {
-			return true
+	exports := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(string(raw)), "\n") {
+		if path, file, ok := strings.Cut(line, "="); ok && file != "" {
+			exports[path] = file
 		}
-		if typ, isIdent := spec.Type.(*ast.Ident); !isIdent || typ.Name != "Permission" {
-			return true
+	}
+	return importer.ForCompiler(fset, "gc", func(path string) (io.ReadCloser, error) {
+		file, ok := exports[path]
+		if !ok {
+			return nil, fmt.Errorf("no export data for %s", path)
 		}
-		if lit, isLit := spec.Values[0].(*ast.BasicLit); isLit {
-			out[spec.Names[0].Name], _ = strconv.Unquote(lit.Value)
-		}
-		return true
+		return os.Open(file)
 	})
-	if len(out) != len(auth.Permissions()) {
-		t.Fatalf("read %d permission constants, the package has %d", len(out), len(auth.Permissions()))
-	}
-	return out
 }
 
 // isIngress reports a route that Slack and GitHub call, which the client
@@ -574,6 +680,14 @@ func (r reply) str(name string) string {
 // operation, and the body validates against its schema.
 func (c *contract) call(tok, method, template, path, body string, want int, hdr ...string) reply {
 	c.t.Helper()
+	out, _ := c.attempt(tok, method, template, path, body, want, true, hdr...)
+	return out
+}
+
+// attempt is call that, when strict is false, reports a status other than the
+// wanted one instead of failing, for a request that can lose a race.
+func (c *contract) attempt(tok, method, template, path, body string, want int, strict bool, hdr ...string) (reply, bool) {
+	c.t.Helper()
 	op, known := c.spec.ops[method+" "+template]
 	if !known {
 		c.t.Fatalf("%s %s is not an operation in the spec", method, template)
@@ -599,19 +713,22 @@ func (c *contract) call(tok, method, template, path, body string, want int, hdr 
 	raw, _ := io.ReadAll(res.Body)
 	out := reply{status: res.StatusCode, header: res.Header, raw: raw}
 	if res.StatusCode != want {
+		if !strict {
+			return out, false
+		}
 		c.t.Fatalf("%s %s = %d %s, want %d", method, path, res.StatusCode, raw, want)
 	}
 	schema, documented := op.schemas[strconv.Itoa(res.StatusCode)]
 	if !documented {
 		c.t.Errorf("%s %s answered %d, which the spec does not document for it", method, template, res.StatusCode)
-		return out
+		return out, true
 	}
 	c.seen[op.key()+" "+strconv.Itoa(res.StatusCode)] = true
 	if schema == nil {
 		if res.StatusCode == http.StatusNoContent && len(raw) != 0 {
 			c.t.Errorf("%s %s answered 204 with a body", method, path)
 		}
-		return out
+		return out, true
 	}
 	if ct := res.Header.Get("Content-Type"); ct != "application/json" {
 		c.t.Errorf("%s %s: content type is %q, the spec says application/json", method, path, ct)
@@ -623,7 +740,22 @@ func (c *contract) call(tok, method, template, path, body string, want int, hdr 
 	if err := schema.Validate(out.body); err != nil {
 		c.t.Errorf("%s %s (%d) does not match the spec:\n%v\nbody: %s", method, path, res.StatusCode, err, raw)
 	}
-	return out
+	return out, true
+}
+
+// callFromLiveRun makes a call from a run of lead that is still going. A
+// run on the offline provider ends quickly, so a call can find its caller
+// already over; a fresh caller is started until one is caught alive.
+func (c *contract) callFromLiveRun(tok, body string, want int) (caller, called reply) {
+	c.t.Helper()
+	for range 20 {
+		lead := c.call(tok, "POST", "/api/runs", "/api/runs", `{"agent":"lead","text":"Plan it"}`, http.StatusAccepted)
+		if out, ok := c.attempt(tok, "POST", "/api/runs/{id}/calls", "/api/runs/"+lead.str("id")+"/calls", body, want, false); ok {
+			return lead, out
+		}
+	}
+	c.t.Fatalf("no call from a live run answered %d", want)
+	return reply{}, reply{}
 }
 
 func matches(template, path string) bool {
@@ -745,8 +877,7 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	c.call(acme, "POST", "/api/runs/{id}/calls", "/api/runs/"+id+"/calls", `{"key":"k1","agent":"helper","text":"hi","mode":"subagent"}`, http.StatusForbidden)
 	c.call(acme, "POST", "/api/runs/{id}/calls", "/api/runs/"+id+"/calls", `{"mode":7}`, http.StatusBadRequest)
 	c.call(acme, "POST", "/api/agents", "/api/agents", `{"name":"lead","model":"offline","provider":"offline","system_prompt":"Lead.","access":{"spawn":["helper"]}}`, http.StatusCreated)
-	lead := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"lead","text":"Plan it"}`, http.StatusAccepted)
-	called := c.call(acme, "POST", "/api/runs/{id}/calls", "/api/runs/"+lead.str("id")+"/calls", `{"key":"k1","agent":"helper","text":"Do it","mode":"delegate"}`, http.StatusAccepted)
+	lead, called := c.callFromLiveRun(acme, `{"key":"k1","agent":"helper","text":"Do it","mode":"delegate"}`, http.StatusAccepted)
 	if called.str("parent") != lead.str("id") || called.str("lifecycle") != "delegated" {
 		t.Errorf("the called run is not under its caller: %s", called.raw)
 	}
@@ -924,6 +1055,86 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	c.call(acme, "GET", "/api/journal", "/api/journal?run="+id+"&kind=lifecycle&limit=5", "", http.StatusOK)
 	c.sweep(acme)
 
+	for _, op := range c.spec.ops {
+		if _, documents := op.schemas["400"]; !documents || obj(op.raw["requestBody"]) == nil || strings.Contains(op.path, "photo") {
+			continue
+		}
+		path := op.path
+		for _, name := range pathParams(op.path) {
+			path = strings.ReplaceAll(path, "{"+name+"}", "x")
+		}
+		c.call(acme, op.method, op.path, path, `{"unknown_field":1}`, http.StatusBadRequest)
+	}
+
+	// The rest, one by one.
+	c.call(acme, "DELETE", "/api/policies", "/api/policies?kind=nonsense", "", http.StatusNotFound)
+	c.call(acme, "GET", "/api/journal", "/api/journal?window=forever", "", http.StatusBadRequest)
+	c.call(acme, "GET", "/api/knowledge/search", "/api/knowledge/search?q=refunds&source=ghost", "", http.StatusNotFound)
+	c.call(globex, "GET", "/api/pick", "/api/pick?q=anything", "", http.StatusBadRequest)
+	c.call(acme, "POST", "/api/alert-rules", "/api/alert-rules", `{"name":"lost","kind":"run_failed","agent":"ghost","severity":"critical"}`, http.StatusNotFound)
+	c.call(acme, "POST", "/api/evals", "/api/evals", `{"name":"smoke","target":"agent","subject":"helper","cases":[{"id":"a","input":"hi","checks":[{"kind":"contains","value":"x"}]}]}`, http.StatusConflict)
+	c.call(globex, "PUT", "/api/policies", "/api/policies", `{"scope":{"kind":"tenant"},"period":"day","max_clients":1}`, http.StatusOK)
+	c.call(globex, "POST", "/api/clients", "/api/clients", slackBody("one", "A01ONE", ""), http.StatusCreated)
+	c.call(globex, "POST", "/api/clients", "/api/clients", slackBody("two", "A01TWO", ""), http.StatusTooManyRequests)
+	// A lease over the limit is a money limit, so it is refused with 402.
+	c.call(acme, "PUT", "/api/policies", "/api/policies", `{"scope":{"kind":"tenant"},"period":"day","max_runs":100,"max_concurrent":50,"max_lease":10}`, http.StatusOK)
+	c.callFromLiveRun(acme, `{"key":"k402","agent":"helper","text":"hi","mode":"delegate","lease":1000}`, http.StatusPaymentRequired)
+	// With the agent at its day's limit, everything that would start it is
+	// told so.
+	c.call(acme, "PUT", "/api/policies", "/api/policies", `{"scope":{"kind":"agent","name":"helper"},"period":"day","max_runs":1}`, http.StatusOK)
+	c.call(acme, "POST", "/api/schedules/{name}/run", "/api/schedules/nightly/run", "", http.StatusTooManyRequests)
+	c.callFromLiveRun(acme, `{"key":"k429","agent":"helper","text":"hi","mode":"delegate"}`, http.StatusTooManyRequests)
+	c.call(acme, "DELETE", "/api/policies", "/api/policies?kind=agent&name=helper", "", http.StatusNoContent)
+
+	// Two rules hold for every route that takes something: another
+	// workspace's object is not found, and a body with a field the route
+	// does not know is refused. Both are asked of every operation the spec
+	// says can answer them, against the objects made above.
+	ids := map[string]string{
+		"name": "helper", "id": "x", "part": parts["alert"], "variant": "lean",
+	}
+	real := map[string]map[string]string{
+		"/api/agents/{name}/memory/{id}": {"id": note.str("id")}, "/api/alert-rules/{name}": {"name": "any"},
+		"/api/clients/{id}": {"id": "support"}, "/api/evals/{name}": {"name": "smoke"}, "/api/evals/{name}/runs": {"name": "smoke"},
+		"/api/evals/{name}/run": {"name": "smoke"}, "/api/knowledge/{name}": {"name": "handbook"},
+		"/api/knowledge/{name}/documents": {"name": "handbook"}, "/api/knowledge/{name}/documents/{id}": {"name": "handbook", "id": doc.str("id")},
+		"/api/knowledge/{name}/variants": {"name": "handbook"}, "/api/knowledge/{name}/variants/{variant}": {"name": "handbook"},
+		"/api/projects/{name}": {"name": "Launch"}, "/api/projects/{name}/memory": {"name": "Launch"},
+		"/api/projects/{name}/memory/approve": {"name": "Launch"}, "/api/projects/{name}/memory/{id}": {"name": "Launch", "id": shared.str("id")},
+		"/api/schedules/{name}": {"name": "nightly"}, "/api/schedules/{name}/pause": {"name": "nightly"},
+		"/api/schedules/{name}/resume": {"name": "nightly"}, "/api/schedules/{name}/run": {"name": "nightly"},
+		"/api/inbox/{id}": {"id": mid}, "/api/inbox/{id}/read": {"id": mid}, "/api/inbox/{id}/dismiss": {"id": mid},
+		"/api/inbox/{id}/snooze": {"id": mid}, "/api/inbox/{id}/parts/{part}/resolve": {"id": mid},
+		"/api/artifacts/{id}": {"id": published.ID}, "/api/artifacts/{id}/versions": {"id": published.ID},
+		"/api/artifacts/{id}/content": {"id": published.ID}, "/api/runs/{id}/calls": {"id": lead.str("id")},
+	}
+	valid := map[string]string{
+		"/api/agents/{name}": revised, "/api/agents/{name}/memory": `{"text":"x"}`, "/api/agents/{name}/memory/approve": `{"ids":[]}`,
+		"/api/clients/{id}": `{"name":"Support","surface":"slack","identity":{"team":"T01ABCDEF"}}`, "/api/evals/{name}": `{"name":"smoke","target":"agent","subject":"helper","cases":[]}`,
+		"/api/inbox/{id}/read": `{}`, "/api/inbox/{id}/snooze": `{"until":"2999-01-01T00:00:00Z"}`,
+		"/api/inbox/{id}/parts/{part}/resolve": `{"action":"acknowledge"}`, "/api/knowledge/{name}/documents": `{"title":"t","text":"words here"}`,
+		"/api/knowledge/{name}/documents/{id}": `{"excluded":false}`, "/api/knowledge/{name}/variants": `{"name":"other"}`,
+		"/api/projects/{name}/memory": `{"text":"x"}`, "/api/projects/{name}/memory/approve": `{"ids":[]}`,
+		"/api/runs/{id}/calls": `{"key":"k9","agent":"helper","text":"hi","mode":"delegate"}`,
+	}
+	for _, op := range c.spec.ops {
+		params := pathParams(op.path)
+		if !strings.HasPrefix(op.path, "/api/") || len(params) == 0 {
+			continue
+		}
+		path := op.path
+		for _, name := range params {
+			v := ids[name]
+			if r, has := real[op.path][name]; has {
+				v = r
+			}
+			path = strings.ReplaceAll(path, "{"+name+"}", v)
+		}
+		if _, documents := op.schemas["404"]; documents {
+			c.call(globex, op.method, op.path, path, valid[op.path], http.StatusNotFound)
+		}
+	}
+
 	c.call(acme, "DELETE", "/api/artifacts/{id}", artifactPath, "", http.StatusNoContent)
 	c.call(acme, "DELETE", "/api/artifacts/{id}", artifactPath, "", http.StatusNotFound)
 	c.call(acme, "DELETE", "/api/clients/{id}", "/api/clients/support", "", http.StatusNoContent)
@@ -937,6 +1148,30 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	c.call(acme, "DELETE", "/api/schedules/{name}", "/api/schedules/nightly", "", http.StatusNotFound)
 	c.call(acme, "DELETE", "/api/projects/{name}", "/api/projects/Launch", "", http.StatusNoContent)
 	c.call(acme, "DELETE", "/api/projects/{name}", "/api/projects/Launch", "", http.StatusNotFound)
+
+	// Every status code the contract documents was answered at least once,
+	// or is listed in unexercised with the reason it is not.
+	for key, op := range c.spec.ops {
+		if !strings.HasPrefix(op.path, "/api/") || op.path == "/api/events" {
+			continue
+		}
+		perm, _ := op.raw["x-permission"].(string)
+		for code := range op.schemas {
+			switch {
+			case c.seen[key+" "+code], unexercised[key+" "+code] != "":
+			case code == "401":
+				// TestSpecPermissionsAreTheOnesTheServerEnforces sends every
+				// operation without a credential.
+			case code == "403" && perm != permAuthenticated:
+				// The same test sends every operation with no permissions.
+			case code == "413", code == "500":
+				// Shared by every operation: a body over the cap, and a
+				// failure on the server's side. Neither is per route.
+			default:
+				t.Errorf("%s documents %s and no test produced it. Exercise it, remove it, or list it in unexercised", key, code)
+			}
+		}
+	}
 
 	// Every JSON operation in the contract answered with its success status
 	// at least once above. An operation added to the spec has to be added
@@ -955,6 +1190,23 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 			t.Errorf("%s was never checked against a real success response", key)
 		}
 	}
+}
+
+// unexercised lists documented status codes no test produces, each with why
+// it is documented anyway. Keep it short: an entry is a code the server can
+// send that is hard to provoke in a test, never a guess.
+var unexercised = map[string]string{
+	// A client the server's configuration owns cannot be changed through the
+	// API. Making one needs COLLEGIUM_SLACK_* in the environment, which
+	// pkg/clients and internal/platform test.
+	"PUT /api/clients/{id} 409":    "managed client",
+	"DELETE /api/clients/{id} 409": "managed client",
+	// Busy: a second start while the first eval is still running. Its timing
+	// depends on the offline provider's speed, so a test would be flaky.
+	"POST /api/evals/{name}/run 409": "suite already running",
+	// retry needs a failed turn a person asked, and the offline provider
+	// never fails, so no test can raise one here.
+	"POST /api/inbox/{id}/parts/{part}/resolve 429": "retry refused by a limit",
 }
 
 // The event stream is server-sent events. Each message's data is validated
@@ -1035,5 +1287,34 @@ func TestEventStreamMatchesTheSpec(t *testing.T) {
 	}
 	if notices == 0 {
 		t.Error("the stream carried no inbox notice")
+	}
+}
+
+// The test's copy of the spec refuses properties a schema does not name, at
+// every level and through allOf, so a key added to a handler's map or inline
+// struct fails TestResponsesMatchTheSpec.
+func TestClosedSchemasRejectUnknownProperties(t *testing.T) {
+	s := loadSpec(t)
+	me := s.ops["GET /api/me"].schemas["200"]
+	good := map[string]any{"principal": map[string]any{"subject": "a", "tenant": "t", "kind": "user"}, "permissions": nil, "first_admin": false}
+	if err := me.Validate(good); err != nil {
+		t.Fatalf("a valid answer is refused: %v", err)
+	}
+	for name, bad := range map[string]map[string]any{
+		"at the top":   {"principal": good["principal"], "permissions": nil, "first_admin": false, "secret": "x"},
+		"in an object": {"principal": map[string]any{"subject": "a", "tenant": "t", "kind": "user", "token": "x"}, "permissions": nil, "first_admin": false},
+	} {
+		if me.Validate(bad) == nil {
+			t.Errorf("an unknown property %s is accepted", name)
+		}
+	}
+	event := s.component(t, "RunEvent")
+	base := map[string]any{"seq": json.Number("1"), "topic": "agent:a:r", "run_id": "r", "tenant": "t", "agent": "a", "rev": json.Number("1"), "origin": "api", "at": "2026-01-01T00:00:00Z", "kind": "delta.text"}
+	if err := event.Validate(base); err != nil {
+		t.Fatalf("a valid event is refused: %v", err)
+	}
+	base["extra"] = true
+	if event.Validate(base) == nil {
+		t.Error("an unknown property on an allOf variant is accepted")
 	}
 }

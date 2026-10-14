@@ -65,10 +65,9 @@ jobs:
           node-version: 24
       - name: Lint the spec
         run: make spec-lint
-      - name: Install oag
+      - name: Install oag (pinned, sha256 checked)
         run: |
-          version=$(sed -n 's/^OAG_VERSION := //p' Makefile)
-          curl -fsSL "https://raw.githubusercontent.com/urmzd/oag/v${version}/install.sh" | OAG_VERSION="v${version}" OAG_INSTALL_DIR="$RUNNER_TEMP/bin" sh
+          make oag-install OAG_DIR="$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
       - name: Regenerate the client
         run: make client

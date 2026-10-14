@@ -14,6 +14,7 @@ import type {
   InboxNotice,
   ManifestEvent,
   Refusal,
+  Run,
   RunEvent,
 } from "./generated/types.js";
 
@@ -65,6 +66,59 @@ export type DecodedRunEvent = {
     body?: Extract<ManifestEvent, { kind: K }>["body"];
   };
 }[Kind];
+
+/** How `runEvents` reconnects when the stream drops before the run is over. */
+export interface ResumeOptions {
+  /** Reconnections in a row without an event before giving up. Default 5. */
+  maxRetries?: number;
+  /** The first wait, doubled each time. Default 500 ms. */
+  initialDelayMs?: number;
+  /** The longest wait. Default 10 s. */
+  maxDelayMs?: number;
+}
+
+const DEFAULT_RESUME: Required<ResumeOptions> = { maxRetries: 5, initialDelayMs: 500, maxDelayMs: 10_000 };
+
+/**
+ * `runEvents` could not follow a run to an event that ends it. `reason` says
+ * why: `stopped` (the run was stopped, which publishes no ending event),
+ * `ended` (its record says it is over and no ending event was found), or
+ * `gave-up` (the stream kept dropping). `run` is the last record read.
+ */
+export class StreamEndedError extends Error {
+  readonly reason: "stopped" | "ended" | "gave-up";
+  readonly run: Run | undefined;
+  constructor(reason: "stopped" | "ended" | "gave-up", message: string, run: Run | undefined, cause?: unknown) {
+    super(message, { cause });
+    this.name = "StreamEndedError";
+    this.reason = reason;
+    this.run = run;
+  }
+}
+
+/** Whether a stream error is the connection going away, worth reconnecting after. */
+function droppedStream(error: unknown): boolean {
+  if (error instanceof SSEError || error instanceof ApiError) {
+    const status = error.statusCode ?? 0;
+    return status === 0 || status === 408 || status === 429 || status >= 500;
+  }
+  return !(error instanceof DOMException && (error.name === "AbortError" || error.name === "TimeoutError"));
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
 
 /** One message from the event stream, told apart by `type`. */
 export type StreamItem =
@@ -157,6 +211,7 @@ export class Collegium extends ApiClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #prepare: (req: { url: string; init: RequestInit }) => Promise<{ url: string; init: RequestInit }>;
   readonly #headers: Record<string, string>;
+  readonly #timeout: number | undefined;
 
   constructor(options: CollegiumOptions) {
     const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis);
@@ -182,37 +237,109 @@ export class Collegium extends ApiClient {
     this.#fetch = fetchFn;
     this.#prepare = prepare;
     this.#headers = options.headers ?? {};
+    this.#timeout = options.timeout;
   }
 
   /**
    * The event stream as typed items. A message with no name is a run event,
    * decoded. A message named `inbox` is a notice that an inbox message
-   * changed. Stop by aborting `options.signal` or by leaving the loop.
+   * changed.
    *
-   * The server ends the stream when the reader falls behind. To carry on,
-   * call again with `from` set to the last `seq` seen, which is only
-   * meaningful for a topic that names one run.
+   * Leaving the loop in any way (`break`, `return`, a throw, the stream
+   * ending) closes the request, and so does aborting `options.signal`.
+   *
+   * The server ends the stream when the reader falls behind, and this returns
+   * when it does. `runEvents` resumes on its own; a reader of a wider topic
+   * calls again.
    */
   async *events(params: { topic?: string; from?: number } = {}, options?: SSEOptions): AsyncGenerator<StreamItem, void, undefined> {
-    for await (const message of this.streamEvents(params.topic, params.from, { retry: false, ...options })) {
-      if (message.event === "inbox") {
-        yield { type: "inbox", notice: message.data as InboxNotice };
-      } else if (message.event === undefined || message.event === "message") {
-        yield { type: "event", event: decodeEvent(message.data as RunEvent) };
+    const own = new AbortController();
+    const signal = options?.signal ? AbortSignal.any([options.signal, own.signal]) : own.signal;
+    try {
+      for await (const message of this.streamEvents(params.topic, params.from, { retry: false, ...options, signal })) {
+        if (message.event === "inbox") {
+          yield { type: "inbox", notice: message.data as InboxNotice };
+        } else if (message.event === undefined || message.event === "message") {
+          yield { type: "event", event: decodeEvent(message.data as RunEvent) };
+        }
       }
+    } finally {
+      // The generated reader only releases its lock, so leaving the loop left
+      // the connection and the server's subscription open (urmzd/oag#35).
+      // Aborting is what closes them. Remove once oag closes the body itself.
+      own.abort();
     }
   }
 
   /**
    * One run's events, decoded, ending after the event that completes it or
-   * fails it for good. A run that is stopped publishes no such event: pass a
-   * signal and abort it, or check `getRun`, to stop waiting.
+   * fails it for good. It never ends quietly before that.
+   *
+   * When the stream drops (the server ends a reader that fell behind, a
+   * restart, a proxy's timeout), it reads the run's record and, while the
+   * run is not over, reconnects after the last `seq` it yielded, with
+   * backoff. It throws `StreamEndedError` when it cannot resume, or when the
+   * run's record says it ended with no event to say so, which is what a
+   * stopped run does. An error the server answers with (403, 404) is thrown
+   * as it is.
+   *
+   * The generated stream treats a dropped connection as a normal end
+   * (urmzd/oag#35), which is why the resuming lives here.
    */
-  async *runEvents(run: { agent: string; id: string }, params: { from?: number } = {}, options?: SSEOptions): AsyncGenerator<DecodedRunEvent, void, undefined> {
-    for await (const item of this.events({ topic: topicFor(run.agent, run.id), from: params.from }, options)) {
-      if (item.type !== "event" || item.event.run_id !== run.id) continue;
-      yield item.event;
-      if (endsRun(item.event)) return;
+  async *runEvents(
+    run: { agent: string; id: string },
+    params: { from?: number; resume?: ResumeOptions } = {},
+    options?: SSEOptions,
+  ): AsyncGenerator<DecodedRunEvent, void, undefined> {
+    const resume = { ...DEFAULT_RESUME, ...params.resume };
+    let from = params.from;
+    let failures = 0;
+    let draining = false;
+    let cause: unknown;
+    let record: Run | undefined;
+    for (;;) {
+      try {
+        for await (const item of this.events({ topic: topicFor(run.agent, run.id), from }, options)) {
+          if (item.type !== "event" || item.event.run_id !== run.id) continue;
+          if (from !== undefined && item.event.seq <= from) continue;
+          from = item.event.seq;
+          failures = 0;
+          yield item.event;
+          if (endsRun(item.event)) return;
+        }
+        cause = undefined;
+      } catch (error) {
+        if (options?.signal?.aborted || !droppedStream(error)) throw error;
+        cause = error;
+      }
+      if (draining) {
+        // The record said the run was over and a last read found no event
+        // to end it.
+        throw new StreamEndedError("ended", `run ${run.id} ended without an event that says so`, record, cause);
+      }
+      try {
+        record = await this.getRun(run.id, { signal: options?.signal });
+      } catch (error) {
+        // A server that is restarting cannot answer either. That is one more
+        // failed attempt, not the end.
+        if (options?.signal?.aborted || !droppedStream(error)) throw error;
+        cause = error;
+        record = undefined;
+      }
+      if (record?.status === "stopped") {
+        throw new StreamEndedError("stopped", `run ${run.id} was stopped`, record, cause);
+      }
+      if (record?.status === "completed" || record?.status === "failed") {
+        // It ended while the stream was down. Its last events are read once
+        // more, without waiting.
+        draining = true;
+        continue;
+      }
+      if (++failures > resume.maxRetries) {
+        throw new StreamEndedError("gave-up", `the stream for run ${run.id} could not be resumed`, record, cause);
+      }
+      const delay = Math.min(resume.initialDelayMs * 2 ** (failures - 1), resume.maxDelayMs);
+      await sleep(delay, options?.signal);
     }
   }
 
@@ -238,7 +365,8 @@ export class Collegium extends ApiClient {
   }
 
   async #bytes(path: string, options?: RequestOptions): Promise<ApiResponse<Blob>> {
-    const signals = [options?.signal, options?.timeout === undefined ? undefined : AbortSignal.timeout(options.timeout)].filter(
+    const timeout = options?.timeout ?? this.#timeout;
+    const signals = [options?.signal, timeout === undefined ? undefined : AbortSignal.timeout(timeout)].filter(
       (s): s is AbortSignal => s !== undefined,
     );
     const req = await this.#prepare({

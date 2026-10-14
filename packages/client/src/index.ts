@@ -9,10 +9,12 @@ export {
   endsRun,
   failureOf,
   isRefusal,
+  StreamEndedError,
   topicFor,
   type ApiFailure,
   type CollegiumOptions,
   type DecodedRunEvent,
+  type ResumeOptions,
   type StreamItem,
   type TokenSource,
 } from "./collegium.js";

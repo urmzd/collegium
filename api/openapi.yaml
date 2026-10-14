@@ -449,7 +449,6 @@ paths:
               schema: {$ref: "#/components/schemas/Run"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "402": {$ref: "#/components/responses/Refused"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "429": {$ref: "#/components/responses/Refused"}
@@ -903,9 +902,7 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Run"}
-        "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "402": {$ref: "#/components/responses/Refused"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "429": {$ref: "#/components/responses/Refused"}
@@ -1059,7 +1056,6 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/InboxMessage"}
-        "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1133,7 +1129,6 @@ paths:
               schema: {$ref: "#/components/schemas/InboxMessage"}
         "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
-        "402": {$ref: "#/components/responses/Refused"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "429": {$ref: "#/components/responses/Refused"}
@@ -1538,7 +1533,6 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/EvalRun"}
-        "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -1715,7 +1709,6 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
-        "409": {$ref: "#/components/responses/Conflict"}
         "413": {$ref: "#/components/responses/TooLarge"}
         "500": {$ref: "#/components/responses/ServerError"}
   /api/knowledge/{name}/documents/{id}:
@@ -1790,7 +1783,6 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
-        "409": {$ref: "#/components/responses/Conflict"}
         "413": {$ref: "#/components/responses/TooLarge"}
         "500": {$ref: "#/components/responses/ServerError"}
   /api/knowledge/{name}/variants/{variant}:
@@ -1957,7 +1949,6 @@ paths:
       responses:
         "204":
           description: Deleted.
-        "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -2111,7 +2102,6 @@ paths:
       responses:
         "204":
           description: Removed.
-        "400": {$ref: "#/components/responses/BadRequest"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
@@ -2428,8 +2418,10 @@ components:
     Refused:
       description: |
         A limit refused the run. 429 for a count limit (runs in the period, or
-        runs in flight), 402 for a money limit (spend or lease). The body names
-        the limit, what was left and the policy that set it.
+        runs in flight), 402 for a money limit. Only a call carries a lease, and
+        spend is not enforced, so today 402 comes only from `createCall` over a
+        lease limit. The body names the limit, what was left and the policy
+        that set it.
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Refusal"}
