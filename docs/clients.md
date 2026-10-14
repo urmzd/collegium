@@ -155,6 +155,8 @@ limit. See the status table for what a policy can set.
 | Clients on one surface | `max_clients_per_surface` on the tenant's policy | 5 |
 | Runs a client raises in a period | `max_runs` on a policy with scope `{"kind":"client","name":"<id>"}` | None |
 | Runs a client has in flight | `max_concurrent` on the same policy | None |
+| What a client's runs spend in a period | `spend_limit` (micro-USD) on the same policy | None |
+| Tokens a client's runs use in a period | `max_tokens` on the same policy | None |
 
 A policy may set the client caps as high as 100. The count and the insert are
 one step, so racing creates cannot pass a cap. Lowering a cap below what exists
@@ -168,8 +170,28 @@ the client, the policy version and the limit, and raises a budget alert.
 Slack and GitHub are still answered 200 for a request whose run a limit
 refused: the request was genuine and retrying it would not help.
 
-Not built: a spend or storage limit per client. Spend is not enforced for any
-scope, and published files are not counted by client.
+Spend and tokens are enforced like any scope's: see
+[usage and spend](architecture.md#usage-and-spend). Not built: a storage limit
+per client. Published files are not counted by client.
+
+## Usage on a turn
+
+The console shows what a run used on its Activity page, the context gauge and
+Analytics, and not on the turn in the conversation. The Slack app shows none.
+The rule is that a surface shows usage on a turn only if every surface the
+shared adapter feeds can, and vultus has no usage summary for Slack:
+`@vultus/web` renders `Turn.usage` as a chip, `@vultus/components` renders
+nothing. So the adapter leaves `Turn.usage` unset and the two agree. The run's
+`usage` is on the API for any client that wants it.
+
+What vultus should have for this:
+
+- A `RunUsage` summary in `@vultus/components` (Slack context line and web)
+  taking integer micros, a currency and an unpriced count, so neither surface
+  formats money itself. `Turn.usage.costUsd` is a float of dollars today.
+- A context gauge (`ContextWindow` exists in `@vultus/core` session state,
+  with no component that renders it from a run).
+- A limit meter with a lower-bound state, for spend that left calls out.
 
 ## API
 

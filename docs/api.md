@@ -135,7 +135,9 @@ try {
 ```
 
 `runEvents` returns after the event that completes the run, or fails it for
-good, and closes its connection however the loop is left. A dropped stream is
+good, and closes its connection however the loop is left. It also yields
+`usage.call`, one per model call, and `usage.child`; a reader that does not
+count usage passes over them, and `getRun` has the run's total in `usage`. A dropped stream is
 resumed. A run stopped elsewhere ends it with `StreamEndedError` and `reason`
 `stopped`. `getRun` is the authority on whether a run is over. A refusal by a
 limit throws from `createRun`: `failureOf(error).refusal` names the limit, the
