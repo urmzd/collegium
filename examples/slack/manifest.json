@@ -1,0 +1,41 @@
+{
+  "_metadata": { "major_version": 2, "minor_version": 1 },
+  "display_information": {
+    "name": "collegium",
+    "description": "Tag an agent from Slack and get its answer in the thread."
+  },
+  "features": {
+    "agent_view": {
+      "agent_description": "Answers mentions, direct messages and code channel commands with a collegium agent."
+    },
+    "bot_user": {
+      "display_name": "collegium",
+      "always_online": true
+    },
+    "code_channels": {
+      "enabled": true,
+      "slash_command_url": "https://YOUR_HOST/connectors/slack/commands"
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "app_mentions:read",
+        "assistant:write",
+        "chat:write",
+        "code_channels:manage",
+        "im:history",
+        "reactions:write"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "request_url": "https://YOUR_HOST/connectors/slack",
+      "bot_events": ["agent_session_stopped", "app_mention", "message.im"]
+    },
+    "socket_mode_enabled": false,
+    "org_deploy_enabled": false,
+    "token_rotation_enabled": false
+  }
+}

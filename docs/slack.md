@@ -1,0 +1,137 @@
+# Slack agent delivery
+
+The Slack connector accepts signed mentions, direct messages and code channel
+slash commands. Responses use one message per run, edited as events arrive.
+
+## App definition
+
+[`examples/slack/manifest.json`](../examples/slack/manifest.json) declares
+the app: an agent view, a bot user, code channels, and the scopes and events the
+connector uses. Replace `YOUR_HOST` with the public address of `collegium serve`,
+then create the app from the manifest at <https://api.slack.com/apps>.
+
+| Manifest entry | Why the connector needs it |
+|----------------|----------------------------|
+| `app_mentions:read`, `app_mention` | A mention in a channel raises a run. |
+| `im:history`, `message.im` | A direct message raises a run. |
+| `chat:write` | Post and edit the run's message; report session status. |
+| `reactions:write` | The `slack_add_reaction` action. |
+| `agent_view`, `assistant:write` | Declares the app an agent, which sessions require. |
+| `agent_session_stopped` | Shows Slack's stop button on a working session and delivers the press. |
+| `code_channels`, `code_channels:manage` | Register and receive slash commands. |
+
+Slack sends events to `/connectors/slack` and command invocations to
+`/connectors/slack/commands`. Both are verified with the same signing secret
+before anything is parsed.
+
+## Configuration
+
+| Variable | Meaning |
+|----------|---------|
+| `COLLEGIUM_SLACK_TOKEN` | Bot token (`xoxb-`). Required with the signing secret. |
+| `COLLEGIUM_SLACK_SIGNING_SECRET` | Authenticates every inbound request. |
+| `COLLEGIUM_SLACK_TEAM` | Team id this deployment serves. Other workspaces are refused. |
+| `COLLEGIUM_SLACK_BOTS` | `U08BOT=docs-bot` pairs: which agent a bot user id stands for. |
+| `COLLEGIUM_SLACK_DEFAULT_AGENT` | Answers a mention or command that named no agent. |
+| `COLLEGIUM_SLACK_SESSIONS` | `true` reports run lifecycle as session status. |
+| `COLLEGIUM_SLACK_COMMANDS` | JSON array of commands to offer in code channels. |
+
+```sh
+export COLLEGIUM_SLACK_SESSIONS=true
+export COLLEGIUM_SLACK_COMMANDS='[{"name":"create-pr","description":"Open a pull request","argument_hint":"[title]"}]'
+```
+
+Malformed values fail startup. So do commands Slack would refuse: more than 10,
+a name over 31 characters, a leading slash, a missing description, a duplicate.
+
+## Session status
+
+With sessions on, each lifecycle event calls `agents.sessions.setStatus`:
+
+| Run event | Session status | What Slack shows |
+|-----------|----------------|------------------|
+| accepted, started, resumed | `processing` | The "Working…" indicator. |
+| parked | `suspended` | Waiting on the user. |
+| completed, failed | `active` | Ready for the next prompt. |
+
+A failed run reports `active` because its error is rendered in the run's own
+message and the thread remains usable. The connector never reports `closed`.
+
+A session is a thread in an ordinary channel and the whole channel in a code
+channel. The trigger cannot tell the two apart, so the sink sends the thread
+first and repeats without it when Slack answers `thread_ts_not_allowed`.
+
+## Stopping a run
+
+Slack shows a stop button on a `processing` session because the manifest
+subscribes to `agent_session_stopped`. A press is handled in the order Slack
+asks for:
+
+1. Every run answering in that session is stopped through the platform, with
+   the cause `Stopped by slack:<user id>`. Runs attached to it stop too; runs it
+   delegated carry on. A stop on a code channel covers every run in the channel.
+2. `Stopped by @user.` is posted in the session.
+3. The session is set to `active`.
+
+Nothing more of a stopped run is written to Slack. The model call already in
+flight is not interrupted, because the runtime has no cancel; its output is
+discarded. Anyone who can see the button may press it: the session, not a
+console role, is the authority.
+
+Which runs a session holds is remembered in memory. After a restart the button
+still settles the status but finds no run to stop.
+
+Check the manifest with the Slack CLI from `examples/slack`:
+
+```sh
+slack manifest validate --team <team id>
+```
+
+## Slash commands
+
+Commands are registered with `agents.conversations.setCommands` the first time a
+run is accepted in a channel. Slack answers `not_agent_channel` for an ordinary
+channel; that outcome is remembered, so it costs one call per channel per
+process.
+
+An invocation becomes a tag whose text is what a human would have typed:
+`/create-pr Fix the flaky login test`. The agent is the one named in the text
+with `@name`, otherwise the default agent. The answer is a top-level message in
+the code channel. With no agent configured, the invoker gets an ephemeral
+message saying so.
+
+## Errors
+
+Slack reports failures as `ok: false` with a code. For status and command
+calls collegium logs permanent refusal codes as warnings and still treats the event as
+delivered: the answer is already on the surface, and retrying a refusal would
+never succeed. Transport failures and transient Slack server/rate-limit errors
+are returned, so the router retries them with its bounded backoff.
+
+| Code | Usual cause |
+|------|-------------|
+| `feature_disabled` | Agent sessions are not enabled for the workspace. |
+| `missing_scope` | The installed app predates a scope in the manifest. Reinstall. |
+| `thread_ts_required` | A top-level route in an ordinary channel has no session. |
+| `no_actions_url` | The manifest has no `slash_command_url`. |
+| `colliding_with_builtin` | A command shares a name with a Slack command. |
+| `too_many_commands` | Other agents in the channel already use the 10 slots. |
+| `not_authorized` | The app is not the channel's agent bot. |
+
+## Remaining work
+
+- **Creating code channels.** The connector answers in code channels that
+  already exist. It does not call `agents.conversations.create`, set context bar
+  items, publish views or archive.
+- **Unmentioned messages in a code channel.** Only mentions and commands raise
+  runs there; `message.session` is not handled.
+- **Session titles and renames** are left to Slack and its users.
+- **Native streaming.** Answers are edited with `chat.update`, not streamed
+  with `chat.startStream`.
+- Command registration, lifecycle replay cursors and the runs a session holds
+  are bounded and in memory, like the sink's message handles. A restart forgets
+  them.
+
+Code channels and agent sessions are new Slack surfaces. This connector is
+tested against the documented contract through the in-memory fake and has not
+yet been exercised against a live workspace.

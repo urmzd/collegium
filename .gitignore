@@ -15,3 +15,7 @@ coverage.html
 
 # Git worktrees
 .worktrees/
+
+# Slack CLI local state: project and app ids
+examples/slack/.slack/*
+!examples/slack/.slack/hooks.json
