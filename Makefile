@@ -1,6 +1,13 @@
-.PHONY: all init build test lint fmt check dev web
+.PHONY: all init build test lint fmt check dev web client client-check spec-lint
 
 BIN := collegium
+
+# The generator that writes packages/client from api/openapi.yaml, and the one
+# version of it whose output is committed. CI regenerates with the same version
+# and fails on any difference.
+OAG ?= oag
+OAG_VERSION := 0.20.6
+REDOCLY := npx --yes @redocly/cli@2.63.0
 
 all: check
 
@@ -29,3 +36,20 @@ dev: build
 # The web console, proxying /api and /auth to the server from `make dev`.
 web:
 	cd apps/web && pnpm install && pnpm dev
+
+# Regenerate the TypeScript client from the API contract. The output under
+# packages/client/src/generated is committed.
+client:
+	@$(OAG) version | grep -qx 'oag v$(OAG_VERSION)' || { \
+		echo "make client needs oag v$(OAG_VERSION), found: $$($(OAG) version 2>&1 | head -1)"; \
+		echo "install it with: curl -fsSL https://raw.githubusercontent.com/urmzd/oag/v$(OAG_VERSION)/install.sh | OAG_VERSION=v$(OAG_VERSION) sh"; \
+		exit 1; }
+	cd packages/client && $(OAG) generate
+
+# Build, typecheck and test the client package.
+client-check:
+	cd packages/client && pnpm install --frozen-lockfile && pnpm typecheck && pnpm test
+
+# Lint the API contract.
+spec-lint:
+	$(REDOCLY) lint api/openapi.yaml --config api/redocly.yaml

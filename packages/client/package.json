@@ -1,0 +1,30 @@
+{
+  "name": "@collegium/client",
+  "version": "0.0.0",
+  "private": true,
+  "description": "TypeScript client for the collegium HTTP API, generated from api/openapi.yaml by oag.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22.12"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "pnpm build && tsc -p test/tsconfig.json",
+    "test": "pnpm build && node --test --experimental-strip-types test/*.test.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "typescript": "^6.0.0"
+  }
+}
