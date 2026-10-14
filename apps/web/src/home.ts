@@ -8,13 +8,16 @@ import {
   ANY_AGENT,
   type HomeConnection,
   type HomeModel,
+  type HomeNotification,
+  type HomeNotifications,
   type HomeStart,
   type HomeStartId,
-  type HomeWaiting,
+  type Tone,
   type UiAction,
 } from "@vultus/core";
 import { accessOf } from "./access.ts";
-import type { AccessDecision, Client, Me, Revision } from "./api.ts";
+import type { AccessDecision, Alert, Client, Me, Revision } from "./api.ts";
+import { alertUrl, consoleUrl, inboxItemUrl } from "./links.ts";
 import type { PlatformMessage } from "./mail.ts";
 
 export const ASSISTANT = "Collegium";
@@ -25,10 +28,20 @@ export interface HomeInput {
   /** What the person calls themselves here, or their name from sign-in. */
   name: string;
   agents: Revision[];
-  /** Open inbox messages, newest first. */
+  /** Open inbox messages, newest first, as loaded (a bounded first page). */
   waiting: PlatformMessage[];
   /** Open messages in the whole inbox, not only those loaded. */
   waitingCount: number;
+  /** The tenant's alerts as the console holds them, or null when the person may not read alerts. */
+  alerts: Alert[] | null;
+  /**
+   * Where this console is reached from outside, such as the server's
+   * `-public-url`. Given, every link is absolute so it works from Slack;
+   * left out, links are relative to the console that draws the page.
+   */
+  publicUrl?: string;
+  /** Lines under the ask box: what went wrong with the last question, what goes with the next. */
+  notices?: { tone: Tone; text: string }[];
   /** Runs that have not ended. */
   running: number;
   /** The workspace's clients, or null when the person may not see them. */
@@ -63,15 +76,74 @@ const WANTS: Record<string, { verb: string; detail: string }> = {
 };
 
 /** One inbox message as something waiting on the person. */
-export function waitingOf(m: PlatformMessage): HomeWaiting {
+export function waitingOf(m: PlatformMessage, base?: string): HomeNotification {
   const wants = WANTS[m.kind];
   const subject = m.subject.trim().replace(/\.$/, "");
   return {
+    kind: "inbox",
     id: m.id,
     messageId: m.id,
-    from: m.from.name || "Collegium",
+    from: m.from.name || ASSISTANT,
     summary: `${wants?.verb ?? "needs you"}: ${subject}.`,
     ...(wants ? { detail: wants.detail } : {}),
+    at: m.at,
+    url: inboxItemUrl(m.id, base),
+  };
+}
+
+/** The first line of an alert's body, short enough for one row. The alert's page has all of it. */
+export function oneLine(text: string, max = 140): string {
+  const first = text.trim().split("\n")[0]?.trim() ?? "";
+  return first.length > max ? `${first.slice(0, max - 1).trimEnd()}…` : first;
+}
+
+/** One open alert, as a notification that names its rule, severity and when it fired. */
+export function alertOf(a: Alert, base?: string): HomeNotification {
+  const title = a.title.trim().replace(/\.$/, "");
+  return {
+    kind: "alert",
+    id: a.id,
+    // Limits raise alerts with no rule behind them.
+    from: a.rule || ((a.kind as string) === "budget" ? "Limits" : ASSISTANT),
+    summary: `fired: ${title}.`,
+    ...(a.body ? { detail: oneLine(a.body) } : {}),
+    at: a.at,
+    severity: a.severity === "critical" ? "critical" : "warning",
+    url: alertUrl(a.id, base),
+  };
+}
+
+/** The alerts an inbox message is about, by the alert part it carries. */
+function alertsIn(m: PlatformMessage): string[] {
+  return m.parts.flatMap((p) => (p.type === "alert" ? [p.alert.id] : []));
+}
+
+/** How many open alerts and inbox items Home is handed at most. It shows fewer; the rest are counted. */
+export const NOTIFICATION_WINDOW = 30;
+
+/**
+ * Inbox items and open alerts, each linking to its own page. Every alert
+ * raises an inbox message too; when the person sees the alert, that message
+ * is left out so nothing is listed twice, and the inbox count drops by the
+ * open alerts it already holds.
+ */
+export function notificationsOf(input: Pick<HomeInput, "me" | "waiting" | "waitingCount" | "alerts" | "publicUrl">): HomeNotifications {
+  const can = (p: string) => (input.me.permissions ?? []).includes(p);
+  const base = input.publicUrl;
+  const readsInbox = can("runs:read");
+  const open = can("alerts:read") && input.alerts ? input.alerts.filter((a) => !a.acked_by) : null;
+  const shownAlerts = new Set((open ?? []).map((a) => a.id));
+  const inbox = readsInbox
+    ? input.waiting.filter((m) => !alertsIn(m).some((id) => shownAlerts.has(id))).slice(0, NOTIFICATION_WINDOW)
+    : [];
+  // Times arrive with their own offsets, so they are compared as instants.
+  const alerts = [...(open ?? [])].sort((x, y) => Date.parse(y.at) - Date.parse(x.at)).slice(0, NOTIFICATION_WINDOW);
+  return {
+    items: [...alerts.map((a) => alertOf(a, base)), ...inbox.map((m) => waitingOf(m, base))],
+    ...(readsInbox
+      ? { inbox: { total: Math.max(inbox.length, input.waitingCount - (open?.length ?? 0)), url: consoleUrl("inbox", {}, base) } }
+      : {}),
+    ...(open ? { alerts: { total: open.length, url: consoleUrl("alerts", {}, base) } } : {}),
   };
 }
 
@@ -92,11 +164,6 @@ export function connectionsOf(clients: Client[], canConnect: boolean): HomeConne
   });
 }
 
-/** A console link to a view, which the console opens in place. */
-export function viewUrl(view: string, extra: Record<string, string> = {}): string {
-  return `/?${new URLSearchParams({ view, ...extra })}`;
-}
-
 export function buildHome(input: HomeInput): HomeModel {
   const { me } = input;
   const can = (p: string) => (me.permissions ?? []).includes(p);
@@ -106,13 +173,15 @@ export function buildHome(input: HomeInput): HomeModel {
     return { id: s.id, ...(count ? { count } : {}) };
   });
   const canAsk = can("runs:write") && input.agents.length > 0;
+  const base = input.publicUrl;
   return {
     person: { id: me.principal.subject, name: input.name || me.principal.email || me.principal.subject },
     assistant: { name: ASSISTANT },
     intro: "I run this workspace's agents.",
-    ask: { attach: canAsk },
+    // Only someone who may run agents is offered the ask box.
+    ...(can("runs:write") ? { ask: { attach: canAsk, ...(input.notices?.length ? { notices: input.notices } : {}) } } : {}),
     starts,
-    waiting: can("runs:read") ? input.waiting.map(waitingOf) : [],
+    notifications: notificationsOf(input),
     ...(canAsk
       ? {
           answeredBy: {
@@ -122,8 +191,9 @@ export function buildHome(input: HomeInput): HomeModel {
         }
       : {}),
     connections: input.clients ? connectionsOf(input.clients, can("clients:write")) : [],
-    ...(can("clients:read") ? { connectionsUrl: viewUrl("connections") } : {}),
+    ...(can("clients:read") ? { connectionsUrl: consoleUrl("connections", {}, base) } : {}),
     access: accessOf(me, input.decision, `${DOCS}/authorization.md`),
+    ...(base ? { consoleUrl: base } : {}),
     links: [
       { label: "Documentation", url: DOCS },
       { label: "API reference", url: `${DOCS}/api.md` },
@@ -171,17 +241,4 @@ export function homeIntent(a: UiAction): HomeIntent {
     default:
       return null;
   }
-}
-
-/** Where a console link goes, or null for a link that leaves the console. */
-export function destinationOf(href: string, origin: string): { view: string; params: URLSearchParams } | null {
-  let url: URL;
-  try {
-    url = new URL(href, origin);
-  } catch {
-    return null;
-  }
-  if (url.origin !== origin || url.pathname !== "/") return null;
-  const view = url.searchParams.get("view");
-  return view ? { view, params: url.searchParams } : null;
 }

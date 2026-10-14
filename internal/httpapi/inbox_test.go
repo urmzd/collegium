@@ -107,6 +107,20 @@ func TestInboxResolvesWhatItHolds(t *testing.T) {
 	if _, out := f.do(t, nil, "GET", "/api/inbox/count", blind, ""); out["open"].(float64) != 0 {
 		t.Fatal("a caller who cannot read alerts counts one")
 	}
+	// The alert behind the message, which the console's Home lists and links to by id,
+	// is the tenant's own: another tenant's list does not hold it, and its id names nothing there.
+	if _, out := f.do(t, nil, "GET", "/api/alerts", globex, ""); len(out["alerts"].([]any)) != 0 {
+		t.Fatalf("another tenant lists the alert: %v", out)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/alerts/"+alertID+"/ack", globex, ""); res.StatusCode != http.StatusNotFound {
+		t.Errorf("another tenant acknowledged the alert: %d", res.StatusCode)
+	}
+	if res, _ := f.do(t, nil, "GET", "/api/alerts", blind, ""); res.StatusCode != http.StatusForbidden {
+		t.Errorf("a caller who cannot read alerts listed them: %d", res.StatusCode)
+	}
+	if _, out := f.do(t, nil, "GET", "/api/alerts", reader, ""); len(out["alerts"].([]any)) == 0 {
+		t.Fatal("a reader of alerts does not see the tenant's alert")
+	}
 
 	// A reader sees it and is offered nothing. Each action needs its own right.
 	_, seen := f.do(t, nil, "GET", "/api/inbox/"+id, reader, "")
