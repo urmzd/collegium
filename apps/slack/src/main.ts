@@ -59,6 +59,7 @@ async function main() {
   for (const signal of ["SIGINT", "SIGTERM"] as const) process.once(signal, () => stop.abort());
   stop.signal.addEventListener("abort", () => {
     log("stopping");
+    app.close();
     // Turns in flight finish their Slack writes, then the process ends.
     const patience = new Promise((r) => setTimeout(r, 10_000));
     Promise.race([app.idle(), patience]).finally(() => process.exit(0));

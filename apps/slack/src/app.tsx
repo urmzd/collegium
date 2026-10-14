@@ -73,8 +73,10 @@ export interface AppOptions {
   flushMs?: number;
   /** How often a run's record is read while it is being followed. */
   pollMs?: number;
-  /** How long a run may go without an event or a change to its record before the turn stops waiting for it. */
+  /** How long a run may go without an event or a change to its record before it is followed slowly. */
   stallMs?: number;
+  /** The longest wait between two reads of a quiet run's record. */
+  slowPollMs?: number;
   log?: (line: string) => void;
 }
 
@@ -208,6 +210,23 @@ const NO_AGENT: Failure = {
   message: "No agent answers here yet. Name one this app may reach, as @name.",
 };
 
+/** A retry by someone who did not ask, and is not an operator. */
+// vultus: needs copy for this, such as copy.notYoursRetry; copy.notYours speaks of approving.
+const RETRY_NOT_YOURS = "Only the person who asked can retry this.";
+
+/** Wait, or stop waiting when the signal aborts. */
+const sleep = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener("abort", done);
+  });
+
 const short = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 20);
 
 export class App {
@@ -225,6 +244,11 @@ export class App {
   private readonly flushMs: number;
   private readonly pollMs: number;
   private readonly stallMs: number;
+  private readonly slowPollMs: number;
+  /** Ends every slow follow on shutdown. */
+  private readonly closing = new AbortController();
+  /** Runs whose stop was already confirmed in their thread. */
+  private readonly confirmed = new Recent<true>(10_000);
 
   constructor(
     private readonly slack: SlackApi,
@@ -234,10 +258,16 @@ export class App {
     this.flushMs = opts.flushMs ?? 700;
     this.pollMs = opts.pollMs ?? 5_000;
     this.stallMs = opts.stallMs ?? 15 * 60_000;
+    this.slowPollMs = opts.slowPollMs ?? 3 * 60_000;
   }
 
   private log(line: string) {
     this.opts.log?.(line);
+  }
+
+  /** Stop following quiet runs. Turns in flight still finish. */
+  close(): void {
+    this.closing.abort();
   }
 
   /** Resolves when everything started so far has finished. Tests wait on it. */
@@ -518,15 +548,44 @@ export class App {
     const abort = new AbortController();
     const pump = this.pump(run, following, presenter, live, items, abort.signal);
     let turn: Turn;
+    let stalled: boolean;
     try {
-      turn = await pump;
+      ({ turn, stalled } = await pump);
     } finally {
       abort.abort();
     }
+    // A quiet run's stream is closed as it stands: still working, so the session
+    // stays processing and Stop stays available. Its end is posted when it comes.
     await presenter.finish(turn);
     this.native = this.native && presenter.streaming;
+    if (stalled) {
+      this.track(this.later(run, following, presenter));
+      // The thread is not held for it. A later message follows it in the conversation,
+      // as collegium orders any turn sent after one that is still running.
+      return "done" as const;
+    }
     this.log(`run ${run.id} ended ${turn.status}`);
     return turn.status === "done" ? "done" : turn.status === "stopped" ? "stopped" : "failed";
+  }
+
+  /**
+   * Follow a quiet run by its record, less and less often, until it ends, then
+   * post its end in the thread. A stop pressed meanwhile confirms it instead.
+   */
+  private async later(run: Run, following: Follower, presenter: Presenter): Promise<void> {
+    let wait = this.pollMs;
+    while (!this.closing.signal.aborted) {
+      await sleep(wait, this.closing.signal);
+      wait = Math.min(wait * 2, this.slowPollMs);
+      if (this.closing.signal.aborted) return;
+      const record = await this.collegium.getRun(run.id).catch(() => null);
+      if (!record || !terminal(record.status)) continue;
+      if (this.confirmed.has(run.id)) return;
+      following.settle(record);
+      await presenter.conclude(following.turn);
+      this.log(`run ${run.id} ended ${following.turn.status}, after it went quiet`);
+      return;
+    }
   }
 
   /**
@@ -541,7 +600,7 @@ export class App {
     live: Live,
     items: Mailbox<Item>,
     signal: AbortSignal,
-  ): Promise<Turn> {
+  ): Promise<{ turn: Turn; stalled: boolean }> {
     (async () => {
       try {
         for await (const item of this.collegium.runEvents(run, { signal })) items.push(item);
@@ -575,7 +634,7 @@ export class App {
         if (!ended(following.turn)) {
           following.push({ type: "turn.stopped" }, { type: "stop.updated", stop: "failed" });
         }
-        return following.turn;
+        return { turn: following.turn, stalled: false };
       }
       // Stop was pressed: nothing more of this run is rendered while collegium is told.
       if (live.stopped) continue;
@@ -593,22 +652,16 @@ export class App {
         over += 1;
         if (item.run.status === "stopped" || over > 1) following.settle(item.run);
       } else if (item.type === "record" && Date.now() - progress > this.stallMs) {
-        // Nothing has moved for too long. The turn stops waiting; the run is not stopped.
-        this.log(`run ${run.id} made no progress for ${this.stallMs}ms, no longer following it`);
-        following.push({
-          type: "turn.failed",
-          failure: {
-            kind: "timeout",
-            message: defaultCopy.failure.timeout(),
-            reference: run.id,
-            retryable: false,
-          },
-        });
+        // Nothing has been heard for a long time. That is not a failure: a long tool
+        // call, or a run waiting on other work, says nothing until it moves. The
+        // stream is closed and the run is followed slowly from here.
+        this.log(`run ${run.id} quiet for ${this.stallMs}ms, following it slowly`);
+        return { turn: following.turn, stalled: true };
       } else if (item.type === "broken") {
         this.log(`event stream for ${run.id} ended: ${item.error.message}`);
         await read();
       }
-      if (ended(following.turn)) return following.turn;
+      if (ended(following.turn)) return { turn: following.turn, stalled: false };
       if (!dirty || !items.empty) continue;
       const wait = this.flushMs - (Date.now() - last);
       if (wait > 0) {
@@ -658,6 +711,7 @@ export class App {
     // Runs this process is not following: confirm each in the thread.
     for (const run of stopped) {
       if (run.id === following?.id || run.status !== "stopped") continue;
+      this.confirmed.set(run.id, true);
       const turn = follow(run, { href: this.href }).settle(run);
       await this.postView(session, renderToSlack(<TurnView turn={turn} />)).catch((e: Error) =>
         this.log(`stop not confirmed in the thread: ${e.message}`),
@@ -706,10 +760,14 @@ export class App {
     if (ui.id === ActionId.retry || ui.id === ActionId.resume) {
       const run = await this.collegium.getRun(ui.payload.turnId);
       const outcome = run ? await this.again(run, p.user.id, p.message?.ts) : "elsewhere";
-      if (outcome === "not-yours") await this.whisper(p, defaultCopy.notYours);
-      else if (outcome !== "started") await this.whisper(p, defaultCopy.cantRetry);
+      if (outcome !== "started") await this.refuseRetry(p, outcome);
     }
     // Opening a called run, reporting and reconnecting have nowhere to go from Slack yet.
+  }
+
+  /** Say why a turn was not asked again. */
+  private refuseRetry(p: ActionPayload, outcome: "not-yours" | "elsewhere" | "not-routed") {
+    return this.whisper(p, outcome === "not-yours" ? RETRY_NOT_YOURS : defaultCopy.cantRetry);
   }
 
   /**
@@ -769,11 +827,15 @@ export class App {
     // A failed turn is asked again here, where its answer can be shown, when the thread is this app's.
     const part = message.parts.find((x) => partMatches(x, ui.payload.target));
     let request = toRequest(message, ui);
-    if (ui.id === ActionId.retry && part?.type === "failure" && part.failure.reference) {
-      const run = await this.collegium.getRun(part.failure.reference);
-      if (run && (await this.again(run, p.user.id, p.message?.ts)) === "started") {
-        request = { call: "resolve", partId: part.id, action: "acknowledge" };
-      }
+    if (ui.id === ActionId.retry && part?.type === "failure") {
+      // A retry is always this app's, so its answer shows where it was asked and the
+      // client's agents are checked. Collegium is never asked to retry on its own.
+      const run = part.failure.reference
+        ? await this.collegium.getRun(part.failure.reference)
+        : null;
+      const outcome = run ? await this.again(run, p.user.id, p.message?.ts) : "elsewhere";
+      if (outcome !== "started") return this.refuseRetry(p, outcome);
+      request = { call: "resolve", partId: part.id, action: "acknowledge" };
     }
     if (!request) return;
     let updated: PlatformMessage;

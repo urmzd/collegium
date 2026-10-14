@@ -72,7 +72,8 @@ Every button in Slack acts with the app's rights, so each extra scope lets the
 people in the loop do more: `agents:write` keeps or discards memories,
 `alerts:read` and `alerts:write` show and acknowledge alerts. Only the person
 who asked for the run, or someone in `SLACK_OPERATORS`, may settle an inbox
-item or ask a turn again; a retry stays the first asker's, and is checked
+item or ask a turn again (a Retry is always the app's own, never collegium's,
+so its answer shows in the thread); a retry stays the first asker's, and is checked
 against the client's agents again. When who asked is not known (after a
 restart), only an operator may. A reached limit is shown, not raised: raise it
 in the console.
@@ -80,8 +81,14 @@ in the console.
 A refusal or error from collegium is shown in vultus's failure words; the
 platform's own text goes to the log. A Slack write that fails mid-turn stops
 the streaming, and the whole turn is posted when it ends, with the session set
-off processing. A run that makes no progress for 15 minutes is no longer
-waited for (it is not stopped).
+off processing. A run that says nothing for 15 minutes (a long tool call, or a
+run waiting on other work) is not failed: its stream is closed as it stands,
+the session stays processing, the thread is free for the next message, and the
+run's record is read less and less often (at most every 3 minutes) until it
+ends, when its answer is posted once in the thread. A message sent meanwhile
+follows it in the conversation, as collegium orders any turn sent after one
+that is still running. The slow follow does not survive a restart; the stop
+button still finds the run.
 
 ## What survives a restart
 

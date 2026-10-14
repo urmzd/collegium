@@ -66,6 +66,8 @@ export class Presenter {
   private closed = false;
   /** A write failed mid-turn. Nothing more is written until the turn ends. */
   private degraded = false;
+  /** The streamed message was already closed. */
+  private stopped = false;
   /** The session status Slack was last told. */
   private session: string | null = null;
   /** A session in a code channel is the channel itself, with no thread. */
@@ -292,6 +294,7 @@ export class Presenter {
           ...(title ? { chunks: [{ type: "plan_update", title }] } : {}),
           blocks: first,
         });
+        this.stopped = true;
         await this.overflow(rest, final.text, final.pages.length);
         for (const w of final.warnings) this.log(`render warning: ${w}`);
       } else {
@@ -304,16 +307,28 @@ export class Presenter {
         for (const w of final.warnings) this.log(`render warning: ${w}`);
       }
     } catch (e) {
-      this.log(`ending the turn in place failed, posting it whole: ${(e as Error).message}`);
-      if (this.native && this.ts) {
-        await this.slack
-          .call("chat.stopStream", { channel: this.target.channel, ts: this.ts })
-          .catch(() => {});
-      }
+      this.log(`ending the turn as streamed failed: ${(e as Error).message}`);
       const final = renderToSlack(<TurnView turn={turn} />);
+      const [first = [], ...rest] = final.pages;
+      // The streamed message is closed with the whole turn as its final layout, so the
+      // answer and its controls stay in one message.
+      let closed = false;
+      if (this.native && this.ts && !this.stopped) {
+        closed = await this.slack
+          .call("chat.stopStream", { channel: this.target.channel, ts: this.ts, blocks: first })
+          .then(
+            () => true,
+            () => false,
+          );
+        if (!closed) {
+          await this.slack
+            .call("chat.stopStream", { channel: this.target.channel, ts: this.ts })
+            .catch(() => {});
+        }
+      }
       try {
-        const [first = [], ...rest] = final.pages;
-        await this.post(first, final.text);
+        // Only a message that could not take the turn at all is followed by a new one.
+        if (!closed && !this.stopped) await this.post(first, final.text);
         await this.overflow(rest, final.text, final.pages.length);
       } catch (again) {
         this.log(`the turn could not be posted: ${(again as Error).message}`);
@@ -322,6 +337,23 @@ export class Presenter {
     // Reactions and the session status are each tried, whatever happened above.
     await this.sync(turn);
     return { ts: this.ts, messages: this.messages };
+  }
+
+  /**
+   * The end of a turn whose message was already closed while it was still
+   * working: the whole turn is posted as a new message in the thread, and the
+   * reaction and the session settle.
+   */
+  async conclude(turn: Turn): Promise<void> {
+    const final = renderToSlack(<TurnView turn={turn} />);
+    try {
+      const [first = [], ...rest] = final.pages;
+      await this.post(first, final.text);
+      await this.overflow(rest, final.text, final.pages.length);
+    } catch (e) {
+      this.log(`the end of the turn could not be posted: ${(e as Error).message}`);
+    }
+    await this.sync(turn);
   }
 
   /** Final blocks that outgrew one message follow it. Each needs its own fallback text. */
