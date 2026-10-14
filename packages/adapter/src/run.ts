@@ -53,6 +53,12 @@ export interface Run {
   lifecycle?: "attached" | "delegated";
   /** Why a stopped run was stopped. */
   cause?: string;
+  /** The trigger id the run was accepted with. Its `id` is derived from it and the workspace. */
+  tag_id?: string;
+  /** Asked to stop and not ended yet. It ends stopped, or completed or failed if it finished first. */
+  stopping?: boolean;
+  /** When the run was first asked to stop, while it is stopping. */
+  stop_requested_at?: string;
   /** The run has its answer and is waiting for runs attached to it. */
   finishing?: boolean;
   answer?: string;
@@ -310,10 +316,17 @@ export function adapter(
         out.push({ type: "turn.completed" });
         return out;
       }
-      case "lifecycle.stopped":
+      case "lifecycle.stopped": {
         // The run was stopped and the platform says so on its stream. Until it
-        // does, a stopped run is ended from its record (see `settled`).
-        return [{ type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" }];
+        // does, a stopped run is ended from its record (see `settled`). The
+        // body carries what the agent had said, for a reader that did not
+        // see it stream.
+        const out: TurnEvent[] = [];
+        const text = body<Lifecycle>(e).text;
+        if (!streamed && text) out.push({ type: "text.delta", text });
+        out.push({ type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" });
+        return out;
+      }
       case "lifecycle.failed": {
         const l = body<Lifecycle>(e);
         // A failed attempt may still be retried by the durable engine. Only a

@@ -30,6 +30,7 @@ import {
   type World,
   world,
 } from "./harness.ts";
+import { runId } from "./keys.ts";
 import { validateBlocks } from "./validate.ts";
 
 const TS = "1700000000.000100";
@@ -72,7 +73,8 @@ test("a mention becomes one run, streamed natively, with the session kept in ste
   assert.equal(asked?.agent, "lead");
   assert.equal(asked?.text, "what changed in the last deploy?");
   assert.equal(asked?.after, undefined);
-  assert.equal(w.collegium.last.id, `api-${SUBJECT}-${KEY}`);
+  assert.equal(w.collegium.last.id, runId("acme", SUBJECT, KEY));
+  assert.equal(w.collegium.last.tag_id, `api-${SUBJECT}-${KEY}`);
 
   // Before any event: seen, processing, and a stream opened in the mention's thread.
   assert.deepEqual(w.slack.methods, [
@@ -484,6 +486,7 @@ test("asking again is refused once the agent may no longer be reached", async ()
     team: TEAM,
     botUser: BOT,
     subject: SUBJECT,
+    tenant: "acme",
     clientId: "docs-bot",
     operators: [USER],
     flushMs: 0,
@@ -531,6 +534,7 @@ for (const where of ["home", "thread"] as const) {
     w.collegium.runs.set("api-dana-console-run", {
       ...w.collegium.last,
       id: "api-dana-console-run",
+      tag_id: "api-dana-console-run",
       thread: "api-dana-console-run",
     });
     const elsewhere = failureCard("api-dana-console-run", where, "U03ABCDEF");

@@ -123,7 +123,12 @@ func lifecycleOf(parent string, mode call.Mode) Lifecycle {
 
 // Run is one run and its place in the tree.
 type Run struct {
-	ID     string         `json:"id"`
+	ID string `json:"id"`
+	// TagID is the id of the tag the run was accepted with: the trigger's
+	// event id, or the one the API made from its caller and idempotency key.
+	// The run's id is derived from it and the tenant, and cannot be turned
+	// back into it, so a caller that named its own run reads it here.
+	TagID  string         `json:"tag_id"`
 	Tenant string         `json:"tenant"`
 	Agent  string         `json:"agent"`
 	Rev    int            `json:"rev"`
@@ -267,7 +272,7 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 		thread, project, client = top.Thread, top.Project, top.Client
 	}
 	x.runs[runID] = &Run{
-		ID: runID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
+		ID: runID, TagID: tag.ID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
 		Text: text, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project, Client: client,
 		Root: root, Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
 		Lease: edge.Lease, Schedule: schedule,

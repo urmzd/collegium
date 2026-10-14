@@ -14,6 +14,7 @@ import {
   type RunRequest,
   type StreamItem,
 } from "./collegium.ts";
+import { runId, tagId } from "./keys.ts";
 
 /** A run asked for: the body and the key, as `createRun` takes them. */
 export interface Asked extends RunRequest {
@@ -168,7 +169,7 @@ export class FakeCollegium implements Collegium {
       this.refuse = null;
       throw e;
     }
-    const id = `api-${SUBJECT}-${t.idempotencyKey}`;
+    const id = runId("acme", SUBJECT, t.idempotencyKey);
     const existing = this.runs.get(id);
     if (existing) return existing;
     const prev = t.after ? this.runs.get(t.after) : undefined;
@@ -176,6 +177,7 @@ export class FakeCollegium implements Collegium {
     const now = this.at();
     const run: Run = {
       id,
+      tag_id: tagId(SUBJECT, t.idempotencyKey),
       tenant: "acme",
       // An empty agent is the platform's picker, which here always picks the baseline.
       agent: t.agent || "lead",
@@ -338,6 +340,7 @@ export function world(
       team: TEAM,
       botUser: BOT,
       subject: SUBJECT,
+      tenant: "acme",
       defaultAgent: "lead",
       flushMs: 0,
       pollMs: 20,

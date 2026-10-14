@@ -47,10 +47,10 @@ test("an answer that never streamed arrives with completion", () => {
 test("a stopped run ends the turn as stopped, keeping its partial answer", () => {
   const to = adapter();
   const out = [ev("lifecycle.accepted"), ev("lifecycle.stopped", { text: "Half", reason: "Stopped by ada", by: "ada" })].flatMap(to);
-  assert.deepEqual(out.slice(1), [{ type: "text.delta", text: "Half" }, { type: "turn.stopped" }]);
+  assert.deepEqual(out.slice(1), [{ type: "text.delta", text: "Half" }, { type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" }]);
   const streamed = adapter();
   const again = [ev("delta.text", { text: "Half" }), ev("lifecycle.stopped", { text: "Half" })].flatMap(streamed);
-  assert.deepEqual(again.map((e) => e.type).slice(-1), ["turn.stopped"]);
+  assert.deepEqual(again.map((e) => e.type).slice(-2), ["turn.stopped", "stop.updated"]);
   assert.equal(again.filter((e) => e.type === "text.delta").length, 1);
 });
 

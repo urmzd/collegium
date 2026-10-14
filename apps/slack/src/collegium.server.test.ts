@@ -100,7 +100,7 @@ test("the stand-in client against the real routes", { skip: !enabled }, async ()
   // The run id is the caller and the key, and the first run names its conversation.
   const key = threadKey({ team: TEAM, channel: CHANNEL, threadTs: "1700000000.000100" });
   const run = await c.createRun({ agent: "lead", text: "hello" }, key);
-  assert.equal(run.id, runId(me.subject, key));
+  assert.equal(run.id, runId(me.tenant, me.subject, key));
   assert.equal(run.thread, run.id);
   const again = await c.createRun({ agent: "lead", text: "hello" }, key);
   assert.equal(again.id, run.id, "the same key joins the run it started");
@@ -147,6 +147,7 @@ test(
       team: TEAM,
       botUser: "U00BOTBOT",
       subject: me.subject,
+      tenant: me.tenant,
       defaultAgent: "lead",
       flushMs: 0,
       pollMs: 200,
@@ -160,7 +161,11 @@ test(
     await app.handle(mention("what can you do?", ts));
     await waitFor(() => slack.methods.includes("chat.stopStream"));
     await app.idle();
-    const id = runId(me.subject, threadKey({ team: TEAM, channel: CHANNEL, threadTs: ts }));
+    const id = runId(
+      me.tenant,
+      me.subject,
+      threadKey({ team: TEAM, channel: CHANNEL, threadTs: ts }),
+    );
     assert.equal((await c.getRun(id))?.status, "completed");
     assert.match(slack.streamed, /offline provider/);
     assert.deepEqual(slack.statuses, ["processing", "active"]);
@@ -171,6 +176,7 @@ test(
       team: TEAM,
       botUser: "U00BOTBOT",
       subject: me.subject,
+      tenant: me.tenant,
       defaultAgent: "lead",
       flushMs: 0,
       pollMs: 200,

@@ -158,6 +158,11 @@ export type CallMode = "subagent" | "handoff" | "delegate";
 export interface Run {
   /** The run's id, `r` and 32 hex digits, derived from the workspace and the trigger's id. */
   id: string;
+  /** The trigger's id the run was accepted with: an event id, or for a
+run started through the API, `api-<subject>-<Idempotency-Key>`.
+The run's `id` is derived from it and cannot be turned back into it.
+ */
+  tag_id: string;
   tenant: string;
   agent: string;
   /** The agent revision the run is pinned to. */

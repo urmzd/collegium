@@ -63,6 +63,8 @@ export interface AppOptions {
   botUser: string;
   /** Who collegium says this app is. Run ids are made from it. */
   subject: string;
+  /** The workspace collegium says this app is in. Run ids are made from it too. */
+  tenant: string;
   operators?: string[];
   /** The client record this app is, when it is one. */
   clientId?: string;
@@ -455,11 +457,14 @@ export class App {
    */
   private async place(job: Job): Promise<{ key: string; after?: string } | "duplicate"> {
     const first = threadKey(job.session);
-    const turns = (await this.collegium.getThread(runId(this.opts.subject, first)))?.turns;
+    const turns = (
+      await this.collegium.getThread(runId(this.opts.tenant, this.opts.subject, first))
+    )?.turns;
     // The first run in a thread is keyed by the thread, which is what names the conversation.
     if (!turns || turns.length === 0) return { key: first };
     if (job.key === first) return "duplicate";
-    if (turns.some((t) => t.id === runId(this.opts.subject, job.key))) return "duplicate";
+    if (turns.some((t) => t.id === runId(this.opts.tenant, this.opts.subject, job.key)))
+      return "duplicate";
     if (job.again) return { key: job.key, after: job.again.after };
     const latest = turns
       .filter((t) => !t.parent)
@@ -692,7 +697,7 @@ export class App {
     if (live) live.stopped = true;
     const ids = new Set<string>();
     if (following) ids.add(following.id);
-    const conversation = runId(this.opts.subject, threadKey(session));
+    const conversation = runId(this.opts.tenant, this.opts.subject, threadKey(session));
     const turns = (await this.collegium.getThread(conversation).catch(() => null))?.turns;
     for (const t of turns ?? []) if (!t.parent && !terminal(t.status)) ids.add(t.id);
 
@@ -781,7 +786,7 @@ export class App {
     user: string,
     clickedTs?: string,
   ): Promise<"started" | "not-yours" | "elsewhere" | "not-routed"> {
-    const session = sessionOf(this.opts.subject, run.thread);
+    const session = await this.sessionOfRun(run);
     if (!session || session.team !== this.opts.team) return "elsewhere";
     const owner = this.requesters.get(run.id);
     const operator = (this.opts.operators ?? []).includes(user);
@@ -907,6 +912,13 @@ export class App {
     }
   }
 
+  /** The Slack thread a run's conversation lives in, read from its first run's trigger id. */
+  private async sessionOfRun(run: Run): Promise<Session | null> {
+    const first =
+      run.id === run.thread ? run : await this.collegium.getRun(run.thread).catch(() => null);
+    return first?.tag_id ? sessionOf(this.opts.subject, first.tag_id) : null;
+  }
+
   /** An inbox message changed. One about a run in this app's thread is shown there, once, and kept current. */
   private async onNotice(notice: InboxNotice): Promise<void> {
     const message = await this.collegium.inbox.get(notice.id).catch(() => null);
@@ -918,7 +930,7 @@ export class App {
     if (message.kind === "failure" || message.parts.some((p) => p.type === "failure")) return;
     const about = message.about.find((s) => s.kind === "run");
     const run = about ? await this.collegium.getRun(about.id) : null;
-    const session = run ? sessionOf(this.opts.subject, run.thread) : null;
+    const session = run ? await this.sessionOfRun(run) : null;
     if (!session || session.team !== this.opts.team) return;
     const ts = await this.postView(
       session,

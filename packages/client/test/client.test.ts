@@ -68,15 +68,16 @@ function last(): Seen {
 }
 
 const run: Run = {
-  id: "api-svc-slack-evt-1",
+  id: "r276d0211d1ec94e517e1991dde77aa82",
+  tag_id: "api-svc-slack-evt-1",
   tenant: "acme",
   agent: "helper",
   rev: 1,
   origin: "api",
   text: "Say hello",
-  root: "api-svc-slack-evt-1",
+  root: "r276d0211d1ec94e517e1991dde77aa82",
   depth: 0,
-  thread: "api-svc-slack-evt-1",
+  thread: "r276d0211d1ec94e517e1991dde77aa82",
   lease: 0,
   granted: 0,
   calls: 0,
