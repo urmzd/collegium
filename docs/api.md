@@ -1,0 +1,125 @@
+# API contract
+
+The backend is Go. The surfaces that call it (the web console, a Slack app,
+later a GitHub app) may be TypeScript. They share one contract:
+[`api/openapi.yaml`](../api/openapi.yaml), an OpenAPI 3.2 description of every
+route `internal/httpapi` serves. The TypeScript client in
+[`packages/client`](../packages/client) is generated from it.
+
+## How the contract stays true
+
+The spec is written by hand, from the code. Four tests in
+[`internal/httpapi/openapi_test.go`](../internal/httpapi/openapi_test.go) run
+with `go test ./...` and fail when the two disagree:
+
+| Test | Fails when |
+|------|------------|
+| `TestSpecListsExactlyTheRegisteredRoutes` | A route is registered and not in the spec, or the reverse. An operation has no `operationId` or tag, or its `x-permission` is not the permission `Server.Handler` names for the route. |
+| `TestSpecPermissionsAreTheOnesTheServerEnforces` | The running server enforces a different permission than `x-permission` says. |
+| `TestSpecSchemasHaveTheFieldsTheGoTypesMarshal` | A Go type marshals a field the schema lacks, or the schema has one the type lacks, or `required` disagrees with `omitempty`. The event kinds differ from mandatum's. |
+| `TestResponsesMatchTheSpec`, `TestEventStreamMatchesTheSpec` | A real response, including 4xx and the event stream, does not validate against its schema, or answers with a status the spec does not list. Every JSON operation must be exercised. |
+
+So a change to a route, a handler's answer or a type's JSON fields is a change
+to `api/openapi.yaml` in the same commit, followed by `make client`.
+
+Validation uses [`santhosh-tekuri/jsonschema`](https://github.com/santhosh-tekuri/jsonschema),
+a JSON Schema 2020-12 validator with no dependencies of its own, which is the
+schema dialect of OpenAPI 3.1 and 3.2. The spec is read with `go.yaml.in/yaml/v4`,
+which was already in the module graph.
+
+## Commands
+
+| Task | Command |
+|------|---------|
+| Regenerate the client after changing the spec | `make client` |
+| Build, typecheck and test the client | `make client-check` |
+| Lint the spec with Redocly | `make spec-lint` |
+| Check the spec against the server | `go test ./internal/httpapi` |
+
+`make client` needs oag at the version pinned in the `Makefile`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/urmzd/oag/v0.20.6/install.sh | OAG_VERSION=v0.20.6 sh
+```
+
+CI regenerates the client with that version and fails if the result differs
+from what is committed.
+
+## The generated client
+
+`packages/client` is `@collegium/client`: private, ESM, typed, no runtime
+dependencies, for Node 22.12 or later and browsers. Consumers in this repository
+depend on it with `"@collegium/client": "link:../../packages/client"` and run
+`pnpm build` in `packages/client` first, because the package exports its built
+`dist/`.
+
+| Path | What it is |
+|------|------------|
+| `packages/client/oag.yaml` | The generator's configuration. |
+| `packages/client/.oag/packs/node-client` | oag's `node-client` template pack, copied unchanged from oag v0.20.6. Without it oag fetches the pack from oag's main branch. |
+| `packages/client/src/generated/` | oag's output. Committed, never edited. |
+| `packages/client/src/collegium.ts` | The hand-written layer over it. |
+
+The generated output is committed, as mandatum commits `gen/`: a change to the
+contract shows up as a reviewable diff in the client, consumers need no
+generator to build, and CI can prove the two match.
+
+One method per operation, named by its `operationId`. Path parameters come
+first, then the body, then query and header parameters in the order the spec
+lists them, then `RequestOptions` (`signal`, `headers`, `timeout`, `retry`).
+Each also has a `...Raw` form that returns the status and headers.
+
+The layer in `collegium.ts` adds what the generator does not do:
+
+- `createClient({ baseUrl, token, credentials })`: `token` is a string or a
+  function that returns one, sent as a bearer. `credentials: "include"` uses a
+  browser's session cookie instead. Retries are off unless asked for.
+- `events({ topic, from })` and `runEvents(run)`: the event stream as typed
+  items, with each event's base64 payload decoded into a typed `body`.
+- `failureOf(error)`: the status and the API's error body from any error the
+  client throws, and `refusal` when a limit refused a run.
+- `getArtifactContent` and `getPreferencesPhoto` return the file's bytes. The
+  generated versions read the body as text.
+
+## Authenticating a machine
+
+A machine sends an OIDC access token issued for the API audience by
+client credentials: `Authorization: Bearer <token>`. It has no role. It may do
+exactly what the `collegium:<permission>` scopes on its token allow, and its
+workspace comes from the token's tenant claim. Each operation's `x-permission`
+names the scope it needs. A Slack surface needs at least
+`collegium:agents:read`, `collegium:runs:read`, `collegium:runs:write` and
+`collegium:billing:read`, plus the write scope for each inbox action it offers.
+See [security](security.md) for setting up the identity provider.
+
+Under `make dev` the server runs with development auth: every request is the
+same admin, and no token is needed.
+
+## Example
+
+Start a run under the caller's own idempotency key, stream its answer, and
+stop it if it takes longer than a minute:
+
+```ts
+import { createClient, failureOf } from "@collegium/client";
+
+const client = createClient({ baseUrl: "http://127.0.0.1:8080", token: process.env.COLLEGIUM_TOKEN });
+const run = await client.createRun({ agent: "helper", text: "Say hello" }, "slack-event-Ev01");
+const giveUp = new AbortController();
+const timer = setTimeout(() => giveUp.abort(), 60_000);
+try {
+  for await (const event of client.runEvents(run, {}, { signal: giveUp.signal })) {
+    if (event.kind === "delta.text") process.stdout.write(event.body?.text ?? "");
+    if (event.kind === "action.taken") console.log(`\n${event.body?.summary}`);
+  }
+} catch (error) {
+  if (!giveUp.signal.aborted) throw new Error(failureOf(error)?.message ?? String(error));
+  await client.stopRun(run.id);
+} finally { clearTimeout(timer); }
+```
+
+`runEvents` ends after the event that completes the run, or fails it for good.
+A stopped run publishes no such event, which is why the stream is aborted
+before the run is stopped. `getRun` is the authority on whether a run is over.
+A refusal by a limit throws from `createRun`: `failureOf(error).refusal` names
+the limit, the policy and when the count resets.

@@ -29,10 +29,14 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-require github.com/urmzd/vultus/go v0.1.0
+require (
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	github.com/urmzd/vultus/go v0.1.0
+	go.yaml.in/yaml/v4 v4.0.0-rc.2
+)

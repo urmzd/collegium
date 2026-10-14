@@ -23,6 +23,9 @@ platform. vultus supplies the components. The design is in
 - **Evals are deterministic.** A check is a pure function of the output. Do not add a model as a judge without saying so in the suite.
 - **One title per screen, on the page.** There is no top bar. What is running lives on the Runs page.
 - **Agents are told apart by color, not by letters in boxes.** Use `AgentMark`. Controls under the composer are text, not boxes.
+- **The API has one contract.** A route, a handler's answer or a type's JSON
+  fields change together with `api/openapi.yaml`, then `make client`. Never edit
+  `packages/client/src/generated`.
 - **Keep the status table honest.** When a piece lands, update
   `docs/architecture.md#status` in the same change.
 
@@ -36,6 +39,7 @@ platform. vultus supplies the components. The design is in
 - `internal/platform`: the composition root. `internal/httpapi`: routes, sessions, event stream.
 - `cmd/collegium`: the binary. `apps/web`: the console, built on vultus. `apps/slack`: the Slack app, a client of the API.
 - `packages/adapter`: the one adapter between the platform's wire shapes and vultus's model. The console and the Slack app both use it; nothing surface-specific goes in it.
+- `api/openapi.yaml`: the API contract, checked by `internal/httpapi/openapi_test.go`. `packages/client`: the TypeScript client generated from it by oag.
 
 ## Commands
 
@@ -48,6 +52,9 @@ platform. vultus supplies the components. The design is in
 | Web checks | `cd apps/web && pnpm typecheck && pnpm test` |
 | Adapter checks | `cd packages/adapter && pnpm typecheck && pnpm test` |
 | Slack app checks | `cd apps/slack && pnpm exec biome check && pnpm typecheck && pnpm test` |
+| Regenerate the client | `make client` (oag version pinned in the `Makefile`) |
+| Client checks | `make client-check` |
+| Lint the spec | `make spec-lint` |
 
 ## Conventions
 

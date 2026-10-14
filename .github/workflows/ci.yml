@@ -160,3 +160,34 @@ jobs:
       - name: Validate
         working-directory: collegium/apps/slack
         run: pnpm validate
+
+  contract:
+    name: API contract and client
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Lint the spec
+        run: make spec-lint
+      - name: Install oag
+        run: |
+          version=$(sed -n 's/^OAG_VERSION := //p' Makefile)
+          curl -fsSL "https://raw.githubusercontent.com/urmzd/oag/v${version}/install.sh" | OAG_VERSION="v${version}" OAG_INSTALL_DIR="$RUNNER_TEMP/bin" sh
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Regenerate the client
+        run: make client
+      - name: Fail if the committed client is stale
+        run: |
+          if [ -n "$(git status --porcelain -- packages/client)" ]; then
+            echo "packages/client differs from a fresh generation. Run 'make client' and commit the result."
+            git status --porcelain -- packages/client
+            git diff -- packages/client
+            exit 1
+          fi
+      - name: Typecheck and test the client
+        run: make client-check

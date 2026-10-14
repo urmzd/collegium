@@ -110,6 +110,11 @@ Images are written to [`showcase/`](showcase/). Restart the development backend 
 
 ## API
 
+The contract is [`api/openapi.yaml`](api/openapi.yaml): every route, its
+permission, request and response, and the event stream. Tests fail when it and
+the server disagree. [`packages/client`](packages/client) is a TypeScript client
+generated from it. See [the API guide](docs/api.md).
+
 | Route | Permission |
 |-------|------------|
 | `GET /api/me` | Signed in |
@@ -137,6 +142,9 @@ Images are written to [`showcase/`](showcase/). Restart the development backend 
 | Web typecheck and tests | `cd apps/web && pnpm typecheck && pnpm test` |
 | Shared adapter typecheck and tests | `cd packages/adapter && pnpm typecheck && pnpm test` |
 | Slack app lint, typecheck and tests | `cd apps/slack && pnpm exec biome check && pnpm typecheck && pnpm test` |
+| Regenerate the TypeScript client from the spec | `make client` |
+| Client typecheck and tests | `make client-check` |
+| Lint the API spec | `make spec-lint` |
 
 ## Architecture
 
