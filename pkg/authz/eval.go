@@ -145,6 +145,13 @@ type HeldRole struct {
 // Explain decides a permission for an identity and says which grant and which
 // rule produced the answer.
 func (p *Policy) Explain(id Identity, permission string) Explanation {
+	return p.explain(p.Held(id), permission)
+}
+
+// Held lists every role granted to the identity, in the order Roles does,
+// each with the first grant that gave it. It is what to keep of a sign-in so
+// a decision can later name its grant without keeping the claims.
+func (p *Policy) Held(id Identity) []HeldRole {
 	var held []HeldRole
 	for _, g := range p.file.Grants {
 		if !g.Subject.Matches(id) {
@@ -156,7 +163,13 @@ func (p *Policy) Explain(id Identity, permission string) Explanation {
 			}
 		}
 	}
-	return p.explain(held, permission)
+	return held
+}
+
+// ExplainHeld decides a permission for roles kept from an earlier Held. The
+// explanation names the grant behind each role that has one.
+func (p *Policy) ExplainHeld(held []HeldRole, permission string) Explanation {
+	return p.explain(slices.Clone(held), permission)
 }
 
 // ExplainRoles decides a permission for a set of roles, when the identity
