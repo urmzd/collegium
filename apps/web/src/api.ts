@@ -218,7 +218,7 @@ export interface Proposal {
 }
 
 export interface PolicyScope {
-  kind: "tenant" | "project" | "agent";
+  kind: "tenant" | "project" | "agent" | "client";
   name?: string;
 }
 
@@ -236,6 +236,45 @@ export interface Policy {
   version: number;
   updated_by?: string;
   updated_at: string;
+}
+
+/** Where one of a client's secrets is. The secret itself is never sent. */
+export interface SecretRef {
+  set: boolean;
+  /** "env:NAME" when the secret lives in the server's environment. */
+  ref?: string;
+}
+
+/** A Slack app or GitHub installation the workspace answers through. */
+export interface Client {
+  id: string;
+  name: string;
+  surface: "slack" | "github";
+  identity: { app_id?: string; team?: string; installation?: string; owners?: string[] };
+  credentials: { token: SecretRef; signing_secret: SecretRef };
+  default_agent?: string;
+  /** The agents it may route to besides its default. "*" alone means any. */
+  agents?: string[];
+  bots?: Record<string, string>;
+  slack?: { sessions?: boolean; commands?: { name: string; description: string; argument_hint?: string }[] };
+  github?: {
+    auto_labels?: Record<string, Record<string, string>>;
+    checks?: boolean;
+    guides?: boolean;
+    mutations?: boolean;
+    read_repositories?: string[];
+  };
+  enabled: boolean;
+  /** Set on a client the server's configuration owns and the API cannot change. */
+  managed?: string;
+  version: number;
+  /** The client's own policy, set through the policies API with a client scope. */
+  limits?: Policy;
+}
+
+export interface ClientCaps {
+  max: number;
+  max_per_surface: number;
 }
 
 export interface Measure {
@@ -421,6 +460,21 @@ export const api = {
   /** The id of the message an alert raised, or null when it raised none. */
   inboxFor: (alert: string) =>
     call<{ messages: { id: string }[] }>("GET", `/api/inbox?alert=${encodeURIComponent(alert)}`).then((r) => r.messages[0]?.id ?? null),
+  clients: () => call<{ clients: Client[]; caps: ClientCaps }>("GET", "/api/clients"),
+  /** Replace a client's record. Secrets are not sent, so the server keeps the ones it has. */
+  saveClient: (c: Client, enabled: boolean) =>
+    call<Client>("PUT", `/api/clients/${encodeURIComponent(c.id)}`, {
+      name: c.name,
+      surface: c.surface,
+      identity: c.identity,
+      default_agent: c.default_agent ?? "",
+      agents: c.agents ?? [],
+      bots: c.bots ?? {},
+      slack: c.slack ?? null,
+      github: c.github ?? null,
+      enabled,
+    }),
+  deleteClient: (id: string) => call<void>("DELETE", `/api/clients/${encodeURIComponent(id)}`),
   policies: () => call<{ policies: Policy[] }>("GET", "/api/policies").then((r) => r.policies),
   savePolicy: (p: Omit<Policy, "version" | "updated_at" | "updated_by" | "action"> & { action?: Policy["action"] }) =>
     call<Policy>("PUT", "/api/policies", p),
