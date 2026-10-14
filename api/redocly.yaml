@@ -1,0 +1,6 @@
+# Lint rules for openapi.yaml. Run `make spec-lint` from the repository root.
+# The few places the API truthfully breaks a rule are listed, with the rule,
+# in .redocly.lint-ignore.yaml: the sign-in routes answer with a redirect and
+# have no 2xx, and sign-in, sign-out and the health probe have no 4xx.
+extends:
+  - recommended
