@@ -3,9 +3,16 @@
  * a collegium whose runs the test drives one event at a time. Every id here is
  * made up.
  */
-import { type BusEvent, type Http, mailTransport, type Run } from "@collegium/adapter";
+import {
+  type AnswerRequest,
+  type BusEvent,
+  type Http,
+  mailTransport,
+  type Run,
+} from "@collegium/adapter";
 import { App, type AppOptions } from "./app.tsx";
 import {
+  type ActAs,
   type Agent,
   type ClientRecord,
   type Collegium,
@@ -131,6 +138,10 @@ export class FakeCollegium implements Collegium {
   refuse: CollegiumError | null = null;
   /** Set to make stop fail. */
   stopFails = false;
+  /** Every answer asked for, and for whom. */
+  readonly answered: { answer: AnswerRequest; as: ActAs }[] = [];
+  /** Set to refuse the next answer, as collegium does someone who may not answer. */
+  refuseAnswer: CollegiumError | null = null;
   private readonly feeds = new Map<string, Feed<StreamItem>>();
   private readonly notes = new Feed<InboxNotice>();
   private seq = new Map<string, number>();
@@ -239,6 +250,33 @@ export class FakeCollegium implements Collegium {
     return this.runs.get(id) as Run;
   }
 
+  /**
+   * As the real route does for someone it admits: the answer is recorded as
+   * the person the client maps, and the run resumes with it.
+   */
+  async answerQuestion(answer: AnswerRequest, as: ActAs): Promise<unknown> {
+    this.answered.push({ answer, as });
+    if (this.refuseAnswer) {
+      const e = this.refuseAnswer;
+      this.refuseAnswer = null;
+      throw e;
+    }
+    const by = this.clients.get(as.client)?.slack?.people?.[as.user] ?? as.user;
+    const { action, choice, text } = answer.body;
+    this.emit(answer.run, "lifecycle.resumed", {
+      attempt: 2,
+      answer: {
+        question_id: answer.question,
+        ...(action === "approve" || action === "deny" ? { decision: action } : {}),
+        ...(choice ? { choice } : {}),
+        ...(text ? { text } : {}),
+        by,
+        at: this.at(),
+      },
+    });
+    return {};
+  }
+
   /** How long the runtime takes to confirm a stop. */
   stopDelayMs = 30;
   /** Set to make a run asked to stop complete instead, as one whose turn finished first does. */
@@ -323,7 +361,9 @@ export class FakeCollegium implements Collegium {
       payload: payload === undefined ? undefined : b64(payload),
       at: this.at(),
     };
-    if (kind === "lifecycle.started") this.set(id, { status: "running" });
+    if (kind === "lifecycle.started" || kind === "lifecycle.resumed")
+      this.set(id, { status: "running" });
+    if (kind === "lifecycle.parked") this.set(id, { status: "parked" });
     if (kind === "delta.text") {
       this.said.set(id, (this.said.get(id) ?? "") + ((payload as { text?: string })?.text ?? ""));
     }
@@ -622,6 +662,63 @@ export function budgetMail(): Record<string, unknown> {
           refused: true,
           current: { max_runs: 100 },
         },
+      },
+    ],
+  };
+}
+
+/** The question a run asks of each kind, as the platform's stream and inbox carry it. */
+export const QUESTIONS = {
+  approval: {
+    id: "q-approve",
+    kind: "approval",
+    agent: "lead",
+    prompt: "Allow lead to call deploy?",
+    tool: { name: "deploy", call_id: "call-1", arguments: { service: "web" } },
+    expires_at: "2026-10-10T00:00:00Z",
+  },
+  choice: {
+    id: "q-choose",
+    kind: "choice",
+    agent: "lead",
+    prompt: "Which region?",
+    options: ["us-east", "eu-west"],
+  },
+  reply: { id: "q-reply", kind: "reply", agent: "lead", prompt: "What is the ticket number?" },
+} as const;
+
+/** A question a run waits on, as the platform's inbox sends it. */
+export function questionMail(
+  run: string,
+  kind: keyof typeof QUESTIONS,
+  outcome?: { action: string; by: string; at: string; note?: string },
+): Record<string, unknown> {
+  return {
+    id: `m-${kind}`,
+    kind: kind === "approval" ? "approval" : "clarification",
+    subject:
+      kind === "approval" ? "lead wants to run deploy" : `lead asks: ${QUESTIONS[kind].prompt}`,
+    from: { kind: "agent", name: "lead" },
+    at: "2026-10-09T00:10:00Z",
+    updated_at: "2026-10-09T00:10:00Z",
+    severity: kind === "approval" ? "warning" : "info",
+    state: outcome ? "resolved" : "open",
+    unread: true,
+    source: { run, agent: "lead" },
+    parts: [
+      {
+        id: "p1",
+        type: kind,
+        state: outcome ? "resolved" : "open",
+        actions: outcome
+          ? []
+          : kind === "approval"
+            ? ["approve", "deny"]
+            : kind === "choice"
+              ? ["choose"]
+              : ["reply"],
+        question: { ...QUESTIONS[kind], run },
+        ...(outcome ? { outcome } : {}),
       },
     ],
   };

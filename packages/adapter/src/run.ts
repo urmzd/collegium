@@ -1,4 +1,5 @@
-import type { ArtifactKind, Task, Turn, TurnEvent } from "@vultus/core";
+import type { ArtifactKind, Interrupt, Task, Turn, TurnEvent } from "@vultus/core";
+import { interruptOf, settledOf, type WireQuestion } from "./question.ts";
 
 /**
  * The one place mandatum's wire format meets vultus's event model, for every
@@ -86,6 +87,8 @@ export interface Run {
   lifecycle?: "attached" | "delegated";
   /** Why a stopped run was stopped. */
   cause?: string;
+  /** What a parked run is waiting on a person for. */
+  question?: WireQuestion;
   /** The trigger id the run was accepted with. Its `id` is derived from it and the workspace. */
   tag_id?: string;
   /** Asked to stop and not ended yet. It ends stopped, or completed or failed if it finished first. */
@@ -117,6 +120,8 @@ interface Lifecycle {
   terminal: boolean;
   reason: string;
   text: string;
+  question: WireQuestion;
+  answer: { question_id: string; decision?: string; choice?: string; text?: string; note?: string; by?: string; at?: string; expired?: boolean };
 }
 interface Tool {
   id: string;
@@ -195,6 +200,9 @@ export function adapter(
   const calling = new Map<string, string[]>();
   // What each task last looked like, so a later fact adds to it.
   const shown = new Map<string, Partial<Task>>();
+  // Questions this run asked that have no answer yet, and the tool call an
+  // approval holds.
+  const asked = new Map<string, { question: WireQuestion; interrupt: Interrupt }>();
 
   const task = (id: string, name: string | undefined, rest: Partial<Task>): Task => {
     const all = { ...shown.get(id), ...rest };
@@ -221,13 +229,57 @@ export function adapter(
         started.clear();
         calling.clear();
         shown.clear();
+        asked.clear();
         return [{ type: "turn.started", turnId: e.run_id, agent: { name: e.agent } }];
       case "lifecycle.started":
-      case "lifecycle.resumed":
         return [{ type: "activity", activity: "thinking" }];
-      case "lifecycle.parked":
-        // Blocked on a person or an event. vultus does not animate waiting.
-        return [{ type: "activity", activity: "waiting" }];
+      case "lifecycle.resumed": {
+        const a = body<Lifecycle>(e).answer;
+        const open = a?.question_id ? asked.get(a.question_id) : undefined;
+        if (!a || !open) return [{ type: "activity", activity: "thinking" }];
+        asked.delete(a.question_id);
+        const settled = settledOf(a);
+        const out: TurnEvent[] = [];
+        const resolved = interruptOf(open.question, settled);
+        if (resolved) out.push({ type: "interrupt.resolved", interrupt: resolved });
+        const call = open.question.tool?.call_id;
+        if (call && open.question.kind === "approval") {
+          const denied = settled.action !== "approve";
+          out.push({ type: "task.upserted", task: task(call, open.question.tool?.name, { status: denied ? "denied" : "in_progress" }) });
+        }
+        out.push({ type: "activity", activity: "thinking" });
+        return out;
+      }
+      case "lifecycle.parked": {
+        // Blocked on a person. vultus does not animate waiting.
+        const q = body<Lifecycle>(e).question;
+        const interrupt = q?.id ? interruptOf(q, undefined) : null;
+        if (!q || !interrupt) return [{ type: "activity", activity: "waiting" }];
+        asked.set(q.id, { question: q, interrupt });
+        const out: TurnEvent[] = [{ type: "interrupt.raised", interrupt }];
+        // The call an approval holds reads "waiting", not "running". It is not
+        // tied to the approval (`interruptId`): vultus then gives the web inline
+        // row controls and Slack the card, and the two surfaces would differ.
+        // vultus: one rendering of a task-owned approval on both surfaces.
+        const call = q.tool?.call_id;
+        if (call && q.kind === "approval") {
+          tools.set(call, q.tool?.name ?? "tool");
+          out.push({ type: "task.upserted", task: task(call, q.tool?.name, { status: "waiting" }) });
+        }
+        out.push({ type: "activity", activity: "waiting" });
+        return out;
+      }
+      case "lifecycle.child.parked": {
+        // A run this one waits on is waiting on a person. The question is
+        // that run's, answered there or in the inbox: here the step that
+        // called it reads waiting.
+        const cq = body<{ run_id: string; agent: string }>(e);
+        const id = [...started].find(([, s]) => s.run === cq.run_id)?.[0];
+        const out: TurnEvent[] = [];
+        if (id) out.push({ type: "task.upserted", task: task(id, tools.get(id), { status: "waiting" }) });
+        out.push({ type: "activity", activity: "waiting" });
+        return out;
+      }
       case "delta.text": {
         const text = body<{ text: string }>(e).text ?? "";
         if (!text) return [];
@@ -357,6 +409,12 @@ export function adapter(
         const out: TurnEvent[] = [];
         const text = body<Lifecycle>(e).text;
         if (!streamed && text) out.push({ type: "text.delta", text });
+        // A question nobody answered is settled with the run.
+        for (const { question } of asked.values()) {
+          const settled = interruptOf(question, { action: "stopped", by: "system", at: e.at, note: "The run was stopped" });
+          if (settled) out.push({ type: "interrupt.resolved", interrupt: settled });
+        }
+        asked.clear();
         out.push({ type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" });
         return out;
       }
@@ -423,7 +481,12 @@ export function turnOf(run: Run): Turn {
     text: run.answer ?? "",
     tasks: [],
     citations: [],
-    interrupts: [],
+    // The record says what a parked run waits on, for a reader who missed
+    // the event that raised it.
+    interrupts: (() => {
+      const i = run.status === "parked" && run.question ? interruptOf(run.question, undefined) : null;
+      return i ? [i] : [];
+    })(),
     notices: [],
     activity: run.status === "parked" ? "waiting" : undefined,
     failure:

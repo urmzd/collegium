@@ -1,6 +1,8 @@
 import "./react.ts";
 import { createHash } from "node:crypto";
 import {
+  answerOfAction,
+  answers,
   ended,
   type Follower,
   follow,
@@ -32,6 +34,7 @@ import {
 } from "@vultus/render-slack";
 import { choose, mayRoute, type Routing } from "./agents.ts";
 import {
+  type ActAs,
   type Agent,
   type ClientRecord,
   type Collegium,
@@ -127,6 +130,13 @@ interface Thread {
 }
 
 const terminal = (s: Run["status"]) => s === "completed" || s === "failed" || s === "stopped";
+
+/** A turn waiting on a person's answer to a question. */
+const waitsOnPerson = (turn: Turn) =>
+  turn.status === "waiting" &&
+  turn.interrupts.some((i) =>
+    i.type === "approval" ? i.decision.kind === "pending" : i.answer.kind === "pending",
+  );
 
 /** A small wait queue: what the stream, the poll and the stop button put in, the pump takes out. */
 class Mailbox<T> {
@@ -569,8 +579,16 @@ export class App {
       }
       // Who asked, the client and the thread are known here and have nowhere to go:
       // the route takes none of them. See the README.
+      // A person the client maps asks as themselves, so they do not approve
+      // their own run's calls. Anyone else asks through the app.
+      const asking = await this.actAs(job.requester ?? job.user);
       run = await this.collegium.createRun(
-        { agent, text, ...(placed.after ? { after: placed.after } : {}) },
+        {
+          agent,
+          text,
+          ...(placed.after ? { after: placed.after } : {}),
+          ...(asking ? { act_as: asking } : {}),
+        },
         placed.key,
       );
     } catch (e) {
@@ -726,6 +744,14 @@ export class App {
         progress = Date.now();
         const before = following.turn;
         dirty = following.apply(item.event) !== before || dirty;
+        // A question shows with its buttons at once, and its card settles
+        // where it was shown when it is answered, whoever answered it.
+        if (waitsOnPerson(following.turn)) {
+          await presenter.pause(following.turn);
+          dirty = false;
+        } else if (following.turn.interrupts !== before.interrupts) {
+          await presenter.settleQuestion(following.turn);
+        }
       } else if (item.type === "record" && terminal(item.run.status)) {
         // An ended run is given one more read for its final event to arrive, so
         // the streamed answer is not cut short. The record carries the answer too.
@@ -909,6 +935,7 @@ export class App {
     // A click on an inbox message names the message. Anything else names a run.
     const message = await this.collegium.inbox.get(ui.payload.turnId).catch(() => null);
     if (message) return this.onMail(p, ui, message);
+    if (answers(ui)) return this.onAnswer(p, ui);
     if (ui.id === ActionId.retry || ui.id === ActionId.resume) {
       const run = await this.collegium.getRun(ui.payload.turnId);
       const outcome = run ? await this.again(run, p.user.id, p.message?.ts) : "elsewhere";
@@ -966,6 +993,56 @@ export class App {
     }
   }
 
+  // Questions a run waits on
+
+  /**
+   * Who a Slack person is in the workspace, as this app's client maps them,
+   * or null. Only the client this app is maps people, and only for the
+   * credential it names, which must be this app's own.
+   */
+  private async actAs(user: string): Promise<ActAs | null> {
+    const routing = await this.routing().catch(() => null);
+    const client = routing?.client;
+    if (!client || !this.opts.clientId || !client.enabled) return null;
+    const mapped =
+      client.slack?.machine === this.opts.subject && Boolean(client.slack?.people?.[user]);
+    return mapped ? { client: this.opts.clientId, user } : null;
+  }
+
+  /**
+   * Answer a question shown on a run, for the person who clicked. Collegium
+   * decides whether they may: it is asked as them, through the client that
+   * maps them, and a person it does not map is never asked for at all. The
+   * card settles from the run's own events.
+   */
+  private async onAnswer(p: ActionPayload, ui: UiAction): Promise<void> {
+    const answer = answerOfAction(ui);
+    if (!answer) {
+      // vultus: a modal that collects a reply to a question (as feedbackModal does for a
+      // rating), for Something Else and Reply. Until then a reply is typed in the console.
+      if (ui.id === ActionId.clarifyOther) return this.whisper(p, words.replyInConsole);
+      return;
+    }
+    const as = await this.actAs(p.user.id);
+    if (!as) {
+      this.log(`an answer from ${p.user.id} was not sent: this client does not map them to anyone`);
+      return this.whisper(p, defaultCopy.noPermission);
+    }
+    try {
+      await this.collegium.answerQuestion(answer, as);
+      this.log(`question ${answer.question} on ${answer.run} answered for ${p.user.id}`);
+    } catch (e) {
+      this.log(
+        `question ${answer.question} on ${answer.run} was not answered: ${(e as Error).message}`,
+      );
+      const status = e instanceof CollegiumError ? e.status : 0;
+      return this.whisper(
+        p,
+        status === 403 ? defaultCopy.noPermission : defaultCopy.failure.internal(),
+      );
+    }
+  }
+
   // The inbox
 
   /** Whether a Slack person may settle an inbox message here: they asked for the run, or they are an operator. */
@@ -975,10 +1052,21 @@ export class App {
   }
 
   private async onMail(p: ActionPayload, ui: UiAction, message: PlatformMessage) {
-    if (!this.maySettle(p.user.id, message)) return this.whisper(p, defaultCopy.notYours);
-    // A failed turn is asked again here, where its answer can be shown, when the thread is this app's.
     const part = message.parts.find((x) => partMatches(x, ui.payload.target));
+    const question = part?.type === "approval" || part?.type === "choice" || part?.type === "reply";
+    // Who may answer a question is collegium's to decide, for the person as it knows them.
+    const as = question ? await this.actAs(p.user.id) : null;
+    if (question && !as) return this.whisper(p, defaultCopy.noPermission);
+    if (!question && !this.maySettle(p.user.id, message)) {
+      return this.whisper(p, defaultCopy.notYours);
+    }
+    if (part?.type === "reply" && ui.id === ActionId.reply && !ui.payload.text) {
+      return this.whisper(p, words.replyInConsole);
+    }
+    // A failed turn is asked again here, where its answer can be shown, when the thread is this app's.
     let request = toRequest(message, ui);
+    if (request?.call === "resolve" && as)
+      request = { ...request, values: { ...request.values, act_as: as } };
     if (ui.id === ActionId.retry) {
       // Only a failed run can be asked again. A Retry on anything else is refused.
       if (part?.type !== "failure") return this.refuseRetry(p, "elsewhere");
@@ -1073,8 +1161,10 @@ export class App {
     const posted = this.mail.get(message.id);
     if (posted) return this.showMail(message, posted);
     if (messageState(message) !== "open") return;
-    // A failed turn already says so in its own message, with Retry.
+    // A failed turn already says so in its own message, with Retry, and a
+    // question is shown on the run it holds up.
     if (message.kind === "failure" || message.parts.some((p) => p.type === "failure")) return;
+    if (message.kind === "approval" || message.kind === "clarification") return;
     const about = message.about.find((s) => s.kind === "run");
     const run = about ? await this.collegium.getRun(about.id) : null;
     const session = run ? await this.sessionOfRun(run) : null;

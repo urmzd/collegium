@@ -6,6 +6,8 @@
  * when that client lands, this file is the one that changes.
  */
 import {
+  type AnswerRequest,
+  answerPath,
   type BusEvent,
   type Http,
   mailTransport,
@@ -42,6 +44,14 @@ export interface ClientRecord {
   /** Agents the client may route to besides its default. `*` means any. */
   agents?: string[];
   identity?: { team?: string; app_id?: string };
+  /** The credential that may act for Slack people, and who each of them is in the workspace. */
+  slack?: { machine?: string; people?: Record<string, string> };
+}
+
+/** A Slack person this app speaks for, as the client that maps them names them. */
+export interface ActAs {
+  client: string;
+  user: string;
 }
 
 /**
@@ -56,6 +66,8 @@ export interface RunRequest {
   /** The turn this one follows. Left out, it starts a conversation. */
   after?: string;
   project?: string;
+  /** The Slack person asking, when the client maps them: the run is theirs, not the app's. */
+  act_as?: ActAs;
 }
 
 /** Every call takes an optional signal, as the generated client's methods do. */
@@ -112,6 +124,11 @@ export interface Collegium {
   /** Every turn of a conversation, or null when there is no such conversation. */
   getThread(id: string, options?: CallOptions): Promise<{ turns: Run[] } | null>;
   stopRun(id: string, options?: CallOptions): Promise<Run>;
+  /**
+   * Answer the question a run waits on, for the Slack person who clicked.
+   * Returns the question's inbox message, settled with what was recorded.
+   */
+  answerQuestion(answer: AnswerRequest, actAs: ActAs, options?: CallOptions): Promise<unknown>;
   /**
    * A run's events as they happen, from its first. The stream also carries
    * inbox notices for the whole workspace. It ends when the signal aborts.
@@ -242,6 +259,7 @@ const sleep = (ms: number, signal: AbortSignal) =>
  * | getThread | `GET /api/threads/{id}` |
  * | runEvents, notices | `GET /api/events?topic=` as server-sent events, resumed with `from` |
  * | stopRun | `POST /api/runs/{id}/stop` |
+ * | answerQuestion | `POST /api/runs/{id}/questions/{question}/answer` |
  * | inbox | `GET /api/inbox`, `GET /api/inbox/{id}`, `POST /api/inbox/{id}/read`, `/dismiss`, `/snooze`, `/parts/{part}/resolve` |
  */
 export function httpCollegium(cfg: {
@@ -371,6 +389,8 @@ export function httpCollegium(cfg: {
     getRun: (id) => orNull(http<Run>("GET", `/api/runs/${enc(id)}`)),
     getThread: (id) => orNull(http<{ turns: Run[] }>("GET", `/api/threads/${enc(id)}`)),
     stopRun: (id) => http<Run>("POST", `/api/runs/${enc(id)}/stop`),
+    answerQuestion: (answer, actAs) =>
+      http<unknown>("POST", answerPath(answer), { ...answer.body, act_as: actAs }),
     runEvents: (run, options) =>
       stream(`agent:${run.agent}:${run.id}`, options.signal ?? never, options.from),
     notices: async function* (options) {

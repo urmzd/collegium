@@ -22,6 +22,8 @@ import {
   mention,
   OTHER_TEAM,
   OTHER_USER,
+  QUESTIONS,
+  questionMail,
   SUBJECT,
   settle,
   stopPressed,
@@ -30,6 +32,7 @@ import {
   type World,
   world,
 } from "./harness.ts";
+import { words } from "./host.ts";
 import { runId, tagId } from "./keys.ts";
 import { validateBlocks } from "./validate.ts";
 
@@ -1289,4 +1292,164 @@ test("asking from the shortcut form cannot make the app notify a whole channel",
   await emit(w, "lifecycle.accepted");
   await emit(w, "lifecycle.completed", { text: "Nothing yet." });
   await w.app.idle();
+});
+
+// Questions a run waits on.
+
+const CLIENT = "app";
+/** A world whose app is a client that maps USER to ana and OTHER_USER to olu. */
+function mapped(): World {
+  const w = world({ clientId: CLIENT });
+  w.collegium.clients.set(CLIENT, {
+    id: CLIENT,
+    surface: "slack",
+    enabled: true,
+    default_agent: "lead",
+    identity: { team: TEAM },
+    slack: { machine: SUBJECT, people: { [USER]: "ana", [OTHER_USER]: "olu" } },
+  });
+  return w;
+}
+
+/** Start a run that parks on a question, and return the message that shows it. */
+async function parkOn(w: World, kind: keyof typeof QUESTIONS) {
+  await deliver(w, mention("deploy the web service", TS));
+  const run = w.collegium.last.id;
+  await emit(w, "lifecycle.accepted");
+  await emit(w, "lifecycle.started", { attempt: 1 });
+  await emit(w, "delta.text", { text: "Checking first. " });
+  await emit(w, "lifecycle.parked", { reason: "waiting on a person", question: QUESTIONS[kind] });
+  await settle();
+  const shown = w.slack.of("chat.stopStream").at(-1);
+  return { run, shown, ts: String(shown?.ts ?? "") };
+}
+
+test("a person the client maps asks as themselves, so their run is theirs", async () => {
+  const w = mapped();
+  await deliver(w, mention("hello", TS));
+  assert.deepEqual(w.collegium.asked[0]?.act_as, { client: CLIENT, user: USER });
+  const other = world();
+  await deliver(other, mention("hello", TS));
+  assert.equal(other.collegium.asked[0]?.act_as, undefined, "without a client nobody is mapped");
+  await emit(w, "lifecycle.completed", { text: "Hi." });
+  await emit(other, "lifecycle.completed", { text: "Hi." });
+  await w.app.idle();
+  await other.app.idle();
+});
+
+test("an approval waits in the run's thread with live buttons, and a mapped person's answer settles it in place", async () => {
+  const w = mapped();
+  const { run, shown, ts } = await parkOn(w, "approval");
+  assert.ok(shown, "the streamed message is closed so its buttons can be pressed");
+  assert.match(textIn(blocksOf(shown)), /Allow lead to call deploy\?/);
+  assert.deepEqual(w.slack.statuses.at(-1), "suspended", "the session reads waiting on a person");
+
+  await deliver(
+    w,
+    click(blocksOf(shown), defaultCopy.approve, { ts, threadTs: TS, user: OTHER_USER }),
+  );
+  assert.deepEqual(w.collegium.answered, [
+    {
+      answer: { run, question: "q-approve", body: { action: "approve" } },
+      as: { client: CLIENT, user: OTHER_USER },
+    },
+  ]);
+  await settle();
+  const settledCard = w.slack.of("chat.update").find((u) => u.ts === ts);
+  assert.ok(settledCard, "the question's message is edited, not posted again");
+  assert.match(textIn(blocksOf(settledCard)), /Approved by olu/);
+  assert.ok(
+    !textIn(blocksOf(settledCard)).includes(`"${defaultCopy.approve}"`),
+    "no button is left to press",
+  );
+
+  await emit(w, "delta.text", { text: "Deployed." });
+  await emit(w, "lifecycle.completed", { text: "Checking first. Deployed." });
+  await w.app.idle();
+  assert.equal(w.slack.statuses.at(-1), "active");
+  collect("question in thread", w.slack);
+});
+
+test("a choice is answered with the option clicked, and a reply is sent to the console", async () => {
+  const w = mapped();
+  const { run, shown, ts } = await parkOn(w, "choice");
+  await deliver(w, click(blocksOf(shown), "eu-west", { ts, threadTs: TS, user: OTHER_USER }));
+  assert.deepEqual(w.collegium.answered.at(-1)?.answer, {
+    run,
+    question: "q-choose",
+    body: { action: "choose", choice: "eu-west" },
+  });
+  await settle();
+  assert.match(
+    textIn(blocksOf(w.slack.of("chat.update").find((u) => u.ts === ts))),
+    /olu chose eu-west/,
+  );
+  await emit(w, "lifecycle.completed", { text: "Done." });
+  await w.app.idle();
+
+  const r = mapped();
+  const reply = await parkOn(r, "reply");
+  await deliver(
+    r,
+    click(blocksOf(reply.shown), defaultCopy.somethingElse, {
+      ts: reply.ts,
+      threadTs: TS,
+      user: OTHER_USER,
+    }),
+  );
+  assert.equal(r.collegium.answered.length, 0);
+  assert.equal(r.slack.of("chat.postEphemeral").at(-1)?.text, words.replyInConsole);
+  await deliver(r, stopPressed(TS));
+  await r.app.idle();
+});
+
+test("a Slack person the client does not map cannot answer, and collegium is never asked", async () => {
+  const w = mapped();
+  const { shown, ts } = await parkOn(w, "approval");
+  await deliver(
+    w,
+    click(blocksOf(shown), defaultCopy.approve, { ts, threadTs: TS, user: "U0NOBODY1" }),
+  );
+  assert.equal(w.collegium.answered.length, 0);
+  assert.equal(w.slack.of("chat.postEphemeral").at(-1)?.text, defaultCopy.noPermission);
+  // Without a client, nobody is mapped, so nobody answers from Slack.
+  const bare = world();
+  const b = await parkOn(bare, "approval");
+  await deliver(bare, click(blocksOf(b.shown), defaultCopy.approve, { ts: b.ts, threadTs: TS }));
+  assert.equal(bare.collegium.answered.length, 0);
+  for (const x of [w, bare]) {
+    await deliver(x, stopPressed(TS));
+    await x.app.idle();
+  }
+});
+
+test("an answer collegium refuses is shown in vultus's words, and the card keeps its buttons", async () => {
+  const w = mapped();
+  const { shown, ts } = await parkOn(w, "approval");
+  // ana asked for the run, so she may not approve its call.
+  w.collegium.refuseAnswer = new CollegiumError(
+    403,
+    "platform: forbidden: ana may not answer this question",
+  );
+  await deliver(w, click(blocksOf(shown), defaultCopy.approve, { ts, threadTs: TS, user: USER }));
+  assert.equal(w.slack.of("chat.postEphemeral").at(-1)?.text, defaultCopy.noPermission);
+  assert.ok(w.logs.some((l) => l.includes("may not answer")));
+  assert.equal(w.slack.of("chat.update").filter((u) => u.ts === ts).length, 0);
+  await deliver(w, stopPressed(TS));
+  await w.app.idle();
+});
+
+test("a question in the inbox is not posted again in the thread: the run already shows it", async () => {
+  const w = mapped();
+  const watching = new AbortController();
+  const watch = w.app.watchInbox(watching.signal);
+  const { run } = await parkOn(w, "approval");
+  const posts = w.slack.of("chat.postMessage").length;
+  w.collegium.raise(questionMail(run, "approval"));
+  await settle();
+  assert.equal(w.slack.of("chat.postMessage").length, posts);
+  await deliver(w, stopPressed(TS));
+  await w.app.idle();
+  watching.abort();
+  await watch;
 });

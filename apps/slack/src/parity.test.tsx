@@ -16,7 +16,14 @@ import { WebSurface } from "@vultus/render-web";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { forSlack } from "./app.tsx";
-import { alertMail, budgetMail, failureMail, memoryMail } from "./harness.ts";
+import {
+  alertMail,
+  budgetMail,
+  failureMail,
+  memoryMail,
+  QUESTIONS,
+  questionMail,
+} from "./harness.ts";
 
 /**
  * One state, two renderers. A recorded run goes through the shared adapter
@@ -318,12 +325,89 @@ test("every kind of inbox message holds the same content on both, as each surfac
   }
 });
 
-test("an approval for a run that waits on a person is not something the platform sends yet", () => {
-  // The inbox defines approval and choice parts and never raises them, so neither surface is given one to show.
-  const wire = memoryMail(RUN);
-  const message = fromServer({
-    ...wire,
-    parts: [{ id: "p9", type: "approval", state: "open", actions: [] }],
+/** The buttons a rendering offers, by label: what a person can do there. */
+function slackButtons(element: ReactElement): string[] {
+  const pages = renderToSlack(element).pages.flat() as {
+    type: string;
+    elements?: { type: string; text?: { text: string } }[];
+  }[];
+  return pages
+    .filter((b) => b.type === "actions")
+    .flatMap((b) => b.elements ?? [])
+    .filter((e) => e.type === "button")
+    .map((e) => e.text?.text ?? "")
+    .sort();
+}
+function webButtons(element: ReactElement): string[] {
+  const html = renderToStaticMarkup(<WebSurface>{element}</WebSurface>);
+  return [...html.matchAll(/<button[^>]*>([\s\S]*?)<\/button>/g)]
+    .map((m) => (m[1] ?? "").replace(/<[^>]+>/g, "").trim())
+    .filter(Boolean)
+    .sort();
+}
+
+const asked = (kind: keyof typeof QUESTIONS) => [
+  ev("lifecycle.accepted", { rev: 1 }),
+  ev("lifecycle.started", { attempt: 1 }),
+  ...(kind === "approval"
+    ? [ev("delta.tool.call", { id: "call-1", name: "deploy", phase: "requested" })]
+    : []),
+  ev("lifecycle.parked", { reason: "waiting on a person", question: QUESTIONS[kind] }),
+];
+const at = "2026-10-09T00:20:00Z";
+const answer = {
+  approval: {
+    run: { question_id: "q-approve", decision: "approve", by: "dana", at },
+    inbox: { action: "approve", by: "dana", at },
+    says: "Approved by dana",
+  },
+  choice: {
+    run: { question_id: "q-choose", choice: "eu-west", by: "dana", at },
+    inbox: { action: "choose", by: "dana", at, note: "eu-west" },
+    says: "dana chose eu-west",
+  },
+  reply: {
+    run: { question_id: "q-reply", text: "OPS-42", by: "dana", at },
+    inbox: { action: "reply", by: "dana", at, note: "OPS-42" },
+    says: "OPS-42",
+  },
+} as const;
+
+for (const kind of ["approval", "choice", "reply"] as const) {
+  test(`a ${kind} a run waits on reads and answers the same on both, on the run and in the inbox`, () => {
+    // On the run: waiting, not working, with the question and its buttons.
+    const waiting = live(asked(kind));
+    assert.equal(waiting.status, "waiting");
+    assert.equal(waiting.activity, "waiting");
+    assert.deepEqual(replay(run(), asked(kind)), waiting, "the console rebuilds the same state");
+    const onRun = <TurnView turn={waiting} />;
+    bothSay(onRun, QUESTIONS[kind].prompt);
+    if (kind === "approval") bothSay(onRun, defaultCopy.approve, defaultCopy.cancel);
+    if (kind === "choice") bothSay(onRun, "us-east", "eu-west");
+    if (kind === "reply") bothSay(onRun, defaultCopy.somethingElse);
+    assert.deepEqual(
+      slackButtons(onRun),
+      webButtons(onRun).filter((b) => slackButtons(onRun).includes(b)),
+    );
+
+    // In the inbox: the same question, the same choices.
+    const mail = fromServer(questionMail(RUN, kind));
+    const inMail = <MessageView message={forSlack(mail)} />;
+    bothSay(<MessageView message={mail} />, QUESTIONS[kind].prompt);
+    if (kind === "approval") bothSay(inMail, defaultCopy.approve, defaultCopy.cancel);
+    if (kind === "choice") bothSay(inMail, "us-east", "eu-west");
+    if (kind === "reply") bothSay(inMail, defaultCopy.reply);
+
+    // Answered: the record replaces the buttons, in the same words, wherever it is read.
+    const settled = live([
+      ...asked(kind),
+      ev("lifecycle.resumed", { attempt: 2, answer: answer[kind].run }),
+    ]);
+    assert.notEqual(settled.status, "waiting");
+    const decided = fromServer(questionMail(RUN, kind, answer[kind].inbox));
+    for (const el of [<TurnView turn={settled} />, <MessageView message={decided} />]) {
+      bothSay(el, answer[kind].says);
+      assert.ok(!slack(el).includes(`"${defaultCopy.approve}"`), "no button is left to press");
+    }
   });
-  assert.deepEqual(message.parts, []);
-});
+}
