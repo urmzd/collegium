@@ -72,8 +72,11 @@ COLLEGIUM_SLACK_SIGNING_SECRET=op://Private/Collegium integrations/slack_signing
 
 Then start the command above through `op run --env-file=<local-reference-file> --`.
 Do not commit that local file or capture the injected environment in logs.
-The default clients record only the names of these variables. A client created
-through the API can reference its own, as `env:COLLEGIUM_<anything>`.
+The default clients record only the names of these variables, and only the
+server's `-tenant` may reference them. A client created through the API can
+reference a variable of its own only if the server was started with
+`-secret-refs '<tenant>=COLLEGIUM_NAME,...'` listing it for that tenant. With no
+list, write the secret as a value. See [clients](clients.md#secrets).
 
 ## GitHub installation
 

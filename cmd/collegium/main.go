@@ -68,6 +68,7 @@ func run(args []string) error {
 	seed := fs.Bool("seed", false, "create two example agents that need no model key")
 	builtinProvider := fs.String("builtin-provider", "", `model provider for the agents the platform provides, such as "anthropic" or "ollama". Empty means none are provided`)
 	builtinModel := fs.String("builtin-model", "", "model for the agents the platform provides")
+	secretRefsFlag := fs.String("secret-refs", "", `environment variables each tenant's clients may reference as secrets, as "tenant=NAME,NAME;tenant=NAME". A tenant not listed may reference none`)
 	agentSpecs := fs.String("agent-specs", "", "comma-separated agent JSON files to register on startup")
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
@@ -113,9 +114,15 @@ func run(args []string) error {
 		return fmt.Errorf("-auth must be oidc or dev, not %q", *authMode)
 	}
 
+	refs, err := secretRefs(*secretRefsFlag, *tenant, os.Getenv)
+	if err != nil {
+		return err
+	}
 	p, err := platform.New(platform.Config{
-		// A client may keep its secrets in this process's environment.
+		// A client may keep its secrets in this process's environment, under
+		// the names the operator gave its tenant.
 		Env:             os.LookupEnv,
+		SecretRefs:      refs,
 		Limits:          call.Limits{MaxDepth: *maxDepth, MaxFanOut: *maxFanOut},
 		Log:             log,
 		BuiltinProvider: *builtinProvider,

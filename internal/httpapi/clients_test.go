@@ -320,3 +320,72 @@ func TestAClientBodyCannotClaimWhatTheServerDecides(t *testing.T) {
 		t.Errorf("delete of a managed client = %d, want 409", res.StatusCode)
 	}
 }
+
+// Through the API, a secret reference is refused unless the server gave that
+// variable to the caller's tenant, and every refusal is the same 400 with the
+// same body: unset, set, another tenant's, or the default client's.
+func TestTheAPIRefusesASecretReferenceItsTenantWasNotGiven(t *testing.T) {
+	env := map[string]string{
+		"COLLEGIUM_SLACK_TOKEN": "xoxb-default", "COLLEGIUM_SLACK_SIGNING_SECRET": "default-signing",
+		"COLLEGIUM_SLACK_TOKEN_ACME": botToken, "COLLEGIUM_SLACK_SECRET_ACME": signingSecret,
+	}
+	fake := slackflow.NewFake()
+	f := newFixtureWith(t, platform.Config{
+		SlackAPI: func(string) slackflow.API { return fake }, ClientInterval: -1,
+		Env: func(name string) (string, bool) { v, ok := env[name]; return v, ok },
+		SecretRefs: map[string][]string{
+			"acme": {"COLLEGIUM_SLACK_TOKEN", "COLLEGIUM_SLACK_SIGNING_SECRET", "COLLEGIUM_SLACK_TOKEN_ACME", "COLLEGIUM_SLACK_SECRET_ACME"},
+		},
+	})
+	acme, globex := f.machine(t, "acme", everything...), f.machine(t, "globex", everything...)
+	withRefs := func(id, app, token, signing string) string {
+		return `{"id":"` + id + `","name":"` + id + `","surface":"slack","identity":{"app_id":"` + app + `","team":"T01ABCDEF"},"default_agent":"helper",` +
+			`"credentials":{"token":{"ref":"` + token + `"},"signing_secret":{"ref":"` + signing + `"}}}`
+	}
+	// The tenant the variables were given to may reference them.
+	if res, out := f.do(t, nil, "POST", "/api/clients", acme, withRefs("mine", "A0MINE", "env:COLLEGIUM_SLACK_TOKEN_ACME", "env:COLLEGIUM_SLACK_SECRET_ACME")); res.StatusCode != http.StatusCreated {
+		t.Fatalf("acme create = %d %v", res.StatusCode, out)
+	}
+	f.do(t, nil, "POST", "/api/agents", acme, helperSpec)
+	body := `{"type":"event_callback","api_app_id":"A0MINE","team_id":"T01ABCDEF","event_id":"Ev1","event":{"type":"app_mention","user":"U01","channel":"C01","ts":"1700000000.000100","text":"explain"}}`
+	if code := postSlack(t, f, signingSecret, body); code != http.StatusOK {
+		t.Fatalf("a webhook signed with the referenced secret answered %d", code)
+	}
+
+	// Nobody else may, whatever the variable is.
+	bodies := map[string]bool{}
+	for name, ref := range map[string]string{
+		"another tenant's variable":     "env:COLLEGIUM_SLACK_TOKEN_ACME",
+		"the default client's variable": "env:COLLEGIUM_SLACK_TOKEN",
+		"a variable that is not set":    "env:COLLEGIUM_NOT_SET",
+		"a variable outside the prefix": "env:PATH",
+	} {
+		res, out := f.do(t, nil, "POST", "/api/clients", globex, withRefs("probe", "A0PROBE", ref, ref))
+		if res.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s = %d %v, want 400", name, res.StatusCode, out)
+		}
+		raw, _ := json.Marshal(out)
+		bodies[string(raw)] = true
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("refusals can be told apart: %v", bodies)
+	}
+	// An update cannot move a client onto them either.
+	if res, out := f.do(t, nil, "POST", "/api/clients", globex, slackBody("theirs", "A0THEIRS", "helper")); res.StatusCode != http.StatusCreated {
+		t.Fatalf("globex create = %d %v", res.StatusCode, out)
+	}
+	update := strings.Replace(withRefs("theirs", "A0THEIRS", "env:COLLEGIUM_SLACK_TOKEN", "env:COLLEGIUM_SLACK_SIGNING_SECRET"), `"id":"theirs",`, "", 1)
+	res, out := f.do(t, nil, "PUT", "/api/clients/theirs", globex, update)
+	raw, _ := json.Marshal(out)
+	if res.StatusCode != http.StatusBadRequest || !bodies[string(raw)] {
+		t.Fatalf("update = %d %s, want the same refusal", res.StatusCode, raw)
+	}
+	_, kept := f.do(t, nil, "GET", "/api/clients/theirs", globex, "")
+	if kept["version"].(float64) != 1 {
+		t.Fatalf("a refused update changed the client: %v", kept)
+	}
+	_, list := f.do(t, nil, "GET", "/api/clients", globex, "")
+	if n := len(list["clients"].([]any)); n != 1 {
+		t.Fatalf("globex has %d clients, want only its own", n)
+	}
+}

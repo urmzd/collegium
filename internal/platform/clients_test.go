@@ -604,38 +604,6 @@ func TestTwoGitHubClientsAreToldApartByTheAccountTheyServe(t *testing.T) {
 	}
 }
 
-// A client's secrets may live in the server's environment, named by a
-// reference. The reference may only name a variable set aside for that.
-func TestSecretsByReferenceComeFromTheEnvironmentAndNowhereElse(t *testing.T) {
-	f := &fakes{}
-	cfg := f.config()
-	cfg.Env = func(name string) (string, bool) {
-		v, ok := map[string]string{"COLLEGIUM_SLACK_TOKEN_DOCS": "token-docs", "COLLEGIUM_SLACK_SECRET_DOCS": "secret-docs", "ANTHROPIC_API_KEY": "sk-model"}[name]
-		return v, ok
-	}
-	c := &cast{says: map[string][][]saigetypes.Delta{"lead": {say("By reference.")}}}
-	p := stage(t, c, cfg)
-	in := slackClient("docs", "A0DOCS", team, "lead")
-	in.Token = clients.SecretInput{Ref: "env:ANTHROPIC_API_KEY"}
-	if _, err := p.CreateClient(context.Background(), tenant, "test", in); !errors.Is(err, clients.ErrInvalid) {
-		t.Fatalf("a reference to the model key was accepted: %v", err)
-	}
-	in.Token = clients.SecretInput{Ref: "env:COLLEGIUM_NOT_SET"}
-	if _, err := p.CreateClient(context.Background(), tenant, "test", in); !errors.Is(err, clients.ErrInvalid) {
-		t.Fatalf("a reference to an unset variable was accepted: %v", err)
-	}
-	in.Token = clients.SecretInput{Ref: "env:COLLEGIUM_SLACK_TOKEN_DOCS"}
-	in.SigningSecret = clients.SecretInput{Ref: "env:COLLEGIUM_SLACK_SECRET_DOCS"}
-	saved := create(t, p, tenant, in)
-	if saved.Credentials.Token != (clients.SecretRef{Set: true, Ref: "env:COLLEGIUM_SLACK_TOKEN_DOCS"}) {
-		t.Fatalf("credentials = %+v", saved.Credentials)
-	}
-	if code := signedSlack(p.IngressHandler(), "secret-docs", mentionOf("A0DOCS", team, "Ev1", "C01", "1700000000.000100")); code != http.StatusOK {
-		t.Fatalf("answered %d", code)
-	}
-	eventually(t, "the run answered through the referenced token", func() bool { return said(f.slackFor("token-docs"), "By reference.") })
-}
-
 // Two Slack apps answering in the same thread each hold their own sessions:
 // one app's stop button stops only the run that app raised.
 func TestASlackStopReachesOnlyTheRunsOfItsOwnClient(t *testing.T) {
@@ -679,5 +647,201 @@ func TestASlackStopReachesOnlyTheRunsOfItsOwnClient(t *testing.T) {
 	}
 	if said(f.slackFor("token-lead-app"), "Stopped by") {
 		t.Fatal("the stop was confirmed through the other app")
+	}
+}
+
+// The server's environment in these tests: acme's default client's secrets,
+// two more the operator gave acme, one given to initech that is not set, and
+// the model key.
+var testEnv = map[string]string{
+	"COLLEGIUM_SLACK_TOKEN": "token-default", "COLLEGIUM_SLACK_SIGNING_SECRET": "secret-default",
+	"COLLEGIUM_SLACK_TOKEN_DOCS": "token-docs", "COLLEGIUM_SLACK_SECRET_DOCS": "secret-docs",
+	"ANTHROPIC_API_KEY": "sk-model",
+}
+
+func refConfig(f *fakes) platform.Config {
+	cfg := f.config()
+	cfg.Env = func(name string) (string, bool) { v, ok := testEnv[name]; return v, ok }
+	cfg.SecretRefs = map[string][]string{
+		tenant:    {"COLLEGIUM_SLACK_TOKEN", "COLLEGIUM_SLACK_SIGNING_SECRET", "COLLEGIUM_SLACK_TOKEN_DOCS", "COLLEGIUM_SLACK_SECRET_DOCS"},
+		"initech": {"COLLEGIUM_SLACK_TOKEN_INITECH"},
+	}
+	return cfg
+}
+
+func byRef(in platform.ClientInput, token, signing string) platform.ClientInput {
+	in.Token, in.SigningSecret = clients.SecretInput{Ref: token}, clients.SecretInput{Ref: signing}
+	return in
+}
+
+// A reference the operator gave a tenant works for that tenant end to end: the
+// record names the variable, and a webhook signed with its value verifies.
+func TestAnAllowlistedSecretReferenceWorksForItsTenant(t *testing.T) {
+	f := &fakes{}
+	c := &cast{says: map[string][][]saigetypes.Delta{"lead": {say("By reference.")}}}
+	p := stage(t, c, refConfig(f))
+	saved := create(t, p, tenant, byRef(slackClient("docs", "A0DOCS", team, "lead"), "env:COLLEGIUM_SLACK_TOKEN_DOCS", "env:COLLEGIUM_SLACK_SECRET_DOCS"))
+	if saved.Credentials.Token != (clients.SecretRef{Set: true, Ref: "env:COLLEGIUM_SLACK_TOKEN_DOCS"}) {
+		t.Fatalf("credentials = %+v", saved.Credentials)
+	}
+	if code := signedSlack(p.IngressHandler(), "secret-docs", mentionOf("A0DOCS", team, "Ev1", "C01", "1700000000.000100")); code != http.StatusOK {
+		t.Fatalf("answered %d", code)
+	}
+	eventually(t, "the run answered through the referenced token", func() bool { return said(f.slackFor("token-docs"), "By reference.") })
+}
+
+// The environment is the whole process's. A tenant may name only the
+// variables the operator gave it: not another tenant's, not the ones behind
+// another tenant's default client, and with no entry at all, none.
+func TestATenantCannotReferenceASecretItWasNotGiven(t *testing.T) {
+	f := &fakes{}
+	p := stage(t, &cast{says: map[string][][]saigetypes.Delta{"lead": nil}}, refConfig(f))
+	agent(t, p, "globex", "helper")
+	// acme holds both: its default client's variables and its own.
+	create(t, p, tenant, byRef(slackClient("default-slack", "", team, "lead"), "env:COLLEGIUM_SLACK_TOKEN", "env:COLLEGIUM_SLACK_SIGNING_SECRET"))
+
+	theirs := slackClient("theirs", "A0THEIRS", "T02OTHER", "helper")
+	for name, in := range map[string]platform.ClientInput{
+		"the variables behind another tenant's default client": byRef(theirs, "env:COLLEGIUM_SLACK_TOKEN", "env:COLLEGIUM_SLACK_SIGNING_SECRET"),
+		"another tenant's variables":                           byRef(theirs, "env:COLLEGIUM_SLACK_TOKEN_DOCS", "env:COLLEGIUM_SLACK_SECRET_DOCS"),
+		"only the token by reference": {
+			Client: theirs.Client, Token: clients.SecretInput{Ref: "env:COLLEGIUM_SLACK_TOKEN_DOCS"}, SigningSecret: clients.SecretInput{Value: "mine"},
+		},
+		"only the signing secret by reference": {
+			Client: theirs.Client, Token: clients.SecretInput{Value: "mine"}, SigningSecret: clients.SecretInput{Ref: "env:COLLEGIUM_SLACK_SECRET_DOCS"},
+		},
+	} {
+		if _, err := p.CreateClient(context.Background(), "globex", "mallory", in); !errors.Is(err, clients.ErrInvalid) {
+			t.Errorf("globex created a client with %s: %v", name, err)
+		}
+	}
+	if got := p.Clients.List("globex"); len(got) != 0 {
+		t.Fatalf("a refused client was kept: %+v", got)
+	}
+	// A reference given to acme is refused for initech, which has its own list.
+	if _, err := p.CreateClient(context.Background(), "initech", "mallory", byRef(theirs, "env:COLLEGIUM_SLACK_TOKEN_DOCS", "env:COLLEGIUM_SLACK_SECRET_DOCS")); !errors.Is(err, clients.ErrInvalid) {
+		t.Fatalf("a reference given to acme was read for initech: %v", err)
+	}
+
+	// An update is held to the same rule, and a refused one changes nothing.
+	create(t, p, "globex", theirs)
+	if _, err := p.UpdateClient(context.Background(), "globex", "theirs", "mallory", byRef(theirs, "env:COLLEGIUM_SLACK_TOKEN", "env:COLLEGIUM_SLACK_SIGNING_SECRET")); !errors.Is(err, clients.ErrInvalid) {
+		t.Fatalf("globex moved its client onto acme's secrets: %v", err)
+	}
+	kept, _ := p.Clients.Get("globex", "theirs")
+	if kept.Version != 1 || kept.Credentials.Token.Ref != "" {
+		t.Fatalf("a refused update changed the client: %+v", kept)
+	}
+	ingress := p.IngressHandler()
+	body := mentionOf("A0THEIRS", "T02OTHER", "Ev1", "C01", "1700000000.000100")
+	if code := signedSlack(ingress, "secret-default", body); code != http.StatusUnauthorized {
+		t.Fatalf("acme's secret verified a request to globex's client: %d", code)
+	}
+	if code := signedSlack(ingress, "secret-theirs", body); code != http.StatusOK {
+		t.Fatalf("globex's own secret answered %d", code)
+	}
+	// Nothing of globex's was ever built with a secret from the environment.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, built := f.slack["token-docs"]; built {
+		t.Fatal("a connector was built with a token no client was allowed to reference")
+	}
+}
+
+// A refusal says the same thing whatever the reason, so it cannot be used to
+// learn which variables exist, which are set, or which another tenant holds.
+func TestARefusedSecretReferenceLooksTheSameWhateverTheReason(t *testing.T) {
+	f := &fakes{}
+	p := stage(t, &cast{says: map[string][][]saigetypes.Delta{"lead": nil}}, refConfig(f))
+	agent(t, p, "globex", "helper")
+	agent(t, p, "initech", "helper")
+	said := map[string]bool{}
+	try := func(who, ref string) {
+		t.Helper()
+		in := slackClient("probe", "A0PROBE", "T02OTHER", "helper")
+		in.Token = clients.SecretInput{Ref: ref}
+		_, err := p.CreateClient(context.Background(), who, "mallory", in)
+		if !errors.Is(err, clients.ErrInvalid) {
+			t.Fatalf("%s was accepted for %s: %v", ref, who, err)
+		}
+		if strings.Contains(err.Error(), strings.TrimPrefix(ref, "env:")) && ref != "" {
+			t.Fatalf("the refusal repeats the reference: %v", err)
+		}
+		said[err.Error()] = true
+	}
+	try("globex", "env:COLLEGIUM_SLACK_TOKEN")          // set, another tenant's default
+	try("globex", "env:COLLEGIUM_SLACK_TOKEN_DOCS")     // set, given to another tenant
+	try("globex", "env:COLLEGIUM_NOT_A_VARIABLE")       // unset, given to nobody
+	try("globex", "env:COLLEGIUM_SLACK_TOKEN_INITECH")  // unset, given to another tenant
+	try("initech", "env:COLLEGIUM_SLACK_TOKEN_INITECH") // given to this tenant, and unset
+	try("globex", "env:ANTHROPIC_API_KEY")              // set, outside the prefix
+	try("globex", "file:/etc/passwd")                   // not a reference at all
+	try("nobody", "env:COLLEGIUM_SLACK_TOKEN")          // a tenant with no entry
+	if len(said) != 1 {
+		t.Fatalf("refusals differ: %v", said)
+	}
+}
+
+// A record that carries a reference its tenant was never given, written
+// straight into the store, is not started: its secret is never read, so it
+// verifies nothing and signs nothing. The check that protects the secret is
+// where the secret is read, not where the record was written.
+func TestAStoredReferenceOutsideTheAllowlistFailsClosed(t *testing.T) {
+	f := &fakes{}
+	store := clients.NewMemory()
+	stolen := slackClient("stolen", "A0STOLEN", team, "helper").Client
+	stolen.Credentials = clients.Credentials{
+		Token:         clients.SecretRef{Set: true, Ref: "env:COLLEGIUM_SLACK_TOKEN_DOCS"},
+		SigningSecret: clients.SecretRef{Set: true, Ref: "env:COLLEGIUM_SLACK_SECRET_DOCS"},
+	}
+	// Claiming to be the server's own default client earns nothing either.
+	forged := slackClient("default-slack", "A0FORGED", "T02OTHER", "helper").Client
+	forged.Managed = clients.ManagedEnv
+	forged.Credentials = clients.Credentials{
+		Token:         clients.SecretRef{Set: true, Ref: "env:COLLEGIUM_SLACK_TOKEN"},
+		SigningSecret: clients.SecretRef{Set: true, Ref: "env:COLLEGIUM_SLACK_SIGNING_SECRET"},
+	}
+	for _, c := range []clients.Client{stolen, forged} {
+		if _, err := store.Create("globex", c, clients.DefaultCaps(), time.Now()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := refConfig(f)
+	cfg.Clients = store
+	p := stage(t, &cast{says: map[string][][]saigetypes.Delta{"lead": nil}}, cfg)
+	agent(t, p, "globex", "helper")
+	// Something has to be ingesting for a refusal to mean anything.
+	create(t, p, tenant, byRef(slackClient("docs", "A0DOCS", "T03THIRD", "lead"), "env:COLLEGIUM_SLACK_TOKEN_DOCS", "env:COLLEGIUM_SLACK_SECRET_DOCS"))
+
+	ingress := p.IngressHandler()
+	for secret, body := range map[string]string{
+		"secret-docs":    mentionOf("A0STOLEN", team, "Ev1", "C01", "1700000000.000100"),
+		"secret-default": mentionOf("A0FORGED", "T02OTHER", "Ev2", "C01", "1700000000.000200"),
+	} {
+		if code := signedSlack(ingress, secret, body); code != http.StatusNotFound {
+			t.Fatalf("a client holding a reference it was not given answered %d, want 404", code)
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := p.Runs.List("globex", 10); len(got) != 0 {
+		t.Fatalf("it raised runs: %+v", got)
+	}
+	tools, err := p.ConnectorTools(slackTurn("globex", "helper"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tools.Lookup("slack_post_message"); err == nil {
+		t.Fatal("it lends tools that would post with the referenced token")
+	}
+	// Touching the record without naming a secret re-reads the reference it
+	// carries, and is refused the same way.
+	in := platform.ClientInput{Client: stolen}
+	if _, err := p.UpdateClient(context.Background(), "globex", "stolen", "mallory", in); !errors.Is(err, clients.ErrInvalid) {
+		t.Fatalf("an update kept a reference its tenant was not given: %v", err)
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, built := f.slack["token-default"]; built {
+		t.Fatal("a connector was built with the default client's token")
 	}
 }

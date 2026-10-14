@@ -86,13 +86,18 @@ func TestTheLegacyEnvironmentYieldsOneWorkingDefaultClientPerSurface(t *testing.
 		t.Fatalf("%d default clients, want one per surface", len(defaults))
 	}
 
+	refs, err := secretRefs("", "trial", envOf(vars))
+	if err != nil {
+		t.Fatal(err)
+	}
 	slackFake, githubFake := slack.NewFake(), github.NewFake()
 	tokens := map[string]bool{}
 	p, err := platform.New(platform.Config{
 		Workspace: t.TempDir(), ClientInterval: -1,
-		Env:       func(name string) (string, bool) { v, ok := vars[name]; return v, ok },
-		SlackAPI:  func(token string) slack.API { tokens[token] = true; return slackFake },
-		GitHubAPI: func(token string) github.API { tokens[token] = true; return githubFake },
+		Env:        func(name string) (string, bool) { v, ok := vars[name]; return v, ok },
+		SecretRefs: refs,
+		SlackAPI:   func(token string) slack.API { tokens[token] = true; return slackFake },
+		GitHubAPI:  func(token string) github.API { tokens[token] = true; return githubFake },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -191,5 +196,38 @@ func TestTheLegacyEnvironmentYieldsOneWorkingDefaultClientPerSurface(t *testing.
 	// rather than doubled.
 	if err := seedClients(ctx, p, "trial", envOf(vars)); err == nil {
 		t.Fatal("the default clients were created twice")
+	}
+}
+
+// Which variables a tenant may reference is the operator's to say, on the
+// command line. The server's own tenant is also given the variables behind
+// its default clients, and no other tenant is.
+func TestSecretReferencesAreGivenToTenantsByTheOperator(t *testing.T) {
+	env := envOf(map[string]string{EnvSlackToken: "t", EnvSlackSecret: "s"})
+	got, err := secretRefs("acme=COLLEGIUM_SLACK_TOKEN_DOCS, COLLEGIUM_SLACK_SECRET_DOCS; globex=COLLEGIUM_GH_GLOBEX;", "trial", env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || len(got["acme"]) != 2 || got["globex"][0] != "COLLEGIUM_GH_GLOBEX" {
+		t.Fatalf("refs = %v", got)
+	}
+	if len(got["trial"]) != 2 || got["trial"][0] != EnvSlackToken || got["trial"][1] != EnvSlackSecret {
+		t.Fatalf("the server's tenant = %v, want its default slack client's variables and no github ones", got["trial"])
+	}
+	for _, other := range []string{"acme", "globex"} {
+		for _, name := range got[other] {
+			if name == EnvSlackToken || name == EnvSlackSecret {
+				t.Fatalf("%s was given the default client's variables", other)
+			}
+		}
+	}
+	// With nothing configured, nobody may reference anything.
+	if got, err := secretRefs("", "trial", envOf(nil)); err != nil || len(got) != 0 {
+		t.Fatalf("refs with nothing set = %v, %v", got, err)
+	}
+	for _, raw := range []string{"acme", "=COLLEGIUM_X", "acme=", "acme=ANTHROPIC_API_KEY", "acme=COLLEGIUM_OIDC_CLIENT_SECRET", "acme=collegium_x"} {
+		if _, err := secretRefs(raw, "trial", envOf(nil)); err == nil {
+			t.Errorf("-secret-refs %q was accepted", raw)
+		}
 	}
 }

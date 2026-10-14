@@ -72,9 +72,16 @@ type Config struct {
 	// started by New.
 	Clients clients.Store
 	Secrets clients.Secrets
-	// Env resolves an "env:NAME" secret reference. Nil resolves none, so a
-	// client that references the environment cannot be built.
+	// Env reads the process's environment for an "env:NAME" secret reference.
+	// Nil resolves none.
 	Env func(name string) (string, bool)
+	// SecretRefs is which environment variables each tenant's clients may
+	// reference, by tenant. The environment belongs to the whole process, so
+	// this is the tenant boundary on it: a name is read for a tenant only if
+	// it is listed here for that tenant. It is the server's configuration and
+	// nothing in the API can change it. A tenant with no entry may reference
+	// nothing, and can still write its secrets as values.
+	SecretRefs map[string][]string
 	// SlackAPI and GitHubAPI build the API a client writes through from its
 	// token. Nil means the real one over HTTP.
 	SlackAPI  func(token string) slack.API

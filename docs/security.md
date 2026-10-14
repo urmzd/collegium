@@ -30,6 +30,13 @@ A webhook from Slack or GitHub is not a `Principal`. It is authorized by the
 signing secret of the [client](clients.md) it is for, and takes its tenant from
 that client. No client secret is returned by the API or written to a log.
 
+A client may reference a secret in the server's environment instead of writing
+its value. The environment is shared by every tenant, so a reference is read
+for a tenant only if the operator listed that variable for that tenant with
+`-secret-refs`. A tenant not listed may reference nothing. The check is made
+where the secret is read, and a refusal is the same whatever the reason. See
+[clients](clients.md#which-variables-a-workspace-may-reference).
+
 A machine has no role. It is issued scopes named `collegium:<permission>`, for
 example `collegium:runs:write`. A scope without the `collegium:` prefix, or one that names
 no permission, grants nothing.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 
 	"github.com/urmzd/mandatum/pkg/connectors/mention"
 	"github.com/urmzd/mandatum/pkg/registry"
@@ -147,6 +148,25 @@ func (p *Platform) DeleteClient(_ context.Context, tenant, id, by string) error 
 	return nil
 }
 
+// errSecretRef refuses a secret reference. It is one message for every
+// reason: not a reference, not given to this tenant, given to another, unset
+// or empty. Telling them apart would let a caller probe the server's
+// environment and what other tenants hold.
+var errSecretRef = fmt.Errorf("%w: that secret reference cannot be used by this workspace", clients.ErrInvalid)
+
+// envSecret reads the secret an "env:NAME" reference names, for one tenant.
+// The environment is the whole process's, so a name is read only when the
+// server's configuration gives that exact name to that tenant. No entry for a
+// tenant means it may reference nothing.
+func (p *Platform) envSecret(tenant, ref string) (string, bool) {
+	name, err := clients.EnvRef(ref)
+	if err != nil || tenant == "" || p.cfg.Env == nil || !slices.Contains(p.cfg.SecretRefs[tenant], name) {
+		return "", false
+	}
+	v, _ := p.cfg.Env(name)
+	return v, v != ""
+}
+
 // resolved is a client's two secrets, in hand only while its connector is
 // being built.
 type resolved struct{ token, signing string }
@@ -172,16 +192,12 @@ func (p *Platform) credentials(tenant, id string, had clients.Credentials, in Cl
 			}
 			return had, v, nil
 		}
-		env, err := clients.EnvRef(had.Ref)
-		if err != nil {
-			return clients.SecretRef{}, "", err
-		}
-		var v string
-		if p.cfg.Env != nil {
-			v, _ = p.cfg.Env(env)
-		}
-		if v == "" {
-			return clients.SecretRef{}, "", fmt.Errorf("%w: %s is not set in the server's environment", clients.ErrInvalid, had.Ref)
+		// Checked here, where the secret is read, so a record that carries a
+		// reference its tenant was never given fails closed however it got
+		// into the store. Every write goes through here too.
+		v, ok := p.envSecret(tenant, had.Ref)
+		if !ok {
+			return clients.SecretRef{}, "", errSecretRef
 		}
 		return had, v, nil
 	}

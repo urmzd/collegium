@@ -69,6 +69,39 @@ func defaultClients(env func(string) string) ([]platform.ClientInput, error) {
 	return out, nil
 }
 
+// secretRefs is which environment variables each tenant's clients may
+// reference. It is read from -secret-refs, written
+// "tenant=NAME,NAME;tenant=NAME", and the server's own tenant is also given
+// the variables its default clients are configured with. Nobody else is: the
+// variables behind one tenant's default client are not another tenant's to
+// name.
+func secretRefs(raw, tenant string, env func(string) string) (map[string][]string, error) {
+	out := map[string][]string{}
+	for _, entry := range strings.Split(raw, ";") {
+		if entry = strings.TrimSpace(entry); entry == "" {
+			continue
+		}
+		name, names, ok := strings.Cut(entry, "=")
+		name = strings.TrimSpace(name)
+		if !ok || name == "" || len(list(names)) == 0 {
+			return nil, fmt.Errorf("-secret-refs: %q is not tenant=NAME,NAME", entry)
+		}
+		for _, v := range list(names) {
+			// The sign-in secrets are the server's own, whatever the prefix.
+			if _, err := clients.EnvRef("env:" + v); err != nil || strings.HasPrefix(v, "COLLEGIUM_OIDC_") {
+				return nil, fmt.Errorf("-secret-refs: %q cannot be referenced by a client", v)
+			}
+			out[name] = append(out[name], v)
+		}
+	}
+	for _, pair := range [][2]string{{EnvSlackToken, EnvSlackSecret}, {EnvGitHubToken, EnvGitHubSecret}} {
+		if env(pair[0]) != "" || env(pair[1]) != "" {
+			out[tenant] = append(out[tenant], pair[0], pair[1])
+		}
+	}
+	return out, nil
+}
+
 // seedClients creates the clients the environment configures, in one tenant.
 func seedClients(ctx context.Context, p *platform.Platform, tenant string, env func(string) string) error {
 	defaults, err := defaultClients(env)

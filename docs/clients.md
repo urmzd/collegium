@@ -86,9 +86,36 @@ of two ways:
 | `{"value": "xoxb-..."}` | In the server's secret store, in memory | `{"set": true}` |
 | `{"ref": "env:COLLEGIUM_SLACK_TOKEN_DOCS"}` | In the server's environment | `{"set": true, "ref": "env:..."}` |
 
-A reference must name a variable that starts with `COLLEGIUM_`, so a client
-cannot be pointed at the server's other secrets, such as a model key. The
-variable is read when the client is created or changed.
+### Which variables a workspace may reference
+
+The environment belongs to the whole process, and a reference uses a secret
+without knowing its value. So a reference is default deny: a variable is read
+for a workspace only if the operator gave that exact name to that workspace.
+
+```sh
+collegium serve -secret-refs 'acme=COLLEGIUM_SLACK_TOKEN_DOCS,COLLEGIUM_SLACK_SECRET_DOCS;globex=COLLEGIUM_GH_GLOBEX'
+```
+
+| Rule | Detail |
+|------|--------|
+| Who sets it | The operator, with `-secret-refs` at startup. Nothing in the API can read or change it. |
+| A workspace not listed | May reference nothing. It can still write its secrets as values. |
+| Names | Must start with `COLLEGIUM_`, and not `COLLEGIUM_OIDC_`. Anything else fails startup. |
+| The default clients | Their variables are given to the server's `-tenant` and to no other workspace. |
+| Where it is checked | Where the secret is read, which every create, every update and every restart goes through. |
+
+The check sits at the read, not only at the write, so a record that carries a
+reference its workspace was never given does not start, however it got into the
+store. It verifies nothing and signs nothing.
+
+A refused reference is one 400 with one message, whether the variable is unset,
+set, given to another workspace, or not a reference at all. The response does
+not repeat the name. A caller cannot use it to learn what the server's
+environment holds or what another workspace was given.
+
+The variable is read when the client is created or changed. A listed variable
+that is unset is refused the same way, so check the server's environment first
+when a reference you listed is refused.
 
 No response and no log line carries a secret. The stored type has no field for
 one, and the type a secret is written through hides its value from formatting.
@@ -159,6 +186,8 @@ workspace's client is a 404 on every route. A list holds one workspace's
 clients and never more than 100, with the caps beside it.
 
 ```sh
+# The server was started with
+#   -secret-refs '<tenant>=COLLEGIUM_SLACK_TOKEN_DOCS,COLLEGIUM_SLACK_SECRET_DOCS'
 curl -X POST "$COLLEGIUM/api/clients" -H "Authorization: Bearer $TOKEN" -d '{
   "name": "Docs bot",
   "surface": "slack",
