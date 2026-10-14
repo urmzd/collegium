@@ -8,6 +8,7 @@ import { itemActions } from "./itemActions.tsx";
 import { LimitsPanel } from "./Limits.tsx";
 import { forRun, type Limits } from "./limits.ts";
 import { toolOf } from "./copyas.ts";
+import { RunUsageSummary } from "./RunUsage.tsx";
 import { useRunTurn } from "./Runs.tsx";
 import { AgentMark, AgentTint, button, cause, elapsed, Empty, isEnded, SkeletonRows, Status, Stroke, strokeOf, took } from "./ui.tsx";
 
@@ -301,6 +302,8 @@ export function ActivityPanel({
           </Stroke>
 
           <Conversation key={run.id} run={run} />
+
+          <RunUsageSummary run={run} />
 
           {tools.length > 0 && (
             <section className="flex flex-col gap-1" data-testid="activity-tools">

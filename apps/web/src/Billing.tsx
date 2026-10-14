@@ -24,6 +24,7 @@ function brief(p: Policy): string {
     p.max_concurrent ? `${plain(p.max_concurrent)} at once` : "",
     p.spend_limit ? `${dollars(p.spend_limit)} a ${p.period}` : "",
     p.max_lease ? `${dollars(p.max_lease)} a run` : "",
+    p.max_tokens ? `${plain(p.max_tokens)} tokens a ${p.period}` : "",
   ].filter(Boolean);
   return parts.join(", ") || "no limits";
 }
@@ -56,7 +57,9 @@ export function Meters({ usage, size = "row" }: { usage: ScopeUsage; size?: "row
   const ahead = (m: { limit: number; projected?: number }) =>
     usage.action === "block" && m.projected !== undefined && m.projected > m.limit ? undefined : m.projected;
   const named = (label: string) => (size === "row" ? <span className="text-aui-xs text-aui-muted">{label}</span> : null);
-  if (usage.runs.limit <= 0 && usage.concurrent.limit <= 0 && usage.spend.limit <= 0) return null;
+  const tokens = usage.tokens;
+  if (usage.runs.limit <= 0 && usage.concurrent.limit <= 0 && usage.spend.limit <= 0 && tokens.limit <= 0) return null;
+  const lower = lowerBound(usage.spend);
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-3 @lg:grid-cols-2 @4xl:grid-cols-3">
       {usage.runs.limit > 0 && (
@@ -99,11 +102,45 @@ export function Meters({ usage, size = "row" }: { usage: ScopeUsage; size?: "row
             warnAt={warnAt}
             period={usage.period}
           />
-          {!usage.spend.metered && <span className="text-aui-2xs text-aui-muted">Recorded, not enforced yet.</span>}
+          {lower && (
+            <span data-testid="spend-lower-bound" className="text-aui-2xs text-aui-muted">
+              {lower}
+            </span>
+          )}
+        </div>
+      )}
+      {tokens.limit > 0 && (
+        <div className="flex flex-col gap-1">
+          {named(`Tokens a ${usage.period}`)}
+          <UsageMeter
+            label="Tokens"
+            size={size}
+            spent={tokens.used}
+            limit={tokens.limit}
+            projected={ahead(tokens)}
+            warnAt={warnAt}
+            period={usage.period}
+            format={plain}
+          />
         </div>
       )}
     </div>
   );
+}
+
+/**
+ * Why a spend figure is a lower bound, in words, or null when it is exact:
+ * calls with no price, and money in other currencies, are never counted as
+ * dollars against the limit.
+ */
+export function lowerBound(spend: ScopeUsage["spend"]): string | null {
+  const parts = [
+    spend.unpriced_calls > 0 ? `${plain(spend.unpriced_calls)} ${spend.unpriced_calls === 1 ? "call" : "calls"} had no price` : "",
+    ...(spend.other_costs ?? []).map(
+      (c) => `${new Intl.NumberFormat(undefined, { style: "currency", currency: c.currency }).format(c.micros / 1_000_000)} was not in US dollars`,
+    ),
+  ].filter(Boolean);
+  return parts.length > 0 ? `At least this much: ${parts.join(", ")}. A token limit bounds every call.` : null;
 }
 
 const count = (text: string) => (text.trim() === "" ? 0 : Number(text));
@@ -128,6 +165,7 @@ export function Limits({
 }) {
   const [runs, setRuns] = useState(policy?.max_runs ? String(policy.max_runs) : "");
   const [atOnce, setAtOnce] = useState(policy?.max_concurrent ? String(policy.max_concurrent) : "");
+  const [tokens, setTokens] = useState(policy?.max_tokens ? String(policy.max_tokens) : "");
   const [spend, setSpend] = useState<number | null>(policy?.spend_limit || null);
   const [period, setPeriod] = useState<Policy["period"]>(policy?.period ?? "day");
   const [problem, setProblem] = useState<string | null>(null);
@@ -138,15 +176,17 @@ export function Limits({
   useEffect(() => {
     setRuns(policy?.max_runs ? String(policy.max_runs) : "");
     setAtOnce(policy?.max_concurrent ? String(policy.max_concurrent) : "");
+    setTokens(policy?.max_tokens ? String(policy.max_tokens) : "");
     setSpend(policy?.spend_limit || null);
     setPeriod(policy?.period ?? "day");
   }, [policy?.version]);
 
   const fail = (fallback: string) => (e: unknown) => setProblem(e instanceof ApiError ? e.message : fallback);
-  const empty = count(runs) === 0 && count(atOnce) === 0 && !spend;
+  const empty = count(runs) === 0 && count(atOnce) === 0 && count(tokens) === 0 && !spend;
   const dirty =
     count(runs) !== (policy?.max_runs ?? 0) ||
     count(atOnce) !== (policy?.max_concurrent ?? 0) ||
+    count(tokens) !== (policy?.max_tokens ?? 0) ||
     (spend ?? 0) !== (policy?.spend_limit ?? 0) ||
     (policy !== undefined && period !== policy.period);
 
@@ -159,6 +199,7 @@ export function Limits({
         period,
         max_runs: count(runs),
         max_concurrent: count(atOnce),
+        max_tokens: count(tokens),
         spend_limit: spend ?? 0,
         max_lease: policy?.max_lease,
         warn_at: policy?.warn_at,
@@ -176,7 +217,7 @@ export function Limits({
       {usage && <Meters usage={usage} />}
       {canWrite ? (
         <form onSubmit={save} className="flex flex-col gap-3">
-          <div className="grid grid-cols-1 gap-3 @lg:grid-cols-2 @3xl:grid-cols-[1fr_1fr_1.6fr]">
+          <div className="grid grid-cols-1 gap-3 @lg:grid-cols-2 @3xl:grid-cols-[1fr_1fr_1fr_1.6fr]">
             <Label text={`Runs a ${period}`}>
               <input
                 className={field}
@@ -199,7 +240,18 @@ export function Limits({
                 onChange={(e) => setAtOnce(e.target.value)}
               />
             </Label>
-            <div className="@lg:col-span-2 @3xl:col-span-1">
+            <Label text={`Tokens a ${period}`}>
+              <input
+                className={field}
+                type="number"
+                min={0}
+                step={1000}
+                placeholder="No limit"
+                value={tokens}
+                onChange={(e) => setTokens(e.target.value)}
+              />
+            </Label>
+            <div>
               <LimitField
                 label="Spend"
                 value={spend}
