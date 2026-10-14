@@ -55,6 +55,10 @@ use mandatum's offline provider and call no model. Set an agent's provider to
 `anthropic` with `ANTHROPIC_API_KEY` in the environment for real answers.
 
 The console links vultus from a sibling checkout at `../vultus`.
+GitHub and Slack workflows also run here, using mandatum's connector capabilities
+and vultus's Markdown presentation. See the [integration trial guide](docs/integrations.md).
+The Go module temporarily references sibling `../mandatum` and `../vultus/go`
+checkouts until the coordinated changes have release versions.
 
 For real sign-in, roles and machine tokens, see
 [docs/security.md](docs/security.md).

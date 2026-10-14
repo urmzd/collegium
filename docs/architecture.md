@@ -122,6 +122,10 @@ Admission is one process holding one lock, reading counts from memory. That is c
 
 | Piece | State |
 |-------|-------|
+| GitHub and Slack integrations: signed webhook ingress, tenant-bound tools and delivery through `Invoke` | Built, tested with simulated APIs. One installation per connector scheme per process |
+| GitHub auto-label and per-commit reviews, PR guides, explicit writer-authorized fix commits and workflow reruns | Built in `pkg/integrations/github`, on mandatum API capabilities. Rendering in vultus `go/github` |
+| Slack agent-session status and code-channel command policy | Built in `pkg/integrations/slack`. Signed command decoding and optional `AgentAPI` in mandatum. Not live-validated |
+| Slack stop button: `agent_session_stopped` stops the runs answering in that session, confirms in the thread and settles the status | Built, tested end to end against the fake. The session-to-run map is in memory. Not live-validated |
 | `pkg/call`: edge, modes, depth, fan-out and lease checks | Built, tested |
 | `pkg/runs`: run index, call tree, statistics | Built, in memory |
 | `internal/platform`: mandatum composed, `Invoke`, `Call` with the spawn allowlist | Built, tested |
@@ -188,6 +192,6 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | OTel export | Not built. Traces are rebuilt from the journal |
 | Evals that run on their own, on a schedule or on each revision | Not built. Evals run when someone starts them |
 | Model-graded evals | Not built, on purpose for now: every check is exact |
-| Email connector, MCP server, Slack and Jira wiring | Not built |
+| Email connector, MCP server and Jira wiring | Not built |
 | Remote execution nodes, peer connector | Not built |
 | Postgres stores | Not built. Everything above is lost on restart |
