@@ -10,6 +10,7 @@
     "test": "node --test --experimental-strip-types src/*.test.ts"
   },
   "dependencies": {
+    "@collegium/adapter": "link:../../packages/adapter",
     "@vultus/components": "link:../../../vultus/packages/components",
     "@vultus/core": "link:../../../vultus/packages/core",
     "@vultus/primitives": "link:../../../vultus/packages/primitives",

@@ -1,0 +1,31 @@
+# Copy to the repository root as .envrc.local (gitignored), fill it in, then run `direnv allow`.
+# Keep secrets in your secret store and reference them, for example with `op read`.
+
+# Slack: the app created from vultus's sandbox manifest (apps/slack-sandbox)
+# Bot token from OAuth & Permissions after installing the app
+export SLACK_BOT_TOKEN=""
+# App-level token with connections:write, for Socket Mode
+export SLACK_APP_TOKEN=""
+# The one team this instance serves. Events from any other team are ignored.
+export SLACK_TEAM_ID=""
+# Optional: Slack member ids, comma separated, who may settle any inbox item and see the whole inbox on Home
+export SLACK_OPERATORS=""
+
+# Collegium
+export COLLEGIUM_URL="http://127.0.0.1:8080"
+# The workspace the credential below is for. Startup fails if they disagree.
+export COLLEGIUM_TENANT=""
+# Either a token as is (empty for a loopback server in dev auth) ...
+export COLLEGIUM_TOKEN=""
+# ... or a client-credentials grant, which is refreshed as it expires
+export COLLEGIUM_OIDC_TOKEN_URL=""
+export COLLEGIUM_OIDC_CLIENT_ID=""
+export COLLEGIUM_OIDC_CLIENT_SECRET=""
+export COLLEGIUM_OIDC_SCOPES="collegium:runs:read collegium:runs:write collegium:agents:read"
+export COLLEGIUM_OIDC_AUDIENCE=""
+# Optional: the client record this app is, for its default agent and its allow-list
+export COLLEGIUM_CLIENT=""
+# Optional: the agent that answers when a message names none and there is no client
+export COLLEGIUM_DEFAULT_AGENT=""
+# Optional: where people reach the console, for links to published files
+export COLLEGIUM_PUBLIC_URL=""

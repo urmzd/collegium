@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@collegium/adapter':
+        specifier: link:../../packages/adapter
+        version: link:../../packages/adapter
       '@fontsource-variable/bricolage-grotesque':
         specifier: ^5.3.0
         version: 5.3.0

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { adapter, type BusEvent, body } from "./adapter.ts";
+import { adapter, type BusEvent, body } from "./run.ts";
 
 function ev(kind: string, payload?: unknown, seq = 1): BusEvent {
   return {
@@ -184,4 +184,21 @@ test("work handed on without waiting is drawn as the agent it went to", () => {
   } else {
     assert.fail("no task for the run that was started");
   }
+});
+
+test("a surface that is not the platform's own origin places file links itself", () => {
+  const published = ev("action.taken", { name: "publish_artifact", data: { id: "art-7", title: "report.md", kind: "document", mime: "text/markdown", size: 19, version: 1 } });
+  const [abs] = adapter({ href: (path) => `https://collegium.example.com${path}` })(published);
+  assert.equal(abs?.type === "attachment.upserted" && abs.attachment.type === "artifact" && abs.attachment.downloadUrl, "https://collegium.example.com/api/artifacts/art-7/content");
+  const [none] = adapter({ href: () => undefined })(published);
+  assert.equal(none?.type === "attachment.upserted" && none.attachment.type === "artifact" && none.attachment.url, undefined);
+  assert.equal(none?.type === "attachment.upserted" && none.attachment.type === "artifact" && none.attachment.phase, "ready");
+});
+
+test("a stopped event ends the turn as stopped, confirmed", () => {
+  const to = adapter();
+  assert.deepEqual(to(ev("lifecycle.stopped", { cause: "Stopped by dana" })), [
+    { type: "turn.stopped" },
+    { type: "stop.updated", stop: "confirmed" },
+  ]);
 });

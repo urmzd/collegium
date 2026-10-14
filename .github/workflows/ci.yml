@@ -52,6 +52,115 @@ jobs:
           go-version-file: go.mod
       - run: go test ./... -race
 
+  # The console, the shared adapter and the Slack app. vultus is linked as
+  # source from a sibling checkout, pinned so a vultus change cannot break this
+  # job unnoticed. To bump it: take the SHA of the vultus commit to test
+  # against (git -C ../vultus rev-parse origin/main), set VULTUS_REF to it, and
+  # run this job before merging.
+  js:
+    name: JS
+    runs-on: ubuntu-latest
+    env:
+      VULTUS_REF: 688a9fabcea99e6341ee1f73458e6256f4f9af00
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: collegium
+      - uses: actions/checkout@v4
+        with:
+          repository: urmzd/vultus
+          ref: ${{ env.VULTUS_REF }}
+          path: vultus
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            vultus/pnpm-lock.yaml
+            collegium/packages/adapter/pnpm-lock.yaml
+            collegium/apps/web/pnpm-lock.yaml
+            collegium/apps/slack/pnpm-lock.yaml
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: collegium/go.mod
+          cache-dependency-path: collegium/go.sum
+      # vultus packages export their TypeScript sources, so nothing is built:
+      # installing gives them their own dependencies (react, the reconciler).
+      - name: Install vultus
+        working-directory: vultus
+        run: pnpm install --frozen-lockfile
+      - name: Adapter
+        working-directory: collegium/packages/adapter
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+      - name: Console
+        working-directory: collegium/apps/web
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm typecheck
+          pnpm test
+          pnpm build
+      - name: Slack app
+        working-directory: collegium/apps/slack
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec biome check
+          pnpm typecheck
+          pnpm test
+      # The Slack app against a real server built from this checkout. The test
+      # starts it with only PATH, HOME and TMPDIR in its environment, so no
+      # model key reaches it, and its failing agent uses a local provider on
+      # loopback. The grep fails the step if the tests were skipped.
+      - name: Slack app against a real server
+        working-directory: collegium/apps/slack
+        run: |
+          pnpm test:server 2>&1 | tee server-test.log
+          grep -q '^ℹ pass 3$' server-test.log
+          ! grep -q '# SKIP' server-test.log
+
+  # Every Block Kit payload the Slack app's tests produce, through Slack's
+  # public blocks.validate. It needs the network and no token. Allowed to fail,
+  # so Slack being unreachable does not block a merge.
+  slack-blocks:
+    name: Slack Block Kit (allowed to fail)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      VULTUS_REF: 688a9fabcea99e6341ee1f73458e6256f4f9af00
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: collegium
+      - uses: actions/checkout@v4
+        with:
+          repository: urmzd/vultus
+          ref: ${{ env.VULTUS_REF }}
+          path: vultus
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: |
+            vultus/pnpm-lock.yaml
+            collegium/packages/adapter/pnpm-lock.yaml
+            collegium/apps/slack/pnpm-lock.yaml
+      - name: Install
+        run: |
+          (cd vultus && pnpm install --frozen-lockfile)
+          (cd collegium/packages/adapter && pnpm install --frozen-lockfile)
+          (cd collegium/apps/slack && pnpm install --frozen-lockfile)
+      - name: Validate
+        working-directory: collegium/apps/slack
+        run: pnpm validate
+
   contract:
     name: API contract and client
     runs-on: ubuntu-latest
