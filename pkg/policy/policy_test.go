@@ -45,6 +45,20 @@ func TestDecide(t *testing.T) {
 			[]Applied{{pol(tenantScope, func(p *Policy) { p.SpendLimit = 1000 }), Usage{Spend: 900}}},
 			Request{Lease: 200}, Deny, LimitSpend, tenantScope, 100,
 		},
+		// A run that asks for no budget is still refused once the scope's
+		// spend has reached its limit, to the micro-dollar.
+		"spend reached, no lease asked": {
+			[]Applied{{pol(tenantScope, func(p *Policy) { p.SpendLimit = 1000 }), Usage{Spend: 1000}}},
+			Request{}, Deny, LimitSpend, tenantScope, 0,
+		},
+		"spend one micro under": {
+			[]Applied{{pol(tenantScope, func(p *Policy) { p.SpendLimit = 1000 }), Usage{Spend: 999}}},
+			Request{}, Warn, LimitSpend, tenantScope, 1,
+		},
+		"tokens reached": {
+			[]Applied{{pol(tenantScope, func(p *Policy) { p.MaxTokens = 5000 }), Usage{Tokens: 5000}}},
+			Request{}, Deny, LimitTokens, tenantScope, 0,
+		},
 		"a lease larger than any run may have": {
 			[]Applied{{pol(tenantScope, func(p *Policy) { p.MaxLease = 100 }), Usage{}}},
 			Request{Lease: 101}, Deny, LimitLease, tenantScope, 100,
@@ -282,5 +296,31 @@ func TestOnlyTheTenantLimitsHowManyClients(t *testing.T) {
 	}
 	if err := pol(tenantScope, func(p *Policy) { p.MaxClients = 3 }).Validate(); err != nil {
 		t.Fatalf("a tenant policy that only caps clients: %v", err)
+	}
+}
+
+// Exceeded judges a run already in flight on spend and tokens alone: the
+// count of runs that decided whether it could start does not stop it.
+func TestExceededJudgesSpendAndTokensOnly(t *testing.T) {
+	spend := func(max int64) func(*Policy) { return func(p *Policy) { p.SpendLimit = max; p.MaxRuns = 1 } }
+	for name, tc := range map[string]struct {
+		applied []Applied
+		want    Verdict
+		limit   Limit
+	}{
+		"nothing set":          {nil, Allow, ""},
+		"runs at their limit":  {[]Applied{{pol(tenantScope, spend(1000)), Usage{Runs: 1, Spend: 10}}}, Allow, ""},
+		"under the warning":    {[]Applied{{pol(tenantScope, spend(1000)), Usage{Spend: 799}}}, Allow, ""},
+		"at the warning":       {[]Applied{{pol(tenantScope, spend(1000)), Usage{Spend: 800}}}, Warn, LimitSpend},
+		"at the hard limit":    {[]Applied{{pol(tenantScope, spend(1000)), Usage{Spend: 1000}}}, Deny, LimitSpend},
+		"past the hard limit":  {[]Applied{{pol(tenantScope, spend(1000)), Usage{Spend: 1700}}}, Deny, LimitSpend},
+		"tokens at the limit":  {[]Applied{{pol(launch, func(p *Policy) { p.MaxTokens = 10 }), Usage{Tokens: 10}}}, Deny, LimitTokens},
+		"a denial outranks":    {[]Applied{{pol(lead, spend(1000)), Usage{Spend: 900}}, {pol(tenantScope, spend(500)), Usage{Spend: 500}}}, Deny, LimitSpend},
+		"unpriced is not cost": {[]Applied{{pol(tenantScope, spend(1000)), Usage{UnpricedCalls: 50, Tokens: 1 << 30}}}, Allow, ""},
+	} {
+		got := Exceeded(tc.applied)
+		if got.Verdict != tc.want || got.Limit != tc.limit {
+			t.Errorf("%s: %s on %q, want %s on %q (%s)", name, got.Verdict, got.Limit, tc.want, tc.limit, got.Reason)
+		}
 	}
 }

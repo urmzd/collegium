@@ -214,8 +214,8 @@ func TestRunManifest(t *testing.T) {
 	if body, isObject := last["body"].(map[string]any); !isObject || body["text"] == "" {
 		t.Fatalf("the last event's body = %v", last["body"])
 	}
-	if m["usage"].(map[string]any)["metered"] != false {
-		t.Fatal("the manifest claims usage figures the runtime does not report")
+	if u := m["usage"].(map[string]any); u["metered"] != true || u["total"].(map[string]any)["model_calls"].(float64) < 1 {
+		t.Fatalf("the manifest's usage = %v", u)
 	}
 	for _, path := range []string{"/events", "/manifest"} {
 		if res, _ := f.do(t, nil, "GET", "/api/runs/"+id+path, globex, ""); res.StatusCode != http.StatusNotFound {

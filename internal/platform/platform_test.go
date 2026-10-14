@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -446,7 +447,7 @@ func TestConcurrentRunsNeverExceedALimit(t *testing.T) {
 		t.Fatalf("%d refusal alerts, want exactly one", budget)
 	}
 	// The live counts are a projection of the ledger: replaying it agrees.
-	if live, replayed := p.Usage.Usage(tenant, scope, time.Time{}), usage.Rebuild(p.Usage.Entries()).Usage(tenant, scope, time.Time{}); live != replayed {
+	if live, replayed := p.Usage.Usage(tenant, scope, time.Time{}), usage.Rebuild(p.Usage.Entries()).Usage(tenant, scope, time.Time{}); !reflect.DeepEqual(live, replayed) {
 		t.Fatalf("live %+v, rebuilt %+v", live, replayed)
 	}
 }

@@ -476,6 +476,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "402": {$ref: "#/components/responses/Refused"}
         "429": {$ref: "#/components/responses/Refused"}
         "413": {$ref: "#/components/responses/TooLarge"}
         "500": {$ref: "#/components/responses/ServerError"}
@@ -952,6 +953,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "402": {$ref: "#/components/responses/Refused"}
         "429": {$ref: "#/components/responses/Refused"}
         "500": {$ref: "#/components/responses/ServerError"}
 
@@ -1178,6 +1180,7 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
+        "402": {$ref: "#/components/responses/Refused"}
         "429": {$ref: "#/components/responses/Refused"}
         "413": {$ref: "#/components/responses/TooLarge"}
         "500": {$ref: "#/components/responses/ServerError"}
@@ -2464,11 +2467,12 @@ components:
           schema: {$ref: "#/components/schemas/ErrorBody"}
     Refused:
       description: |
-        A limit refused the run. 429 for a count limit (runs in the period, or
-        runs in flight), 402 for a money limit. Only a call carries a lease, and
-        spend is not enforced, so today 402 comes only from `createCall` over a
-        lease limit. The body names the limit, what was left and the policy
-        that set it.
+        A limit refused the run. 429 for a count limit (runs in the period,
+        runs in flight, or tokens in the period), 402 for a money limit (spend
+        in the period, which is enforced, or a call's lease). A scope whose
+        spend has reached its limit, to the micro-dollar, refuses every new
+        run. The body names the limit, what was left, the policy and its
+        version that set it, and when the count starts again.
       content:
         application/json:
           schema: {$ref: "#/components/schemas/Refusal"}
@@ -2501,7 +2505,7 @@ components:
             version: {type: integer}
             period: {$ref: "#/components/schemas/PolicyPeriod"}
         resets_at:
-          description: When the count starts again. Present for the `runs` limit only.
+          description: When the count starts again. Present for the `runs`, `spend` and `tokens` limits, which count over a period.
           type: string
           format: date-time
 
@@ -2725,7 +2729,7 @@ components:
     Run:
       description: One run and its place in the call tree and in its conversation.
       type: object
-      required: [id, tag_id, tenant, agent, rev, origin, text, root, depth, thread, lease, granted, calls, status, created_at, updated_at]
+      required: [id, tag_id, tenant, agent, rev, origin, text, root, depth, thread, lease, granted, spent, calls, status, created_at, updated_at]
       properties:
         id:
           description: The run's id, `r` and 32 hex digits, derived from the workspace and the trigger's id.
@@ -2782,9 +2786,29 @@ components:
           type: integer
           format: int64
         granted:
-          description: How much of the lease the run has handed to its calls.
+          description: |
+            The budget the run has leased to calls that have not ended, in
+            micro-USD. When a call ends its lease is released here and what it
+            spent is added to `spent`.
           type: integer
           format: int64
+        spent:
+          description: |
+            What the run has spent, in micro-USD priced in US dollars: its own
+            model calls as they are reported, and the whole spend of each call
+            it made once that call has ended. Its lease is held against this
+            plus `granted`. Calls with no price, or priced in another currency,
+            add nothing here; `usage` counts them.
+          type: integer
+          format: int64
+        usage:
+          description: |
+            What the run used, as the runtime counts it: its own model calls,
+            the attached runs it rolled up, and how full its context was at its
+            latest model call. While the run works it is the calls reported so
+            far; once it has ended it is the runtime's record. Absent until the
+            first model call. A delegated run is not in its caller's usage.
+          $ref: "#/components/schemas/RunUsage"
         calls: {type: integer}
         status: {$ref: "#/components/schemas/RunStatus"}
         answer:
@@ -3029,6 +3053,7 @@ components:
         max_runs: {type: integer}
         max_concurrent: {type: integer}
         spend_limit: {type: integer, format: int64}
+        max_tokens: {type: integer, format: int64}
     InboxAlertPart:
       type: object
       required: [id, rule, kind, severity, title]
@@ -3215,7 +3240,7 @@ components:
 
     AnalyticsGroup:
       type: object
-      required: [name, runs, completed, failed, stopped, active, p50_ms, p95_ms]
+      required: [name, runs, completed, failed, stopped, active, p50_ms, p95_ms, usage]
       properties:
         name: {type: string}
         runs: {type: integer}
@@ -3227,6 +3252,29 @@ components:
         active: {type: integer}
         p50_ms: {type: integer, format: int64}
         p95_ms: {type: integer, format: int64}
+        usage: {$ref: "#/components/schemas/AnalyticsUsage"}
+    AnalyticsUsage:
+      description: |
+        What the runs' own model calls used. Each run counts only its own
+        calls, so a tree of runs is not counted twice.
+      type: object
+      required: [model_calls, tokens, spend, unpriced_calls, other_currency_runs]
+      properties:
+        model_calls: {type: integer}
+        tokens:
+          description: Prompt and completion tokens.
+          type: integer
+          format: int64
+        spend:
+          description: Micro-USD priced in US dollars. A lower bound when `unpriced_calls` or `other_currency_runs` is not zero.
+          type: integer
+          format: int64
+        unpriced_calls:
+          description: Calls with no price.
+          type: integer
+        other_currency_runs:
+          description: Runs with costs in a currency other than US dollars, which are not added to `spend`.
+          type: integer
     AnalyticsBucket:
       type: object
       required: [start, completed, failed, stopped, active]
@@ -3497,7 +3545,7 @@ components:
       enum: [block, approve]
     PolicyLimit:
       type: string
-      enum: [runs, concurrent, spend, lease]
+      enum: [runs, concurrent, spend, lease, tokens]
     PolicyScope:
       type: object
       required: [kind]
@@ -3516,10 +3564,20 @@ components:
         max_runs: {type: integer}
         max_concurrent: {type: integer}
         spend_limit:
-          description: Micro-USD. Recorded and versioned, not enforced.
+          description: |
+            Micro-USD a period, enforced: a new run is refused once the scope
+            has reached it, and a run in flight is stopped when a call takes
+            the scope to it. Only money priced in US dollars counts.
           type: integer
           format: int64
         max_lease: {type: integer, format: int64}
+        max_tokens:
+          description: |
+            Model tokens (prompt and completion) a period, enforced like
+            `spend_limit`. It counts every call, priced or not, so it bounds
+            what a spend limit cannot see.
+          type: integer
+          format: int64
         max_storage:
           description: Bytes.
           type: integer
@@ -3543,6 +3601,7 @@ components:
         max_concurrent: {type: integer}
         spend_limit: {type: integer, format: int64}
         max_lease: {type: integer, format: int64}
+        max_tokens: {type: integer, format: int64}
         max_storage: {type: integer, format: int64}
         max_clients: {type: integer}
         max_clients_per_surface: {type: integer}
@@ -3572,20 +3631,37 @@ components:
           type: integer
           format: int64
     SpendMeasure:
-      description: Spend against its limit. Recorded and not enforced.
+      description: |
+        Spend against its limit, in micro-USD, enforced. `used` counts only
+        what was priced in US dollars, so it is a lower bound whenever
+        `unpriced_calls` is not zero or `other_costs` is not empty.
       type: object
-      required: [used, limit, metered]
+      required: [used, limit, metered, unpriced_calls]
       properties:
         used: {type: integer, format: int64}
         limit: {type: integer, format: int64}
         projected: {type: integer, format: int64}
         metered:
-          description: False while the runtime reports no cost.
+          description: True. The runtime prices model calls from saige's catalog.
           type: boolean
+        unpriced_calls:
+          description: Calls in the period with no price. Their spend is unknown, not zero.
+          type: integer
+        other_costs:
+          description: Money in other currencies, one entry per currency, never converted and never held against the limit.
+          type: array
+          items: {$ref: "#/components/schemas/PolicyCost"}
+    PolicyCost:
+      description: An amount in one currency, in millionths of it.
+      type: object
+      required: [micros, currency]
+      properties:
+        micros: {type: integer, format: int64}
+        currency: {type: string}
     ScopeUsage:
       description: One policy and where its scope stands against it.
       type: object
-      required: [scope, period, period_start, period_end, version, warn_at, action, runs, concurrent, spend, max_lease, state]
+      required: [scope, period, period_start, period_end, version, warn_at, action, runs, concurrent, spend, tokens, max_lease, state]
       properties:
         scope: {$ref: "#/components/schemas/PolicyScope"}
         period: {$ref: "#/components/schemas/PolicyPeriod"}
@@ -3597,9 +3673,10 @@ components:
         runs: {$ref: "#/components/schemas/Measure"}
         concurrent: {$ref: "#/components/schemas/Measure"}
         spend: {$ref: "#/components/schemas/SpendMeasure"}
+        tokens: {$ref: "#/components/schemas/Measure"}
         max_lease: {type: integer, format: int64}
         state:
-          description: The worst of the enforced limits.
+          description: The worst of the enforced limits, spend and tokens included.
           type: string
           enum: [ok, warn, over]
     UsageEntry:
@@ -3607,7 +3684,13 @@ components:
       type: object
       required: [kind, tenant, agent, at]
       properties:
-        kind: {type: string, enum: [admitted, ended, warned, refused]}
+        kind:
+          description: |
+            `halted` is a run in flight stopped at a limit. `spent` (one model
+            call) and `settled` (a run's own total at its end) are the ledger's
+            record of spend and are not listed as notices.
+          type: string
+          enum: [admitted, ended, warned, refused, spent, settled, halted]
         tenant: {type: string}
         project: {type: string}
         agent: {type: string}
@@ -3618,6 +3701,21 @@ components:
         version: {type: integer}
         limit: {$ref: "#/components/schemas/PolicyLimit"}
         reason: {type: string}
+        key:
+          description: What makes a `spent` or `settled` entry count once.
+          type: string
+        spend: {$ref: "#/components/schemas/UsageSpend"}
+    UsageSpend:
+      description: What some model calls used. `micros` is US dollars only.
+      type: object
+      properties:
+        micros: {type: integer, format: int64}
+        model_calls: {type: integer}
+        tokens: {type: integer, format: int64}
+        unpriced_calls: {type: integer}
+        other_costs:
+          type: array
+          items: {$ref: "#/components/schemas/PolicyCost"}
 
     ClientSurface:
       type: string
@@ -3754,7 +3852,10 @@ components:
         What an event is. Kinds are dotted, so a filter can select a family
         (`delta`) or one member (`delta.citation`). The set is open in the
         runtime: a reader should pass over a kind it does not know. The
-        `control.*` kinds here are defined and not published today. A request
+        `control.*` kinds here are defined and not published today. The
+        `usage.*` kinds report what model calls used: one `usage.call` per
+        call as it completes, and a `usage.child` when an attached run's total
+        is rolled up into its caller. A request
         addressed to a run, such as `control.stop`, is the runtime's traffic
         and never appears on this API.
       type: string
@@ -3772,6 +3873,8 @@ components:
         - lifecycle.failed
         - lifecycle.stopped
         - action.taken
+        - usage.call
+        - usage.child
         - control.created
         - control.revised
         - control.deleted
@@ -3857,6 +3960,9 @@ components:
         text:
           description: The final answer, on `lifecycle.completed`.
           type: string
+        usage:
+          description: What the run used, on `lifecycle.completed`.
+          $ref: "#/components/schemas/RunUsage"
     StoppedPayload:
       description: |
         The body of `lifecycle.stopped`: the run was asked to stop and wrapped
@@ -3875,6 +3981,99 @@ components:
         text:
           description: The partial answer.
           type: string
+        usage:
+          description: What the run used before it stopped, the call that was cut short included.
+          $ref: "#/components/schemas/RunUsage"
+    Cost:
+      description: |
+        An amount of money in integer millionths of a currency. One US dollar
+        is 1,000,000 with currency `USD`. Prices come from saige's catalog
+        only, and are never converted between currencies.
+      type: object
+      required: [micros, currency]
+      properties:
+        micros: {type: integer, format: int64}
+        currency:
+          description: An ISO 4217 code.
+          type: string
+        as_of:
+          description: The date the rates were recorded. On a sum, the oldest; empty when any was priced from a card with no date.
+          type: string
+    Usage:
+      description: |
+        What some model calls used, summed. `cost` is in the currency of the
+        first priced call and is a lower bound whenever `unpriced_calls` is not
+        zero; calls priced in another currency are in `other_costs`.
+      type: object
+      properties:
+        model_calls: {type: integer}
+        requests:
+          description: Billable provider requests. A call answered from saige's response cache made none.
+          type: integer
+        prompt_tokens:
+          description: All input, cached and written to cache included.
+          type: integer
+        cached_prompt_tokens: {type: integer}
+        cache_write_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        cost: {$ref: "#/components/schemas/Cost"}
+        other_costs:
+          type: array
+          items: {$ref: "#/components/schemas/Cost"}
+        unpriced_calls:
+          description: Calls whose tokens are counted and that have no price.
+          type: integer
+    ContextUsage:
+      description: How full the run's context was at its latest model call.
+      type: object
+      properties:
+        model: {type: string}
+        window:
+          description: The model's input token limit from saige's catalog. Absent when the catalog declares none.
+          type: integer
+        tokens:
+          description: The prompt that call sent, in tokens.
+          type: integer
+    RunUsage:
+      description: |
+        What a run used. `own` is its own agent's calls, `children` the attached
+        runs it rolled up (each once), and `total` the two added: the figure
+        held against a limit.
+      type: object
+      required: [own, total]
+      properties:
+        own: {$ref: "#/components/schemas/Usage"}
+        children: {$ref: "#/components/schemas/Usage"}
+        total: {$ref: "#/components/schemas/Usage"}
+        context: {$ref: "#/components/schemas/ContextUsage"}
+    UsageCallPayload:
+      description: One model call, reported as it completes. Count it once by `accounting_id`.
+      type: object
+      required: [accounting_id]
+      properties:
+        accounting_id: {type: string}
+        saige_accounting_id: {type: string}
+        agent: {type: string}
+        depth: {type: integer}
+        model: {type: string}
+        requests: {type: integer}
+        prompt_tokens: {type: integer}
+        cached_prompt_tokens: {type: integer}
+        cache_write_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        response_cache_hit: {type: boolean}
+        cost: {$ref: "#/components/schemas/Cost"}
+        context_window: {type: integer}
+    UsageChildPayload:
+      description: An attached run's whole usage, rolled up into its caller once it ended.
+      type: object
+      required: [accounting_id, run_id, usage]
+      properties:
+        accounting_id: {type: string}
+        run_id: {type: string}
+        agent: {type: string}
+        depth: {type: integer}
+        usage: {$ref: "#/components/schemas/Usage"}
     ActionPayload:
       description: |
         A tool acted on something: a comment posted, a file published. When
@@ -3939,6 +4138,8 @@ components:
         - $ref: "#/components/schemas/RunFailedEvent"
         - $ref: "#/components/schemas/RunStoppedEvent"
         - $ref: "#/components/schemas/ActionTakenEvent"
+        - $ref: "#/components/schemas/UsageCallEvent"
+        - $ref: "#/components/schemas/UsageChildEvent"
         - $ref: "#/components/schemas/AgentCreatedEvent"
         - $ref: "#/components/schemas/AgentRevisedEvent"
         - $ref: "#/components/schemas/AgentDeletedEvent"
@@ -3958,6 +4159,8 @@ components:
           lifecycle.failed: "#/components/schemas/RunFailedEvent"
           lifecycle.stopped: "#/components/schemas/RunStoppedEvent"
           action.taken: "#/components/schemas/ActionTakenEvent"
+          usage.call: "#/components/schemas/UsageCallEvent"
+          usage.child: "#/components/schemas/UsageChildEvent"
           control.created: "#/components/schemas/AgentCreatedEvent"
           control.revised: "#/components/schemas/AgentRevisedEvent"
           control.deleted: "#/components/schemas/AgentDeletedEvent"
@@ -4130,6 +4333,32 @@ components:
               contentEncoding: base64
               contentMediaType: application/json
               contentSchema: {$ref: "#/components/schemas/ActionPayload"}
+    UsageCallEvent:
+      description: One model call and what it used.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.call}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/UsageCallPayload"}
+    UsageChildEvent:
+      description: An attached run's total, rolled up into this run.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.child}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/UsageChildPayload"}
     AgentCreatedEvent:
       description: An agent was created. Not published today.
       allOf:
@@ -4182,6 +4411,8 @@ components:
         - $ref: "#/components/schemas/ManifestRunFailedEvent"
         - $ref: "#/components/schemas/ManifestRunStoppedEvent"
         - $ref: "#/components/schemas/ManifestActionTakenEvent"
+        - $ref: "#/components/schemas/ManifestUsageCallEvent"
+        - $ref: "#/components/schemas/ManifestUsageChildEvent"
         - $ref: "#/components/schemas/ManifestAgentCreatedEvent"
         - $ref: "#/components/schemas/ManifestAgentRevisedEvent"
         - $ref: "#/components/schemas/ManifestAgentDeletedEvent"
@@ -4201,6 +4432,8 @@ components:
           lifecycle.failed: "#/components/schemas/ManifestRunFailedEvent"
           lifecycle.stopped: "#/components/schemas/ManifestRunStoppedEvent"
           action.taken: "#/components/schemas/ManifestActionTakenEvent"
+          usage.call: "#/components/schemas/ManifestUsageCallEvent"
+          usage.child: "#/components/schemas/ManifestUsageChildEvent"
           control.created: "#/components/schemas/ManifestAgentCreatedEvent"
           control.revised: "#/components/schemas/ManifestAgentRevisedEvent"
           control.deleted: "#/components/schemas/ManifestAgentDeletedEvent"
@@ -4308,6 +4541,22 @@ components:
           properties:
             kind: {type: string, const: action.taken}
             body: {$ref: "#/components/schemas/ActionPayload"}
+    ManifestUsageCallEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.call}
+            body: {$ref: "#/components/schemas/UsageCallPayload"}
+    ManifestUsageChildEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.child}
+            body: {$ref: "#/components/schemas/UsageChildPayload"}
     ManifestAgentCreatedEvent:
       allOf:
         - $ref: "#/components/schemas/ManifestEventBase"
@@ -4368,8 +4617,11 @@ components:
           items: {$ref: "#/components/schemas/ManifestRun"}
         usage:
           type: object
-          required: [metered]
+          required: [metered, total]
           properties:
             metered:
-              description: False, because the runtime reports no token counts or cost.
+              description: True. The runtime reports token counts and cost.
               type: boolean
+            total:
+              description: Every run's own calls in the tree, once each, attached and delegated runs alike.
+              $ref: "#/components/schemas/Usage"

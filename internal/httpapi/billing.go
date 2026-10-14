@@ -51,6 +51,7 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, who auth.Prin
 		SpendLimit    int64         `json:"spend_limit"`
 		MaxLease      int64         `json:"max_lease"`
 		MaxStorage    int64         `json:"max_storage"`
+		MaxTokens     int64         `json:"max_tokens"`
 		MaxClients    int           `json:"max_clients"`
 		MaxPerSurface int           `json:"max_clients_per_surface"`
 		WarnAt        int           `json:"warn_at"`
@@ -68,7 +69,7 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, who auth.Prin
 	}
 	saved, err := s.P.Policies.Put(who.Tenant, policy.Policy{
 		Scope: body.Scope, Period: body.Period, MaxRuns: body.MaxRuns, MaxConcurrent: body.MaxConcurrent,
-		SpendLimit: body.SpendLimit, MaxLease: body.MaxLease, MaxStorage: body.MaxStorage,
+		SpendLimit: body.SpendLimit, MaxLease: body.MaxLease, MaxStorage: body.MaxStorage, MaxTokens: body.MaxTokens,
 		MaxClients: body.MaxClients, MaxClientsPerSurface: body.MaxPerSurface, WarnAt: body.WarnAt, Action: body.Action,
 	}, who.Subject, time.Now())
 	if err != nil {
@@ -113,14 +114,29 @@ type scopeUsage struct {
 	Action      policy.Action `json:"action"`
 	Runs        measure       `json:"runs"`
 	Concurrent  measure       `json:"concurrent"`
-	// Spend is recorded and not enforced: the runtime reports no cost.
-	Spend struct {
-		measure
-		Metered bool `json:"metered"`
-	} `json:"spend"`
-	MaxLease int64 `json:"max_lease"`
+	// Spend is what was priced in US dollars, in micro-USD, and is enforced.
+	// Calls with no price and money in other currencies cannot be held
+	// against it: they are counted here, so the reader knows Used is a
+	// lower bound.
+	Spend spendMeasure `json:"spend"`
+	// Tokens is every model token used, priced or not.
+	Tokens   measure `json:"tokens"`
+	MaxLease int64   `json:"max_lease"`
 	// State is the worst of the enforced limits: ok, warn or over.
 	State string `json:"state"`
+}
+
+// spendMeasure is spend against its limit, and what could not be counted in
+// it.
+type spendMeasure struct {
+	measure
+	// Metered is true: the runtime prices calls, and spend is enforced.
+	Metered bool `json:"metered"`
+	// UnpricedCalls had no price, so their spend is unknown, not zero.
+	UnpricedCalls int `json:"unpriced_calls"`
+	// OtherCosts is money in currencies other than US dollars, never
+	// converted and never held against the limit.
+	OtherCosts []policy.Cost `json:"other_costs,omitempty"`
 }
 
 // project estimates where a count ends the period at the pace so far.
@@ -150,8 +166,12 @@ func (s *Server) usage(w http.ResponseWriter, _ *http.Request, who auth.Principa
 			Concurrent: measure{Used: int64(u.Concurrent), Limit: int64(pol.MaxConcurrent)},
 			State:      "ok",
 		}
-		v.Spend.measure = measure{Used: u.Spend, Limit: pol.SpendLimit}
-		for _, m := range []measure{v.Runs, v.Concurrent} {
+		v.Spend = spendMeasure{
+			measure: measure{Used: u.Spend, Limit: pol.SpendLimit, Projected: project(u.Spend, start, end, now)},
+			Metered: true, UnpricedCalls: u.UnpricedCalls, OtherCosts: u.OtherCosts,
+		}
+		v.Tokens = measure{Used: u.Tokens, Limit: pol.MaxTokens, Projected: project(u.Tokens, start, end, now)}
+		for _, m := range []measure{v.Runs, v.Concurrent, v.Spend.measure, v.Tokens} {
 			switch {
 			case m.Limit > 0 && m.Used >= m.Limit:
 				v.State = "over"
@@ -186,7 +206,8 @@ func denied(w http.ResponseWriter, err error) bool {
 	}
 	if p := d.Decision.Policy; p != nil {
 		body["policy"] = map[string]any{"scope": p.Scope, "version": p.Version, "period": p.Period}
-		if d.Decision.Limit == policy.LimitRuns {
+		switch d.Decision.Limit {
+		case policy.LimitRuns, policy.LimitSpend, policy.LimitTokens:
 			// When the count starts again.
 			body["resets_at"] = policy.PeriodEnd(p.Period, time.Now())
 		}

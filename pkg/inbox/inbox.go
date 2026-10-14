@@ -149,20 +149,22 @@ type Limits struct {
 	MaxRuns       int   `json:"max_runs,omitempty"`
 	MaxConcurrent int   `json:"max_concurrent,omitempty"`
 	SpendLimit    int64 `json:"spend_limit,omitempty"`
+	MaxTokens     int64 `json:"max_tokens,omitempty"`
 }
 
 // BudgetPart is a limit that was reached.
 type BudgetPart struct {
 	ScopeKind string `json:"scope_kind"`
 	ScopeName string `json:"scope_name,omitempty"`
-	// Limit is which one: "runs", "concurrent", "spend" or "lease".
+	// Limit is which one: "runs", "concurrent", "spend", "tokens" or "lease".
 	Limit   string `json:"limit"`
 	Period  string `json:"period"`
 	Version int    `json:"version"`
 	// Used and Max are where the scope stood against that limit when it was
-	// reached: runs, runs at once, or micro-USD.
+	// reached: runs, runs at once, micro-USD, or tokens.
 	Used int64 `json:"used"`
-	// Refused is true when a run was turned away, false for a warning.
+	// Refused is true when a run was turned away or stopped at the limit,
+	// false for a warning.
 	Refused bool   `json:"refused"`
 	Max     int64  `json:"max"`
 	Current Limits `json:"current"`

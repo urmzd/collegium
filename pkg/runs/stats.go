@@ -4,6 +4,8 @@ import (
 	"cmp"
 	"slices"
 	"time"
+
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 )
 
 // Bucket is the runs that started in one interval, by how they ended.
@@ -29,7 +31,46 @@ type Group struct {
 	// P50 and P95 are durations of ended runs, in milliseconds.
 	P50 int64 `json:"p50_ms"`
 	P95 int64 `json:"p95_ms"`
+	// Usage is what the runs' own model calls used. Each run counts only
+	// its own calls, so a tree of runs is not counted twice.
+	Usage GroupUsage `json:"usage"`
 }
+
+// GroupUsage is what some runs' own model calls used.
+type GroupUsage struct {
+	ModelCalls int   `json:"model_calls"`
+	Tokens     int64 `json:"tokens"`
+	// Spend is what was priced in US dollars, in micro-USD. It is a lower
+	// bound when UnpricedCalls or OtherCurrency is not zero.
+	Spend int64 `json:"spend"`
+	// UnpricedCalls had no price. Runs with costs in another currency are
+	// counted in OtherCurrency, and their money is not added to Spend.
+	UnpricedCalls int `json:"unpriced_calls"`
+	OtherCurrency int `json:"other_currency_runs"`
+}
+
+func (g *GroupUsage) add(u *payload.RunUsage) {
+	if u == nil {
+		return
+	}
+	own := u.Own
+	g.ModelCalls += own.ModelCalls
+	g.Tokens += int64(own.PromptTokens + own.CompletionTokens)
+	g.UnpricedCalls += own.UnpricedCalls
+	other := len(own.OtherCosts) > 0
+	switch {
+	case own.Cost != nil && own.Cost.Currency == USD:
+		g.Spend += own.Cost.Micros
+	case own.Cost != nil:
+		other = true
+	}
+	if other {
+		g.OtherCurrency++
+	}
+}
+
+// USD is the currency spend is counted in.
+const USD = "USD"
 
 // Summary is what happened in a window.
 type Summary struct {
@@ -95,6 +136,7 @@ func (x *Index) Summarize(tenant string, since, until time.Time, bucket time.Dur
 		}
 		for _, a := range []*acc{total, at(agents, r.Agent), at(origins, r.Origin)} {
 			a.g.Runs++
+			a.g.Usage.add(r.Usage)
 			switch r.Status {
 			case Completed:
 				a.g.Completed++

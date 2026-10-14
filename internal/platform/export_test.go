@@ -7,7 +7,10 @@ import (
 
 	"github.com/urmzd/mandatum/pkg/agentrt"
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
+	"github.com/urmzd/mandatum/pkg/envelope"
 	"github.com/urmzd/mandatum/pkg/runtime"
+
+	"github.com/urmzd/collegium/pkg/runs"
 )
 
 // UseTool calls one of a turn's file tools the way the agent loop would, and
@@ -44,3 +47,12 @@ func (p *Platform) Age(tenant, thread string, at time.Time) error {
 func (p *Platform) ConnectorTools(req runtime.Request) (agentrt.Tools, error) {
 	return p.connectorTools(req, func(payload.Action) error { return nil })
 }
+
+// Redeliver hands the platform an event again, as the bus may.
+func (p *Platform) Redeliver(ctx context.Context, e envelope.Event) { p.observe(ctx, e) }
+
+// Reconcile runs one pass of the ledger reconciler now.
+func (p *Platform) Reconcile(ctx context.Context) { p.reconcile(ctx) }
+
+// Ended acts on a run's ending again, as a second report of it would.
+func (p *Platform) Ended(ctx context.Context, run runs.Run) { p.ended(ctx, run) }

@@ -13,7 +13,7 @@ export interface Refusal {
   remaining: number;
   /** The policy that refused, when one did. */
   policy?: RefusalPolicy;
-  /** When the count starts again. Present for the `runs` limit only. */
+  /** When the count starts again. Present for the `runs`, `spend` and `tokens` limits, which count over a period. */
   resets_at?: string;
 }
 
@@ -195,8 +195,19 @@ turned back into it.
   client?: string;
   /** The run's budget in micro-USD. Zero means unmetered. */
   lease: number;
-  /** How much of the lease the run has handed to its calls. */
+  /** The budget the run has leased to calls that have not ended, in
+micro-USD. When a call ends its lease is released here and what it
+spent is added to `spent`.
+ */
   granted: number;
+  /** What the run has spent, in micro-USD priced in US dollars: its own
+model calls as they are reported, and the whole spend of each call
+it made once that call has ended. Its lease is held against this
+plus `granted`. Calls with no price, or priced in another currency,
+add nothing here; `usage` counts them.
+ */
+  spent: number;
+  usage?: RunUsage;
   calls: number;
   status: RunStatus;
   /** The final text of a completed run. On a stopped run it is the
@@ -383,6 +394,7 @@ export interface InboxLimits {
   max_runs?: number;
   max_concurrent?: number;
   spend_limit?: number;
+  max_tokens?: number;
 }
 
 export interface InboxAlertPart {
@@ -533,6 +545,22 @@ export interface AnalyticsGroup {
   active: number;
   p50_ms: number;
   p95_ms: number;
+  usage: AnalyticsUsage;
+}
+
+/** What the runs' own model calls used. Each run counts only its own
+calls, so a tree of runs is not counted twice.
+ */
+export interface AnalyticsUsage {
+  model_calls: number;
+  /** Prompt and completion tokens. */
+  tokens: number;
+  /** Micro-USD priced in US dollars. A lower bound when `unpriced_calls` or `other_currency_runs` is not zero. */
+  spend: number;
+  /** Calls with no price. */
+  unpriced_calls: number;
+  /** Runs with costs in a currency other than US dollars, which are not added to `spend`. */
+  other_currency_runs: number;
 }
 
 export interface AnalyticsBucket {
@@ -735,7 +763,7 @@ export type PolicyPeriod = "day" | "month";
 /** What happens at a limit. Only `block` is acted on today. */
 export type PolicyAction = "block" | "approve";
 
-export type PolicyLimit = "runs" | "concurrent" | "spend" | "lease";
+export type PolicyLimit = "runs" | "concurrent" | "spend" | "lease" | "tokens";
 
 export interface PolicyScope {
   kind: PolicyScopeKind;
@@ -749,9 +777,17 @@ export interface PolicyInput {
   period?: PolicyPeriod;
   max_runs?: number;
   max_concurrent?: number;
-  /** Micro-USD. Recorded and versioned, not enforced. */
+  /** Micro-USD a period, enforced: a new run is refused once the scope
+has reached it, and a run in flight is stopped when a call takes
+the scope to it. Only money priced in US dollars counts.
+ */
   spend_limit?: number;
   max_lease?: number;
+  /** Model tokens (prompt and completion) a period, enforced like
+`spend_limit`. It counts every call, priced or not, so it bounds
+what a spend limit cannot see.
+ */
+  max_tokens?: number;
   /** Bytes. */
   max_storage?: number;
   max_clients?: number;
@@ -769,6 +805,7 @@ export interface Policy {
   max_concurrent?: number;
   spend_limit?: number;
   max_lease?: number;
+  max_tokens?: number;
   max_storage?: number;
   max_clients?: number;
   max_clients_per_surface?: number;
@@ -795,13 +832,26 @@ export interface Measure {
   projected?: number;
 }
 
-/** Spend against its limit. Recorded and not enforced. */
+/** Spend against its limit, in micro-USD, enforced. `used` counts only
+what was priced in US dollars, so it is a lower bound whenever
+`unpriced_calls` is not zero or `other_costs` is not empty.
+ */
 export interface SpendMeasure {
   used: number;
   limit: number;
   projected?: number;
-  /** False while the runtime reports no cost. */
+  /** True. The runtime prices model calls from saige's catalog. */
   metered: boolean;
+  /** Calls in the period with no price. Their spend is unknown, not zero. */
+  unpriced_calls: number;
+  /** Money in other currencies, one entry per currency, never converted and never held against the limit. */
+  other_costs?: PolicyCost[];
+}
+
+/** An amount in one currency, in millionths of it. */
+export interface PolicyCost {
+  micros: number;
+  currency: string;
 }
 
 /** One policy and where its scope stands against it. */
@@ -816,14 +866,19 @@ export interface ScopeUsage {
   runs: Measure;
   concurrent: Measure;
   spend: SpendMeasure;
+  tokens: Measure;
   max_lease: number;
-  /** The worst of the enforced limits. */
+  /** The worst of the enforced limits, spend and tokens included. */
   state: "ok" | "warn" | "over";
 }
 
 /** One line of the usage ledger. */
 export interface UsageEntry {
-  kind: "admitted" | "ended" | "warned" | "refused";
+  /** `halted` is a run in flight stopped at a limit. `spent` (one model
+call) and `settled` (a run's own total at its end) are the ledger's
+record of spend and are not listed as notices.
+ */
+  kind: "admitted" | "ended" | "warned" | "refused" | "spent" | "settled" | "halted";
   tenant: string;
   project?: string;
   agent: string;
@@ -834,6 +889,18 @@ export interface UsageEntry {
   version?: number;
   limit?: PolicyLimit;
   reason?: string;
+  /** What makes a `spent` or `settled` entry count once. */
+  key?: string;
+  spend?: UsageSpend;
+}
+
+/** What some model calls used. `micros` is US dollars only. */
+export interface UsageSpend {
+  micros?: number;
+  model_calls?: number;
+  tokens?: number;
+  unpriced_calls?: number;
+  other_costs?: PolicyCost[];
 }
 
 export type ClientSurface = "slack" | "github";
@@ -925,11 +992,14 @@ export interface ClientCaps {
 /** What an event is. Kinds are dotted, so a filter can select a family
 (`delta`) or one member (`delta.citation`). The set is open in the
 runtime: a reader should pass over a kind it does not know. The
-`control.*` kinds here are defined and not published today. A request
+`control.*` kinds here are defined and not published today. The
+`usage.*` kinds report what model calls used: one `usage.call` per
+call as it completes, and a `usage.child` when an attached run's total
+is rolled up into its caller. A request
 addressed to a run, such as `control.stop`, is the runtime's traffic
 and never appears on this API.
  */
-export type EventKind = "delta.text" | "delta.thinking" | "delta.tool.call" | "delta.tool.done" | "delta.citation" | "lifecycle.accepted" | "lifecycle.started" | "lifecycle.parked" | "lifecycle.resumed" | "lifecycle.completed" | "lifecycle.failed" | "lifecycle.stopped" | "action.taken" | "control.created" | "control.revised" | "control.deleted";
+export type EventKind = "delta.text" | "delta.thinking" | "delta.tool.call" | "delta.tool.done" | "delta.citation" | "lifecycle.accepted" | "lifecycle.started" | "lifecycle.parked" | "lifecycle.resumed" | "lifecycle.completed" | "lifecycle.failed" | "lifecycle.stopped" | "action.taken" | "usage.call" | "usage.child" | "control.created" | "control.revised" | "control.deleted";
 
 /** One fragment of the agent's answer, in order. Concatenate fragments. */
 export interface TextPayload {
@@ -995,6 +1065,7 @@ export interface LifecyclePayload {
   reason?: string;
   /** The final answer, on `lifecycle.completed`. */
   text?: string;
+  usage?: RunUsage;
 }
 
 /** The body of `lifecycle.stopped`: the run was asked to stop and wrapped
@@ -1010,6 +1081,84 @@ export interface StoppedPayload {
   by?: string;
   /** The partial answer. */
   text?: string;
+  usage?: RunUsage;
+}
+
+/** An amount of money in integer millionths of a currency. One US dollar
+is 1,000,000 with currency `USD`. Prices come from saige's catalog
+only, and are never converted between currencies.
+ */
+export interface Cost {
+  micros: number;
+  /** An ISO 4217 code. */
+  currency: string;
+  /** The date the rates were recorded. On a sum, the oldest; empty when any was priced from a card with no date. */
+  as_of?: string;
+}
+
+/** What some model calls used, summed. `cost` is in the currency of the
+first priced call and is a lower bound whenever `unpriced_calls` is not
+zero; calls priced in another currency are in `other_costs`.
+ */
+export interface Usage {
+  model_calls?: number;
+  /** Billable provider requests. A call answered from saige's response cache made none. */
+  requests?: number;
+  /** All input, cached and written to cache included. */
+  prompt_tokens?: number;
+  cached_prompt_tokens?: number;
+  cache_write_tokens?: number;
+  completion_tokens?: number;
+  cost?: Cost;
+  other_costs?: Cost[];
+  /** Calls whose tokens are counted and that have no price. */
+  unpriced_calls?: number;
+}
+
+/** How full the run's context was at its latest model call. */
+export interface ContextUsage {
+  model?: string;
+  /** The model's input token limit from saige's catalog. Absent when the catalog declares none. */
+  window?: number;
+  /** The prompt that call sent, in tokens. */
+  tokens?: number;
+}
+
+/** What a run used. `own` is its own agent's calls, `children` the attached
+runs it rolled up (each once), and `total` the two added: the figure
+held against a limit.
+ */
+export interface RunUsage {
+  own: Usage;
+  children?: Usage;
+  total: Usage;
+  context?: ContextUsage;
+}
+
+/** One model call, reported as it completes. Count it once by `accounting_id`. */
+export interface UsageCallPayload {
+  accounting_id: string;
+  saige_accounting_id?: string;
+  agent?: string;
+  depth?: number;
+  model?: string;
+  requests?: number;
+  prompt_tokens?: number;
+  cached_prompt_tokens?: number;
+  cache_write_tokens?: number;
+  completion_tokens?: number;
+  response_cache_hit?: boolean;
+  cost?: Cost;
+  context_window?: number;
+}
+
+/** An attached run's whole usage, rolled up into its caller once it ended. */
+export interface UsageChildPayload {
+  accounting_id: string;
+  run_id: string;
+  agent?: string;
+  depth?: number;
+  usage: Usage;
 }
 
 /** A tool acted on something: a comment posted, a file published. When
@@ -1053,7 +1202,7 @@ JSON, base64-encoded, because the server marshals a byte slice: decode
 the base64, then parse the JSON. The decoded shape for each kind is the
 schema named in `contentSchema`. A kind may carry no payload.
  */
-export type RunEvent = TextDeltaEvent | ThinkingDeltaEvent | ToolCallEvent | ToolDoneEvent | CitationEvent | RunAcceptedEvent | RunStartedEvent | RunParkedEvent | RunResumedEvent | RunCompletedEvent | RunFailedEvent | RunStoppedEvent | ActionTakenEvent | AgentCreatedEvent | AgentRevisedEvent | AgentDeletedEvent;
+export type RunEvent = TextDeltaEvent | ThinkingDeltaEvent | ToolCallEvent | ToolDoneEvent | CitationEvent | RunAcceptedEvent | RunStartedEvent | RunParkedEvent | RunResumedEvent | RunCompletedEvent | RunFailedEvent | RunStoppedEvent | ActionTakenEvent | UsageCallEvent | UsageChildEvent | AgentCreatedEvent | AgentRevisedEvent | AgentDeletedEvent;
 
 /** One fragment of the answer. */
 export type TextDeltaEvent = EventBase & { kind: "delta.text"; payload?: string };
@@ -1094,6 +1243,12 @@ export type RunStoppedEvent = EventBase & { kind: "lifecycle.stopped"; payload?:
 /** A tool acted on something. */
 export type ActionTakenEvent = EventBase & { kind: "action.taken"; payload?: string };
 
+/** One model call and what it used. */
+export type UsageCallEvent = EventBase & { kind: "usage.call"; payload?: string };
+
+/** An attached run's total, rolled up into this run. */
+export type UsageChildEvent = EventBase & { kind: "usage.child"; payload?: string };
+
 /** An agent was created. Not published today. */
 export type AgentCreatedEvent = EventBase & { kind: "control.created"; payload?: string };
 
@@ -1107,7 +1262,7 @@ export type AgentDeletedEvent = EventBase & { kind: "control.deleted"; payload?:
 same union as `RunEvent`, without the envelope fields the manifest's
 run already states. `body` is absent when the event carried none.
  */
-export type ManifestEvent = ManifestTextDeltaEvent | ManifestThinkingDeltaEvent | ManifestToolCallEvent | ManifestToolDoneEvent | ManifestCitationEvent | ManifestRunAcceptedEvent | ManifestRunStartedEvent | ManifestRunParkedEvent | ManifestRunResumedEvent | ManifestRunCompletedEvent | ManifestRunFailedEvent | ManifestRunStoppedEvent | ManifestActionTakenEvent | ManifestAgentCreatedEvent | ManifestAgentRevisedEvent | ManifestAgentDeletedEvent;
+export type ManifestEvent = ManifestTextDeltaEvent | ManifestThinkingDeltaEvent | ManifestToolCallEvent | ManifestToolDoneEvent | ManifestCitationEvent | ManifestRunAcceptedEvent | ManifestRunStartedEvent | ManifestRunParkedEvent | ManifestRunResumedEvent | ManifestRunCompletedEvent | ManifestRunFailedEvent | ManifestRunStoppedEvent | ManifestActionTakenEvent | ManifestUsageCallEvent | ManifestUsageChildEvent | ManifestAgentCreatedEvent | ManifestAgentRevisedEvent | ManifestAgentDeletedEvent;
 
 export type ManifestTextDeltaEvent = ManifestEventBase & { kind: "delta.text"; body?: TextPayload };
 
@@ -1134,6 +1289,10 @@ export type ManifestRunFailedEvent = ManifestEventBase & { kind: "lifecycle.fail
 export type ManifestRunStoppedEvent = ManifestEventBase & { kind: "lifecycle.stopped"; body?: StoppedPayload };
 
 export type ManifestActionTakenEvent = ManifestEventBase & { kind: "action.taken"; body?: ActionPayload };
+
+export type ManifestUsageCallEvent = ManifestEventBase & { kind: "usage.call"; body?: UsageCallPayload };
+
+export type ManifestUsageChildEvent = ManifestEventBase & { kind: "usage.child"; body?: UsageChildPayload };
 
 export type ManifestAgentCreatedEvent = ManifestEventBase & { kind: "control.created"; body?: unknown };
 
@@ -1182,6 +1341,7 @@ export interface ClientViewCredentials {
 
 export interface ManifestUsage {
   metered: boolean;
+  total: Usage;
 }
 
 export interface ListAgentsResponse {

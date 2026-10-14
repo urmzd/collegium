@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 	"github.com/urmzd/mandatum/pkg/agentspec"
 	"github.com/urmzd/mandatum/pkg/envelope"
 
@@ -200,9 +201,23 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request, who auth.Princ
 		"generated_at": time.Now().UTC(),
 		"root":         tree[0].Root,
 		"runs":         out,
-		// The runtime reports no token counts or cost, so none are given.
-		"usage": map[string]any{"metered": false},
+		// The whole tree's usage: each run's own calls, once, attached
+		// and delegated runs alike.
+		"usage": map[string]any{"metered": true, "total": treeUsage(tree)},
 	})
+}
+
+// treeUsage is what every run in a tree used of its own. Each run's own calls
+// are counted in it once, so the sum is the tree's, attached and delegated
+// runs alike, with nothing counted twice.
+func treeUsage(tree []runs.Run) payload.Usage {
+	var total payload.Usage
+	for _, r := range tree {
+		if r.Usage != nil {
+			total = total.Add(r.Usage.Own)
+		}
+	}
+	return total
 }
 
 func (s *Server) listAlerts(w http.ResponseWriter, _ *http.Request, who auth.Principal) {

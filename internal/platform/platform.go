@@ -171,6 +171,9 @@ type Platform struct {
 	clientsMu sync.Mutex
 	// admitting holds runs between admission and their record, by run id.
 	admitting sync.Map
+	// halting holds runs being stopped at a limit, by run id, so a run is
+	// asked once however many of its calls cross it.
+	halting sync.Map
 
 	// admission serializes letting a run in. It is taken inside calls, never
 	// the other way round.
@@ -379,6 +382,16 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 // the target in its spawn allowlist, the tree's limits must allow the call, and
 // the caller's remaining budget must cover the lease.
 func (p *Platform) Call(ctx context.Context, tenant, runID string, req call.Request) (runs.Run, error) {
+	return p.call(ctx, tenant, runID, req, false)
+}
+
+// call is Call. With grant, a call from a run that holds a lease and asked for
+// none is granted one here, under the call lock, from what the caller has
+// left: all of it to a call the caller waits on, half of it to one it hands
+// over and does not wait for, so it can still spend or hand on the rest.
+// That is how an agent's own calls (tagging, delegate_task) lease budget,
+// since a model never names an amount. A caller with nothing left is refused.
+func (p *Platform) call(ctx context.Context, tenant, runID string, req call.Request, grant bool) (runs.Run, error) {
 	p.calls.Lock()
 	defer p.calls.Unlock()
 
@@ -394,6 +407,16 @@ func (p *Platform) Call(ctx context.Context, tenant, runID string, req call.Requ
 		return runs.Run{}, fmt.Errorf("%w: %q may not call %q", ErrForbidden, parent.Agent, req.Agent)
 	}
 
+	if grant && req.Lease == 0 && parent.Lease > 0 {
+		left := parent.Left()
+		if req.Mode == call.Delegate {
+			left /= 2
+		}
+		if left <= 0 {
+			return runs.Run{}, fmt.Errorf("%w: %q has spent or handed on all of its budget of %s", call.ErrBudget, parent.Agent, money(parent.Lease))
+		}
+		req.Lease = left
+	}
 	tag, err := call.New(parent.Tag(), req, parent.State(), p.cfg.Limits, p.now())
 	if err != nil {
 		return runs.Run{}, err
@@ -489,6 +512,26 @@ func (p *Platform) settleFromLedger(ctx context.Context, id string) bool {
 		p.ended(ctx, run)
 	}
 	return true
+}
+
+// observe folds one event from the bus into the platform: the journal, the
+// run index, and what runs spend. The bus delivers at least once, so it is
+// safe to see an event twice: the index ends a run once, and the usage ledger
+// counts a call once.
+func (p *Platform) observe(ctx context.Context, e envelope.Event) {
+	if e.Topic.IsControl() {
+		// A request addressed to a run, such as a stop, not something a run
+		// did. The run's own events say what came of it.
+		return
+	}
+	p.Journal.Append(e)
+	if e.Kind.Family() == "usage" {
+		p.observeUsage(ctx, e)
+		return
+	}
+	if run, ended := p.Runs.Observe(e); ended {
+		p.ended(ctx, run)
+	}
 }
 
 // raise checks a run that has just ended against its tenant's alert rules.
@@ -610,16 +653,7 @@ func (p *Platform) Run(ctx context.Context) error {
 			case err != nil:
 				return err
 			}
-			if e.Topic.IsControl() {
-				// A request addressed to a run, such as a stop, not
-				// something a run did. The run's own events say what came
-				// of it.
-				continue
-			}
-			p.Journal.Append(e)
-			if run, ended := p.Runs.Observe(e); ended {
-				p.ended(ctx, run)
-			}
+			p.observe(ctx, e)
 		}
 	})
 
