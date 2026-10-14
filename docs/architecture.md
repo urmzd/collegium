@@ -54,6 +54,51 @@ origin, its caller and how it was called.
 What a delegated run attaches dies with it, not with whoever delegated to it.
 A run stopped this way is `stopped`, not `failed`, and says why.
 
+### Stopping a run
+
+A stop is the runtime's, not the platform's. `POST /api/runs/{id}/stop` and a
+Slack stop button both call mandatum's `runtime.Stop` with a reason and who
+asked. The runtime records the request on the run in the duraturo ledger
+(`runtime.WithStopLedger`), so a run still in the queue or between attempts
+honours it whenever it starts, and publishes it on the bus to the attempt
+executing the run, which cancels the model call in flight and any running
+tools, and ends the run with `lifecycle.stopped` carrying what the agent had
+said. "Stopped" means cut short: the agent loop judges it, and a turn that had
+finished its answer before the request took effect ends `completed`.
+
+| State | Status | `stopping` | What it means |
+|-------|--------|------------|---------------|
+| Asked | unchanged (`accepted`, `running`, `parked`) | `true` | The request is published. The run can start no further calls from this moment. |
+| Stopped | `stopped` | absent | The runtime confirmed it. `answer` is the partial answer people saw, `cause` is the reason. |
+| Finished first | `completed` or `failed` | absent | The turn ended before the request reached it. It is reported as it ended, never as stopped. |
+
+The route answers 202 with `stopping` while the run has not ended and does not
+wait for it. A run that has ended is answered 200 as it is, so asking twice is
+safe. The runtime gives a turn `StopGrace` (ten seconds by default) to wrap up
+before it cancels it, and the run still ends stopped. A run in the queue stops
+before its first model call when a worker picks it up.
+
+After asking, the platform reads the ledger (`runtime.StopRequested`). A run
+the ledger holds no request for had already ended there, so it is settled from
+the ledger at once and the route answers 200 with how it ended. When the runtime cancels a
+delegation because the caller was stopped (`runtime.ErrStopped` as the
+context's cause), the run collegium started for it is asked to stop too.
+
+A run that has answered and is only held open by what it attached has no turn
+left to interrupt, and was not cut short. What is attached to it is stopped
+through the runtime, and once they have ended it completes with its answer.
+
+If the runtime cannot carry a stop (`runtime.ErrStopUnavailable`, a bus that
+cannot be subscribed to), the request fails closed: the run is still marked
+`stopping`, so it starts nothing more, the route answers 503, and the run ends
+as its own events say. It is never reported stopped while it is still working.
+
+A stopped turn is kept in its conversation. The next turn is sent its partial
+answer followed by mandatum's `StopMarker` line. Who stopped it and why is not
+sent to a model. Housekeeping (titles, memory) does not run after a stopped
+turn, an eval case that was stopped is a failed case, and a stopped run counts
+as `stopped` in the statistics, not as active.
+
 ### Detached branches
 
 The child is a durable run of its own, with its own journal, context window and
@@ -72,7 +117,7 @@ the caller's turn with no run id and no stream. Both shapes stay available.
 | Access | A child gets the intersection of its spec's access and its caller's grant. It is never wider. |
 | Shape | Depth and fan-out are capped. The zero limits allow no calls. |
 | Tracking | Root, parent, depth and trace context travel with the tag, so telemetry shows one tree. |
-| Stopping | Cancelling a run cancels everything beneath it. |
+| Stopping | Stopping a run stops everything attached beneath it, through the runtime. What it delegated carries on. |
 
 ## People in the loop
 
@@ -111,7 +156,6 @@ Admission is one process holding one lock, reading counts from memory. That is c
 |-------------|---------------|
 | The admission lock is in process, so two servers can both admit the last run | A counter in the shared store, taken in the same transaction as the ledger entry |
 | Clients and the secret values written for them are lost on restart, so a webhook is a 404 until they are created again | A durable `clients.Store`, and a secret manager behind `clients.Secrets`. `New` already starts every enabled client a store holds |
-| A run id is the trigger's event id, so one workspace can hold an id another's event would have used. The second is refused | Run ids scoped by workspace in the runtime |
 | The usage ledger and policies are lost on restart | A durable ledger. `Rebuild` already derives every count from entries |
 | Usage is recounted from entries on each read | Counters per scope and period, checked against a rebuild |
 | Policy history grows without bound | Paging, as for conversations |
@@ -136,7 +180,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Minting GitHub installation tokens, Slack OAuth installation | Not built. A client is given a token |
 | GitHub auto-label and per-commit reviews, PR guides, explicit writer-authorized fix commits and workflow reruns | Built in `pkg/integrations/github`, on mandatum API capabilities. Rendering in vultus `go/github` |
 | Slack agent-session status and code-channel command policy | Built in `pkg/integrations/slack`. Signed command decoding and optional `AgentAPI` in mandatum. Not live-validated |
-| Slack stop button: `agent_session_stopped` stops the runs answering in that session, confirms in the thread and settles the status | Built, tested end to end against the fake. The session-to-run map is in memory and per client: one app's button cannot stop a run another app raised. Not live-validated |
+| Slack stop button: `agent_session_stopped` asks the runtime to stop the runs answering in that session, confirms in the thread and settles the status. The run's message keeps its partial answer, marked stopped | Built, tested end to end against the fake with a scripted model whose call is shown to be cancelled. The session-to-run map is in memory and per client: one app's button cannot stop a run another app raised. Not live-validated |
 | Slack app (`apps/slack`): Socket Mode, a client of the HTTP API as a machine. DMs, mentions, `/agent`, shortcuts, Home, native streaming, session status, stop, inbox items in the run's thread. A thread's conversation is derived from the thread, so a restart loses neither it nor deduplication | Built, tested with fakes for Slack and collegium and against a real server with a fake Slack. Its runs are not yet recorded as a client's or a Slack person's: the API takes neither. Not live-validated |
 | `packages/adapter`: the one collegium-to-vultus adapter, run events and inbox messages to vultus's model and vultus actions back to platform calls, shared by the console and the Slack app | Built. A parity test renders one adapted state with both renderers |
 | `pkg/call`: edge, modes, depth, fan-out and lease checks | Built, tested |
@@ -178,7 +222,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | "Why can I do this?": `GET /api/access/explain` and the Access panel. A sign-in keeps the grant behind each role, not the claims or the token | Built, tested. Sessions are in memory, so a restart signs everyone out |
 | Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the modes are loopback dev auth and the loopback mock provider |
 | Model parameters on an agent (temperature, token and step limits) | Not built. mandatum's agent spec has no fields for them |
-| Stopping a run in flight | Not built. The composer's queue waits for the run to end |
+| A stop control in the console's composer | Not built. The API stops a run in flight and the console's event adapter ends a turn on `lifecycle.stopped`, but the composer has no stop button and its queue still waits for the run to end |
 | Skill consolidation | Not built |
 | Sandbox: each conversation has a scratch directory that agents with the file tools read and write. It is opened as an `os.Root`, bounded in file size, count and total, and removed after 7 days untouched | Built, tested against traversal, absolute paths and planted links |
 | `pkg/blob`: put, get, stat, delete, list behind one interface, on disk or in memory, with a conformance suite a new backend must pass | Built. An S3-compatible store is not written |
@@ -188,8 +232,9 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Downloads: tenant and right checked on every request, always an attachment unless an inert type is asked for inline, never HTML or SVG inline | Built, tested |
 | Built-in agents: `collegium-writer` writes a document and publishes it. Provided by the platform, not editable, present only when the server is given `-builtin-provider` and `-builtin-model` | Built. One agent. Not run against a real model here: no provider key was available |
 | Called agents are runs: an agent that tags another starts a run with its own id, events and record, in the caller's conversation and sandbox | Built, on mandatum's `WithDelegator` hook |
+| Run ids are the runtime's, derived from the workspace and the tag id together, so two workspaces offering one trigger id get two runs. Every index, route, ledger entry and grant uses the id the runtime returns | Built on mandatum v0.7.0 and later, tested with two workspaces reusing one tag id and one Slack event id |
 | Two lifetimes for a called run. Attached (tagged, the caller waits): ends with its caller, and the caller is not done until it is. Delegated (`delegate_task`, the caller carries on): independent, and its answer goes to the inbox | Built, tested three levels deep under the race detector |
-| Stopping a run: `POST /api/runs/{id}/stop` stops it and everything attached to it, with the cause recorded. What it delegated keeps running | Built. A stop is taken at the platform's edge: the run can start nothing more and its answer is discarded, but a model call in flight is not interrupted, because the runtime has no cancel |
+| Stopping a run: `POST /api/runs/{id}/stop` asks the runtime to stop it and everything attached to it. The model call in flight is cancelled, the run ends `stopped` with its partial answer and cause, and what it delegated keeps running. See [Stopping a run](#stopping-a-run) | Built on mandatum v0.8.0's `runtime.Stop`, recorded in the run ledger, tested with scripted models under the race detector, three levels deep, and against a completion racing the stop |
 | A place is always kept for work that waits on nobody, so runs waiting on each other cannot fill every place and hang | Built. With `Concurrency` 4 by default, three runs may wait at once and a fourth is told no |
 | Publishing that waits for approval | Not built. A run cannot be parked on a person |
 | Run manifest: one JSON document of a run, every run under it, each pinned definition and every event with its body | Built, from the journal. A run older than the journal's ring comes back marked incomplete |
@@ -201,8 +246,8 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Connections: MCP servers, OAuth to third parties | Not built. Slack and GitHub credentials are held per client, see above |
 | Schedule delivery to Slack, email or another system | Not built. Needs connections |
 | Call tool inside the sandbox | Not built. Calls are made through the API |
-| Returning a subagent's answer to its caller | Built for a call made by tagging: the answer is the tool's result. A call made through the API is not returned to the caller's model |
-| Cancel propagation down a tree | Built through attached runs, as a stop at the platform's edge. See above |
+| Returning a subagent's answer to its caller | Built for a call made by tagging: the answer is the tool's result. A subagent that was stopped returns an error saying so, not its partial answer. A call made through the API is not returned to the caller's model |
+| Cancel propagation down a tree | Built through attached runs: each is asked to stop through the runtime, at the request and again when the runtime cancels the delegation it was waiting on, and keeps its own partial answer. Delegated runs are not touched |
 | Access intersection across a call | Not built |
 | `pkg/inbox`: one server inbox of messages with typed parts, per-person read state, paging, and a record of changes that rebuilds it | Built, in memory |
 | What lands in the inbox: fired alert rules, failed runs no rule caught, proposed memories, reached limits | Built. An alert and its message are one state: settling either settles both |

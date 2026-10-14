@@ -736,10 +736,12 @@ edited from: if someone else revised the agent since, the answer is 409.
 The run is accepted, not finished: follow it on the event stream at
 topic `agent:<agent>:<id>`, or poll `getRun`.
 
-Send `Idempotency-Key` to make a retry safe. The run's id is then
-`api-<subject>-<key>`, and a second request with the same key from the
-same caller joins the run the first one started instead of starting
-another. Without it the id is random.
+Send `Idempotency-Key` to make a retry safe. The run's `tag_id` is
+then `api-<length of subject in bytes>-<subject>-<key>`, its `id` is
+derived from that and the workspace (`r` and 32 hex digits, as
+mandatum's `runtime.RunID`), and a second request with the same key
+from the same caller joins the run the first one started instead of
+starting another. Without it the ids are random.
 
 The body takes no metadata: an unknown field answers 400.
  */
@@ -833,10 +835,19 @@ allowed to spawn the target, and depth, fan-out and lease limits apply.
     });
   }
 
-  /** Runs it delegated keep going. Stopping a run that has ended changes
-nothing and answers 200 with the run as it stands. A model call in
-flight is not interrupted: the run starts nothing more and its answer
-is discarded.
+  /** The request goes to the runtime, which cancels the model call in
+flight and ends the run with `lifecycle.stopped`. Runs attached to it
+are asked too. Runs it delegated keep going.
+
+It does not wait for the run. From the moment it is asked, the run is
+`stopping` and starts no further calls. It then ends `stopped`, with
+`answer` holding what it had said and `cause` why, or `completed` or
+`failed` if its turn finished before the request took effect. A run is
+never reported stopped and then completed.
+
+Asking a run that has ended changes nothing and answers 200 with the
+run as it stands, so asking twice is safe. Another workspace's run
+answers 404.
  */
   async stopRun(id: string, options?: RequestOptions): Promise<Run> {
     let path = "/api/runs/{id}/stop";

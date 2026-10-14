@@ -110,10 +110,11 @@ With sessions on, each lifecycle event calls `agents.sessions.setStatus`:
 |-----------|----------------|------------------|
 | accepted, started, resumed | `processing` | The "Working…" indicator. |
 | parked | `suspended` | Waiting on the user. |
-| completed, failed | `active` | Ready for the next prompt. |
+| completed, failed, stopped | `active` | Ready for the next prompt. |
 
-A failed run reports `active` because its error is rendered in the run's own
-message and the thread remains usable. The connector never reports `closed`.
+A failed or stopped run reports `active` because its error, or its partial
+answer marked stopped, is rendered in the run's own message and the thread
+remains usable. The connector never reports `closed`.
 
 A session is a thread in an ordinary channel and the whole channel in a code
 channel. The trigger cannot tell the two apart, so the sink sends the thread
@@ -125,16 +126,31 @@ Slack shows a stop button on a `processing` session because the manifest
 subscribes to `agent_session_stopped`. A press is handled in the order Slack
 asks for:
 
-1. Every run answering in that session is stopped through the platform, with
-   the cause `Stopped by slack:<user id>`. Runs attached to it stop too; runs it
-   delegated carry on. A stop on a code channel covers every run in the channel.
+1. Every run answering in that session is asked to stop through the runtime,
+   with the reason `Stopped by slack:<user id>`. Runs attached to it are asked
+   too; runs it delegated carry on. A stop on a code channel covers every run
+   in the channel.
 2. `Stopped by @user.` is posted in the session.
 3. The session is set to `active`.
 
-Nothing more of a stopped run is written to Slack. The model call already in
-flight is not interrupted, because the runtime has no cancel; its output is
-discarded. Anyone who can see the button may press it: the session, not a
-console role, is the authority.
+The model call in flight is cancelled. The run ends with `lifecycle.stopped`,
+and mandatum's sink edits the run's message to keep what the agent had said,
+marked stopped with the reason underneath. From the press until that event,
+nothing the run still publishes sets the session back to working, and the
+`active` it reports on ending is where the session stays. A run whose turn
+finished before the request reached it ends completed, as usual.
+
+A second press, or Slack redelivering the first, finds no run left to stop and
+posts nothing. Anyone who can see the button may press it: the session, not a
+console role, is the authority. If the runtime cannot carry the request, the
+press is answered with an error so Slack redelivers it, and nothing is posted.
+
+A follow-up mention in the thread is answered by a new run. Slack mentions do
+not carry the thread's history in collegium today, so that run is not sent the
+stopped turn. A conversation in the console is: see
+[Stopping a run](architecture.md#stopping-a-run). Carrying a Slack thread's
+history needs mandatum's thread journal (`runtime.WithThreads`), which records a
+stopped turn with its partial answer and a fixed marker.
 
 A press reaches only the runs its own client raised. Two apps answering in one
 thread each hold their own sessions, and another workspace's app in the same

@@ -34,6 +34,11 @@ type Config struct {
 	Guides           bool
 	Mutations        bool
 	MutationSecret   []byte
+	// Tenant is the workspace whose runs this connector's tags become. A fix
+	// grant names the run it is good for, and the runtime derives a run's id
+	// from the tenant and the tag id together, so the grant cannot be signed
+	// without it. Mutations without a Tenant are refused by New.
+	Tenant string
 }
 
 // Connector decorates the transport without introducing another execution path.
@@ -76,6 +81,9 @@ func New(cfg Config) (*Connector, error) {
 	if cfg.Mutations {
 		if _, ok := cfg.API.(transport.MutationAPI); !ok || len(cfg.MutationSecret) < 16 {
 			return nil, fmt.Errorf("github: mutations need MutationAPI and signing secret of at least 16 bytes")
+		}
+		if strings.TrimSpace(cfg.Tenant) == "" {
+			return nil, fmt.Errorf("github: mutations need the tenant the connector's runs belong to")
 		}
 	}
 	base := transport.Config{API: cfg.API, Verifier: cfg.Verifier, Owners: cfg.Owners, ReadRepositories: cfg.ReadRepositories, Bots: cfg.Bots, Agents: cfg.Agents, Checks: cfg.Checks, Deliver: cfg.Deliver, Interval: cfg.Interval, Clock: cfg.Clock, MaxBody: cfg.MaxBody}

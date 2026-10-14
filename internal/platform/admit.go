@@ -40,7 +40,7 @@ func (p *Platform) admit(tag envelope.Tag, edge call.Edge, project, client strin
 		applied = append(applied, policy.Applied{Policy: pol, Usage: p.Usage.Usage(tag.Tenant, pol.Scope, since)})
 	}
 	d := policy.Decide(applied, policy.Request{Lease: edge.Lease})
-	entry := usage.Entry{Tenant: tag.Tenant, Project: project, Agent: tag.Agent, Client: client, RunID: runtime.RunID(tag.ID), At: now}
+	entry := usage.Entry{Tenant: tag.Tenant, Project: project, Agent: tag.Agent, Client: client, RunID: runtime.RunID(tag.Tenant, tag.ID), At: now}
 	if d.Policy != nil {
 		entry.Scope, entry.Version, entry.Limit, entry.Reason = &d.Policy.Scope, d.Policy.Version, d.Limit, d.Reason
 	}
@@ -69,7 +69,7 @@ func (p *Platform) admit(tag envelope.Tag, edge call.Edge, project, client strin
 func (p *Platform) placeOf(tag envelope.Tag, edge call.Edge) (project, client string) {
 	project, client = runs.ProjectOf(tag), runs.ClientOf(tag)
 	if edge.Parent != "" {
-		if root, err := p.Runs.Get(tag.Tenant, runtime.RunID(edge.Root)); err == nil {
+		if root, err := p.Runs.Get(tag.Tenant, runtime.RunID(tag.Tenant, edge.Root)); err == nil {
 			project, client = root.Project, root.Client
 		}
 	}

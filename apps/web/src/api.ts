@@ -81,6 +81,8 @@ export interface Group {
   runs: number;
   completed: number;
   failed: number;
+  /** Runs stopped on request. Neither completed, failed nor in flight. */
+  stopped: number;
   active: number;
   p50_ms: number;
   p95_ms: number;
@@ -90,6 +92,7 @@ export interface Bucket {
   start: string;
   completed: number;
   failed: number;
+  stopped: number;
   active: number;
 }
 

@@ -68,15 +68,16 @@ function last(): Seen {
 }
 
 const run: Run = {
-  id: "api-svc-slack-evt-1",
+  id: "r31d24839ddee5733b221391dfb156ce0",
+  tag_id: "api-8-svc-acme-slack-evt-1",
   tenant: "acme",
   agent: "helper",
   rev: 1,
   origin: "api",
   text: "Say hello",
-  root: "api-svc-slack-evt-1",
+  root: "r31d24839ddee5733b221391dfb156ce0",
   depth: 0,
-  thread: "api-svc-slack-evt-1",
+  thread: "r31d24839ddee5733b221391dfb156ce0",
   lease: 0,
   granted: 0,
   calls: 0,
@@ -287,6 +288,23 @@ test("a run's events end at the event that completes it", async () => {
   assert.equal(last().url, "/api/events?topic=agent%3Ahelper%3Ar1");
 });
 
+test("a run's events end at the event that stops it, with its partial answer", async () => {
+  serve((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify(wire(1, "delta.text", { text: "Half" }))}\n\n`);
+    res.write(`data: ${JSON.stringify(wire(2, "lifecycle.stopped", { text: "Half", reason: "Stopped by ada", by: "ada" }))}\n\n`);
+    // The server keeps the stream open, with heartbeats. The reader leaves.
+  });
+  const client = createClient({ baseUrl: base });
+
+  const seen: DecodedRunEvent[] = [];
+  for await (const event of client.runEvents({ agent: "helper", id: "r1" })) seen.push(event);
+
+  assert.deepEqual(seen.map((e) => e.kind), ["delta.text", "lifecycle.stopped"]);
+  const stopped = seen[1];
+  assert.equal(stopped?.kind === "lifecycle.stopped" && stopped.body?.text, "Half");
+});
+
 test("a stream is cancelled by its signal, and a refused stream throws with the body", async () => {
   serve((_req, res) => {
     res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -411,6 +429,36 @@ test("a run that ended while the stream was down is read to its end", async () =
   const kinds: string[] = [];
   for await (const event of client.runEvents({ agent: "helper", id: "r1" }, { resume: fast })) kinds.push(event.kind);
   assert.deepEqual(kinds, ["lifecycle.accepted", "lifecycle.completed"]);
+});
+
+test("a last read of an ended run does not wait forever for an event the server no longer holds", async () => {
+  // The first stream drops; the record says stopped; the second stream stays open with nothing on it,
+  // as the server's does once the run's events have left its retention.
+  let streams = 0;
+  serve((req, res) => {
+    if (req.url.startsWith("/api/runs/r1")) {
+      json(res, 200, { ...run, id: "r1", status: "stopped" });
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    if (streams++ === 0) res.end(frame(wire(1, "delta.text", { text: "Hel" })));
+    else res.write(": keep-alive\n\n");
+  });
+  const client = createClient({ baseUrl: base });
+  const kinds: string[] = [];
+  const began = Date.now();
+  const error = await (async () => {
+    for await (const event of client.runEvents({ agent: "helper", id: "r1" }, { resume: { ...fast, drainMs: 100 } })) {
+      kinds.push(event.kind);
+    }
+  })().then(
+    () => assert.fail("returned without an ending event"),
+    (e: unknown) => e,
+  );
+  assert.ok(error instanceof StreamEndedError, String(error));
+  assert.equal(error.reason, "stopped");
+  assert.deepEqual(kinds, ["delta.text"]);
+  assert.ok(Date.now() - began < 5_000, "the drain was bounded");
 });
 
 test("a stream that cannot be resumed throws rather than ending quietly", async () => {

@@ -30,6 +30,7 @@ import {
   type World,
   world,
 } from "./harness.ts";
+import { runId, tagId } from "./keys.ts";
 import { validateBlocks } from "./validate.ts";
 
 const TS = "1700000000.000100";
@@ -72,7 +73,8 @@ test("a mention becomes one run, streamed natively, with the session kept in ste
   assert.equal(asked?.agent, "lead");
   assert.equal(asked?.text, "what changed in the last deploy?");
   assert.equal(asked?.after, undefined);
-  assert.equal(w.collegium.last.id, `api-${SUBJECT}-${KEY}`);
+  assert.equal(w.collegium.last.id, runId("acme", SUBJECT, KEY));
+  assert.equal(w.collegium.last.tag_id, tagId(SUBJECT, KEY));
 
   // Before any event: seen, processing, and a stream opened in the mention's thread.
   assert.deepEqual(w.slack.methods, [
@@ -252,7 +254,7 @@ test("stop mid-run stops the run, confirms in the thread, settles the session an
   const m = w.slack.methods;
   assert.ok(m.indexOf("chat.stopStream") < m.lastIndexOf("agents.sessions.setStatus"));
 
-  // The model call was not interrupted: what it still says is discarded.
+  // The run ended stopped with what it had said. Nothing it publishes later moves the turn.
   const before = w.slack.calls.length;
   w.collegium.emit(run, "delta.text", { text: "Part two." });
   w.collegium.emit(run, "lifecycle.completed", { text: "Part one. Part two." });
@@ -260,6 +262,33 @@ test("stop mid-run stops the run, confirms in the thread, settles the session an
   assert.equal(w.slack.calls.length, before);
   assert.equal(w.slack.streamed, "Part one.");
   collect("stopped", w.slack);
+});
+
+test("a stop that loses the race to the answer shows the answer, and is not called stopped", async () => {
+  const w = world();
+  await deliver(w, mention("quick question", TS));
+  await emit(w, "lifecycle.accepted");
+  await emit(w, "delta.text", { text: "The whole answer." });
+  w.collegium.stopsFinishFirst = true;
+  await deliver(w, stopPressed(TS));
+  await w.app.idle();
+  await settle();
+  const ended = w.slack.of("chat.stopStream").at(-1);
+  assert.doesNotMatch(textIn(blocksOf(ended)), new RegExp(defaultCopy.stopPhase.failed));
+  assert.equal((await w.collegium.getRun(w.collegium.last.id))?.status, "completed");
+  assert.equal(w.slack.statuses.at(-1), "active");
+});
+
+test("a stopped run this process does not follow is confirmed with what it had said", async () => {
+  const w = world();
+  const run = (await w.collegium.createRun({ agent: "lead", text: "slow question" }, KEY)).id;
+  w.collegium.emit(run, "lifecycle.started");
+  w.collegium.emit(run, "delta.text", { text: "Half an answer" });
+  await deliver(w, stopPressed(TS), w.app);
+  await w.app.idle();
+  const posted = w.slack.of("chat.postMessage").at(-1);
+  assert.match(textIn(blocksOf(posted)), /Half an answer/);
+  assert.match(textIn(blocksOf(posted)), new RegExp(defaultCopy.stopped));
 });
 
 test("stop after a restart still finds the run, through collegium", async () => {
@@ -283,6 +312,9 @@ test("stop after a restart still finds the run, through collegium", async () => 
   assert.match(textIn(blocksOf(after[0]?.args)), new RegExp(defaultCopy.stopped));
   assert.equal(after[1]?.args.status, "active");
   collect("stopped after restart", w.slack);
+
+  // The confirmation carries what the run had said when collegium stopped it.
+  assert.equal((await w.collegium.getRun(run))?.status, "stopped");
 
   // With nothing left to stop, the button still settles the session.
   const idle = w.restart();
@@ -484,6 +516,7 @@ test("asking again is refused once the agent may no longer be reached", async ()
     team: TEAM,
     botUser: BOT,
     subject: SUBJECT,
+    tenant: "acme",
     clientId: "docs-bot",
     operators: [USER],
     flushMs: 0,
@@ -531,6 +564,7 @@ for (const where of ["home", "thread"] as const) {
     w.collegium.runs.set("api-dana-console-run", {
       ...w.collegium.last,
       id: "api-dana-console-run",
+      tag_id: "api-dana-console-run",
       thread: "api-dana-console-run",
     });
     const elsewhere = failureCard("api-dana-console-run", where, "U03ABCDEF");
@@ -738,6 +772,68 @@ test("stop on a quiet run confirms it once, and its end is not posted again", as
     .filter((a) => textIn(blocksOf(a)).includes(defaultCopy.stopped));
   assert.equal(confirmations.length, 1);
   assert.equal(w.slack.statuses.at(-1), "active");
+});
+
+test("a quiet run whose stop loses the race posts its answer, once", async () => {
+  const w = world({ stallMs: 30, slowPollMs: 40 });
+  await deliver(w, mention("long job", TS));
+  const run = w.collegium.last.id;
+  await emit(w, "lifecycle.accepted");
+  await emit(w, "delta.text", { text: "Long job done." });
+  await pause(120);
+  w.collegium.stopsFinishFirst = true;
+  await deliver(w, stopPressed(TS));
+  await w.app.idle();
+  await pause(100);
+  assert.deepEqual(w.collegium.stops, [run]);
+  assert.equal((await w.collegium.getRun(run))?.status, "completed");
+  assert.equal(finals(w, "Long job done.").length, 1, "the answer is posted once");
+  assert.ok(
+    !w.slack.of("chat.postMessage").some((a) => textIn(blocksOf(a)).includes(defaultCopy.stopped)),
+  );
+  assert.equal(w.slack.statuses.at(-1), "active");
+});
+
+test("a stop slower than the wait is confirmed when it lands, and the session waits for it", async () => {
+  const w = world({ stopWaitMs: 100 });
+  const run = (await w.collegium.createRun({ agent: "lead", text: "slow question" }, KEY)).id;
+  w.collegium.emit(run, "lifecycle.started");
+  w.collegium.emit(run, "delta.text", { text: "Half an answer" });
+  w.collegium.stopDelayMs = 400;
+  await deliver(w, stopPressed(TS), w.app);
+  await pause(200);
+  // The wait is over and the run has not ended: nothing is posted, and the session is not settled yet.
+  assert.equal(finals(w, "Half an answer").length, 0);
+  assert.ok(!w.slack.statuses.includes("active"), "the session is not settled before the run ends");
+  await w.app.idle();
+  assert.equal((await w.collegium.getRun(run))?.status, "stopped");
+  const posted = finals(w, "Half an answer");
+  assert.equal(posted.length, 1, "the stopped run is confirmed with what it had said, once");
+  assert.match(textIn(blocksOf(posted[0])), new RegExp(defaultCopy.stopped));
+  assert.equal(w.slack.statuses.at(-1), "active");
+});
+
+test("a slow follow and a late lifecycle.stopped post a quiet run's stopped end once", async () => {
+  const w = world({ stallMs: 30, slowPollMs: 40 });
+  await deliver(w, mention("long job", TS));
+  const run = w.collegium.last.id;
+  await emit(w, "lifecycle.accepted");
+  await emit(w, "delta.text", { text: "Partway there" });
+  await pause(120);
+  await deliver(w, stopPressed(TS));
+  await w.app.idle();
+  await pause(150);
+  // A second press, and the event again: nothing more is posted.
+  await deliver(w, stopPressed(TS));
+  w.collegium.emit(run, "lifecycle.stopped", { text: "Partway there", reason: "again" });
+  await w.app.idle();
+  await pause(150);
+  assert.equal((await w.collegium.getRun(run))?.status, "stopped");
+  const ends = w.slack
+    .of("chat.postMessage")
+    .filter((a) => textIn(blocksOf(a)).includes("Partway there"));
+  assert.equal(ends.length, 1, "the stopped end is posted once");
+  assert.match(textIn(blocksOf(ends[0])), new RegExp(defaultCopy.stopped));
 });
 
 test("on shutdown a quiet run stops being followed", async () => {

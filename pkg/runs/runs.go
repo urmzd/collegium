@@ -88,7 +88,8 @@ const (
 	Completed Status = "completed"
 	Failed    Status = "failed"
 	// Stopped is a run that was ended from outside: by a person, or because
-	// the run it was attached to ended. It did not fail. Its cause says which.
+	// the run it was attached to ended. It did not fail. Its cause says which,
+	// and its answer is what it had said when it stopped, which may be nothing.
 	Stopped Status = "stopped"
 )
 
@@ -122,7 +123,12 @@ func lifecycleOf(parent string, mode call.Mode) Lifecycle {
 
 // Run is one run and its place in the tree.
 type Run struct {
-	ID     string         `json:"id"`
+	ID string `json:"id"`
+	// TagID is the id of the tag the run was accepted with: the trigger's
+	// event id, or the one the API made from its caller and idempotency key.
+	// The run's id is derived from it and the tenant, and cannot be turned
+	// back into it, so a caller that named its own run reads it here.
+	TagID  string         `json:"tag_id"`
 	Tenant string         `json:"tenant"`
 	Agent  string         `json:"agent"`
 	Rev    int            `json:"rev"`
@@ -163,7 +169,9 @@ type Run struct {
 	Calls int `json:"calls"`
 
 	Status Status `json:"status"`
-	// Answer is the final text of a completed run.
+	// Answer is the final text of a completed run. On a stopped run it is the
+	// partial answer: what the agent had said when it stopped, which people
+	// may already have read. It is never the whole answer, and Status says so.
 	Answer string `json:"answer,omitempty"`
 	Error  string `json:"error,omitempty"`
 	// Reason says what a parked run is waiting for, or that a run which has
@@ -171,6 +179,13 @@ type Run struct {
 	Reason string `json:"reason,omitempty"`
 	// Cause says why a stopped run was stopped.
 	Cause string `json:"cause,omitempty"`
+	// Stopping is true from the moment someone asks a run to stop until the
+	// runtime says how it ended. A run that is stopping can start no further
+	// calls. It usually ends stopped, and ends completed or failed when its
+	// turn finished first: the request lost the race, and the run says so.
+	Stopping bool `json:"stopping,omitempty"`
+	// StopRequestedAt is when the run was first asked to stop.
+	StopRequestedAt time.Time `json:"stop_requested_at,omitzero"`
 	// Finishing is true for a run that has its answer and is held open by
 	// attached runs that are still working.
 	Finishing bool `json:"finishing,omitempty"`
@@ -223,10 +238,12 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 		return nil
 	}
 	// The edge names tags. Runs are indexed by run id, which mandatum derives
-	// from the tag id, so the links are translated once, here.
-	parent := ""
+	// from the tenant and the tag id together, so the links are translated
+	// once, here. A call never leaves its caller's tenant, so the tag's own
+	// tenant is the one its root and its parent were accepted under.
+	root, parent := runtime.RunID(tag.Tenant, edge.Root), ""
 	if edge.Parent != "" {
-		parent = runtime.RunID(edge.Parent)
+		parent = runtime.RunID(tag.Tenant, edge.Parent)
 	}
 	// Only the cron trigger and the platform's own "run now" set this key. A
 	// tag from anywhere else does not get to claim a schedule.
@@ -251,13 +268,13 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 			text = v
 		}
 	}
-	if root, ok := x.runs[runtime.RunID(edge.Root)]; ok && parent != "" {
-		thread, project, client = root.Thread, root.Project, root.Client
+	if top, ok := x.runs[root]; ok && parent != "" && top.Tenant == tag.Tenant {
+		thread, project, client = top.Thread, top.Project, top.Client
 	}
 	x.runs[runID] = &Run{
-		ID: runID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
+		ID: runID, TagID: tag.ID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
 		Text: text, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project, Client: client,
-		Root: runtime.RunID(edge.Root), Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
+		Root: root, Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
 		Lease: edge.Lease, Schedule: schedule,
 		Status: Accepted, CreatedAt: tag.At, UpdatedAt: tag.At,
 		tag: tag,
@@ -313,8 +330,29 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 		if body.Terminal {
 			r.Status = Failed
 		}
+	case envelope.KindStopped:
+		// The runtime says the run wrapped up on request. What it had said
+		// is the answer people saw, and is kept. A stopped run is not held
+		// open for what is attached to it: those are stopped with it.
+		stopped, _ := payload.Decode[payload.Stopped](e)
+		r.Answer, r.Status, r.Finishing, r.Reason = stopped.Text, Stopped, false, ""
+		r.Cause = causeOf(stopped.Reason, stopped.By)
+	}
+	if r.Status.Terminal() {
+		r.Stopping = false
 	}
 	return *r, r.Status.Terminal()
+}
+
+// causeOf says why a run stopped, from the request the runtime honoured.
+func causeOf(reason, by string) string {
+	switch {
+	case reason != "":
+		return reason
+	case by != "":
+		return "Stopped by " + by
+	}
+	return "Stopped"
 }
 
 // Active returns the ids of runs that have not ended.
@@ -352,7 +390,7 @@ func (x *Index) End(runID string, status Status, answer, failure string, at time
 	if status == Completed && x.hold(r) {
 		return Run{}, false
 	}
-	r.Status, r.UpdatedAt, r.Finishing, r.Reason = status, at, false, ""
+	r.Status, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = status, at, false, "", false
 	return *r, true
 }
 
@@ -389,21 +427,43 @@ func (x *Index) Settle(runID string, at time.Time) (Run, bool) {
 	if !ok || !r.Finishing || r.Status.Terminal() || x.openAttached(runID) > 0 {
 		return Run{}, false
 	}
-	r.Status, r.UpdatedAt, r.Finishing, r.Reason = Completed, at, false, ""
+	r.Status, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = Completed, at, false, "", false
 	return *r, true
 }
 
-// Stop ends a run from outside and records why. It returns the run and whether
-// this call is what ended it. A stopped run ignores whatever its own events
-// say afterwards: the work may finish, and the answer is not taken.
-func (x *Index) Stop(runID, cause string, at time.Time) (Run, bool) {
+// AskStop records that a run was asked to stop. From now on the run
+// is stopping: it can start no further calls, and the runtime decides how it
+// ends. It returns the run as it stands and false for a run that has ended or
+// that this index does not hold. Asking again keeps the first request, as the
+// runtime does.
+func (x *Index) AskStop(runID string, at time.Time) (Run, bool) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	r, ok := x.runs[runID]
 	if !ok || r.Status.Terminal() {
 		return Run{}, false
 	}
-	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason = Stopped, cause, at, false, ""
+	if !r.Stopping {
+		r.Stopping, r.StopRequestedAt, r.UpdatedAt = true, at, at
+	}
+	return *r, true
+}
+
+// Stop ends a run as stopped from a source other than its own events: one the
+// ledger says ended stopped before its final event was observed. answer, when given, is
+// what the run had said, and cause is why it stopped. It returns the run and
+// whether this call is what ended it.
+func (x *Index) Stop(runID, answer, cause string, at time.Time) (Run, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r, ok := x.runs[runID]
+	if !ok || r.Status.Terminal() {
+		return Run{}, false
+	}
+	if answer != "" {
+		r.Answer = answer
+	}
+	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = Stopped, causeOf(cause, ""), at, false, "", false
 	return *r, true
 }
 
@@ -447,18 +507,6 @@ func (x *Index) Get(tenant, runID string) (Run, error) {
 		return Run{}, ErrNotFound
 	}
 	return *r, nil
-}
-
-// Owner returns the tenant a run id belongs to, whoever asks. It answers only
-// whether an id is taken, for refusing a second tenant the same id.
-func (x *Index) Owner(runID string) (string, bool) {
-	x.mu.RLock()
-	defer x.mu.RUnlock()
-	r, ok := x.runs[runID]
-	if !ok {
-		return "", false
-	}
-	return r.Tenant, true
 }
 
 // List returns a tenant's runs, newest first, at most limit of them.

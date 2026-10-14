@@ -341,9 +341,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 		return
 	}
 	// A caller that retries sends the same key and joins the run it started.
-	id := "api-" + token()[:22]
+	id := "api-r-" + token()[:22]
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
-		id = "api-" + who.Subject + "-" + key
+		id = APITagID(who.Subject, key)
 	}
 	run, err := s.P.Converse(r.Context(), who.Tenant, platform.Turn{
 		ID: id, Agent: body.Agent, Text: body.Text, After: body.After, Project: body.Project,
@@ -471,12 +471,18 @@ func (s *Server) createCall(w http.ResponseWriter, r *http.Request, who auth.Pri
 	ok(w, http.StatusAccepted, run)
 }
 
-// stopRun stops a run and everything attached to it. Runs it delegated keep
-// going. Stopping a run that has ended changes nothing.
+// stopRun asks a run and everything attached to it to stop. Runs it delegated
+// keep going. It does not wait: a run that has not ended yet is answered 202
+// with stopping set, and its stream says how it ended. A run that has ended is
+// answered 200 as it is, so asking twice is safe.
 func (s *Server) stopRun(w http.ResponseWriter, r *http.Request, who auth.Principal) {
 	run, err := s.P.StopRun(r.Context(), who, r.PathValue("id"))
 	if err != nil {
 		s.problem(w, err)
+		return
+	}
+	if run.Stopping && !run.Status.Terminal() {
+		ok(w, http.StatusAccepted, run)
 		return
 	}
 	ok(w, http.StatusOK, run)
@@ -633,6 +639,10 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, memory.ErrSensitive):
 		fail(w, http.StatusBadRequest, "that note carries personal data, such as an email address or a card number, so it was not stored")
+	case errors.Is(err, platform.ErrStopUnavailable):
+		// The run was marked as asked, so it starts nothing more, but the
+		// work in flight was not interrupted.
+		fail(w, http.StatusServiceUnavailable, "this server cannot interrupt a run; it will start nothing more and ends when its current work does")
 	case errors.As(err, &tooBig):
 		fail(w, http.StatusRequestEntityTooLarge, "request is too large")
 	default:
@@ -689,4 +699,14 @@ func spa(dir string) http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// APITagID is the trigger id of a run a caller started with an idempotency
+// key: api-<length of subject>-<subject>-<key>. The subject's length in bytes
+// makes it unambiguous within a tenant, so subject "a" with key "b-c" and
+// subject "a-b" with key "c" name different runs. A run started without a key
+// is api-r-<random>, which no keyed id can be. The run's id is the runtime's,
+// derived from this and the tenant.
+func APITagID(subject, key string) string {
+	return "api-" + strconv.Itoa(len(subject)) + "-" + subject + "-" + key
 }

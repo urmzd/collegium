@@ -120,7 +120,7 @@ jobs:
         working-directory: collegium/apps/slack
         run: |
           pnpm test:server 2>&1 | tee server-test.log
-          grep -q '^ℹ pass 3$' server-test.log
+          grep -q '^ℹ pass 4$' server-test.log
           ! grep -q '# SKIP' server-test.log
 
   # Every Block Kit payload the Slack app's tests produce, through Slack's

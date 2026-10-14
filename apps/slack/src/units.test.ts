@@ -10,7 +10,7 @@ import {
   staticToken,
 } from "./collegium.ts";
 import { readConfig } from "./config.ts";
-import { eventKey, runId, sessionOf, threadKey } from "./keys.ts";
+import { eventKey, runId, sessionOf, tagId, threadKey } from "./keys.ts";
 
 const session = { team: "T01ABCDEF", channel: "C01ABCDEF", threadTs: "1700000000.000100" };
 
@@ -18,13 +18,24 @@ test("a thread names its conversation, and the name leads back to the thread", (
   const key = threadKey(session);
   assert.equal(key, "slack-T01ABCDEF-C01ABCDEF-1700000000-000100");
   assert.match(key, /^[A-Za-z0-9_-]+$/, "a run id is a bus topic segment");
-  assert.deepEqual(sessionOf("svc-slack", runId("svc-slack", key)), session);
+  assert.deepEqual(sessionOf("svc-slack", tagId("svc-slack", key)), session);
+  // The run id is the runtime's: the workspace and the trigger id, hashed as
+  // mandatum's runtime.RunID does. These match the Go implementation.
+  assert.equal(runId("acme", "svc-slack", key), "rdd6a9402cbeb5e28153f6bf63050792c");
+  assert.match(runId("acme", "svc-slack", key), /^r[0-9a-f]{32}$/);
+  assert.notEqual(runId("acme", "svc-slack", key), runId("globex", "svc-slack", key));
 });
 
 test("a conversation this app did not name is not taken for one of its threads", () => {
   assert.equal(sessionOf("svc-slack", "api-dana-01J8ZK"), null);
-  assert.equal(sessionOf("svc-slack", runId("someone-else", threadKey(session))), null);
-  assert.equal(sessionOf("svc-slack", "api-svc-slack-slack-T01ABCDEF-C01ABCDEF-17-1-extra"), null);
+  assert.equal(sessionOf("svc-slack", tagId("someone-else", threadKey(session))), null);
+  assert.equal(
+    sessionOf("svc-slack", "api-9-svc-slack-slack-T01ABCDEF-C01ABCDEF-17-1-extra"),
+    null,
+  );
+  // The subject's length keeps two callers apart even when their ids run together.
+  assert.notEqual(tagId("a", "b-c"), tagId("a-b", "c"));
+  assert.equal(tagId("svc-slack", "k"), "api-9-svc-slack-k");
 });
 
 test("an event's key is its message, or its message and the trigger that asked about it", () => {

@@ -63,6 +63,8 @@ export interface AppOptions {
   botUser: string;
   /** Who collegium says this app is. Run ids are made from it. */
   subject: string;
+  /** The workspace collegium says this app is in. Run ids are made from it too. */
+  tenant: string;
   operators?: string[];
   /** The client record this app is, when it is one. */
   clientId?: string;
@@ -77,6 +79,12 @@ export interface AppOptions {
   stallMs?: number;
   /** The longest wait between two reads of a quiet run's record. */
   slowPollMs?: number;
+  /**
+   * How long the stop button waits for a run this process is not following to
+   * end before it settles the session anyway. The runtime gives a turn ten
+   * seconds to wrap up by default.
+   */
+  stopWaitMs?: number;
   log?: (line: string) => void;
 }
 
@@ -107,7 +115,7 @@ type Item =
 /** A run being followed right now. */
 interface Live {
   run?: Run;
-  /** Stop was pressed. Nothing more of the run is rendered. */
+  /** Stop was pressed. The run is followed until collegium says how it ended. */
   stopped: boolean;
   wake(item: Item): void;
 }
@@ -270,10 +278,16 @@ export class App {
   private readonly pollMs: number;
   private readonly stallMs: number;
   private readonly slowPollMs: number;
+  private readonly stopWaitMs: number;
   /** Ends every slow follow on shutdown. */
   private readonly closing = new AbortController();
-  /** Runs whose stop was already confirmed in their thread. */
+  /**
+   * Runs whose end has been posted in their thread, by the slow follow or by
+   * the stop button. Whichever posts first claims it, so an end is posted once.
+   */
   private readonly confirmed = new Recent<true>(10_000);
+  /** Runs followed slowly right now, and how to make each one look again at once. */
+  private readonly slow = new Map<string, () => void>();
 
   constructor(
     private readonly slack: SlackApi,
@@ -284,6 +298,7 @@ export class App {
     this.pollMs = opts.pollMs ?? 5_000;
     this.stallMs = opts.stallMs ?? 15 * 60_000;
     this.slowPollMs = opts.slowPollMs ?? 3 * 60_000;
+    this.stopWaitMs = opts.stopWaitMs ?? 30_000;
   }
 
   private log(line: string) {
@@ -480,11 +495,14 @@ export class App {
    */
   private async place(job: Job): Promise<{ key: string; after?: string } | "duplicate"> {
     const first = threadKey(job.session);
-    const turns = (await this.collegium.getThread(runId(this.opts.subject, first)))?.turns;
+    const turns = (
+      await this.collegium.getThread(runId(this.opts.tenant, this.opts.subject, first))
+    )?.turns;
     // The first run in a thread is keyed by the thread, which is what names the conversation.
     if (!turns || turns.length === 0) return { key: first };
     if (job.key === first) return "duplicate";
-    if (turns.some((t) => t.id === runId(this.opts.subject, job.key))) return "duplicate";
+    if (turns.some((t) => t.id === runId(this.opts.tenant, this.opts.subject, job.key)))
+      return "duplicate";
     if (job.again) return { key: job.key, after: job.again.after };
     const latest = turns
       .filter((t) => !t.parent)
@@ -571,7 +589,7 @@ export class App {
     this.log(`run ${run.id} for ${job.user} in ${job.session.channel}, answered by ${run.agent}`);
     const following = follow(run, { href: this.href });
     const abort = new AbortController();
-    const pump = this.pump(run, following, presenter, live, items, abort.signal);
+    const pump = this.pump(run, following, presenter, items, abort.signal);
     let turn: Turn;
     let stalled: boolean;
     try {
@@ -599,30 +617,59 @@ export class App {
    */
   private async later(run: Run, following: Follower, presenter: Presenter): Promise<void> {
     let wait = this.pollMs;
-    while (!this.closing.signal.aborted) {
-      await sleep(wait, this.closing.signal);
-      wait = Math.min(wait * 2, this.slowPollMs);
-      if (this.closing.signal.aborted) return;
-      const record = await this.collegium.getRun(run.id).catch(() => null);
-      if (!record || !terminal(record.status)) continue;
-      if (this.confirmed.has(run.id)) return;
-      following.settle(record);
-      await presenter.conclude(following.turn);
-      this.log(`run ${run.id} ended ${following.turn.status}, after it went quiet`);
-      return;
+    try {
+      while (!this.closing.signal.aborted) {
+        const nudged = await this.nap(run.id, wait);
+        // A stop was pressed: the run will end soon, so it is read often again.
+        wait = nudged ? Math.min(this.pollMs, 500) : Math.min(wait * 2, this.slowPollMs);
+        if (this.closing.signal.aborted) return;
+        const record = await this.collegium.getRun(run.id).catch(() => null);
+        if (!record || !terminal(record.status)) continue;
+        if (!this.claim(run.id)) return;
+        following.settle(record);
+        await presenter.conclude(following.turn);
+        this.log(`run ${run.id} ended ${following.turn.status}, after it went quiet`);
+        return;
+      }
+    } finally {
+      this.slow.delete(run.id);
     }
+  }
+
+  /** Wait, until the time is up, the app closes, or the run is nudged. Reports whether it was nudged. */
+  private nap(id: string, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const ctl = new AbortController();
+      const stopWaiting = () => ctl.abort();
+      this.closing.signal.addEventListener("abort", stopWaiting, { once: true });
+      let nudged = false;
+      this.slow.set(id, () => {
+        nudged = true;
+        ctl.abort();
+      });
+      sleep(ms, ctl.signal).then(() => {
+        this.closing.signal.removeEventListener("abort", stopWaiting);
+        resolve(nudged);
+      });
+    });
+  }
+
+  /** Claim the posting of a run's end. False when it has been posted already. */
+  private claim(id: string): boolean {
+    if (this.confirmed.has(id)) return false;
+    this.confirmed.set(id, true);
+    return true;
   }
 
   /**
    * Fold a run's events into its turn and keep Slack in step, until the turn
    * ends. The record is read beside the stream, because the ledger decides
-   * whether a run is over: a stop from the console publishes no final event.
+   * whether a run is over, and a stream can miss the event that says so.
    */
   private async pump(
     run: Run,
     following: Follower,
     presenter: Presenter,
-    live: Live,
     items: Mailbox<Item>,
     signal: AbortSignal,
   ): Promise<{ turn: Turn; stalled: boolean }> {
@@ -654,15 +701,23 @@ export class App {
     for (;;) {
       const item = await items.next();
       if (item.type === "stopped") {
-        if (item.run && terminal(item.run.status)) following.settle(item.run);
-        // Collegium did not confirm: the turn stops here, and says it may still finish elsewhere.
-        if (!ended(following.turn)) {
-          following.push({ type: "turn.stopped" }, { type: "stop.updated", stop: "failed" });
+        if (item.run && terminal(item.run.status)) {
+          following.settle(item.run);
+          return { turn: following.turn, stalled: false };
         }
-        return { turn: following.turn, stalled: false };
+        if (!item.run) {
+          // Collegium did not take the stop: the turn stops here, and says it may still finish elsewhere.
+          if (!ended(following.turn)) {
+            following.push({ type: "turn.stopped" }, { type: "stop.updated", stop: "failed" });
+          }
+          return { turn: following.turn, stalled: false };
+        }
+        // Collegium took it and the run is stopping. It is followed on until
+        // lifecycle.stopped, or its record, says how it ended: stopped with
+        // what it had said, or completed if it finished first.
+        following.push({ type: "stop.updated", stop: "acknowledged" });
+        dirty = true;
       }
-      // Stop was pressed: nothing more of this run is rendered while collegium is told.
-      if (live.stopped) continue;
       if (item.type === "record" && item.run.updated_at !== seen) {
         seen = item.run.updated_at;
         progress = Date.now();
@@ -672,10 +727,10 @@ export class App {
         const before = following.turn;
         dirty = following.apply(item.event) !== before || dirty;
       } else if (item.type === "record" && terminal(item.run.status)) {
-        // A stopped run publishes nothing more. An ended one is given one more read
-        // for its final event to arrive, so the streamed answer is not cut short.
+        // An ended run is given one more read for its final event to arrive, so
+        // the streamed answer is not cut short. The record carries the answer too.
         over += 1;
-        if (item.run.status === "stopped" || over > 1) following.settle(item.run);
+        if (over > 1) following.settle(item.run);
       } else if (item.type === "record" && Date.now() - progress > this.stallMs) {
         // Nothing has been heard for a long time. That is not a failure: a long tool
         // call, or a run waiting on other work, says nothing until it moves. The
@@ -717,7 +772,7 @@ export class App {
     if (live) live.stopped = true;
     const ids = new Set<string>();
     if (following) ids.add(following.id);
-    const conversation = runId(this.opts.subject, threadKey(session));
+    const conversation = runId(this.opts.tenant, this.opts.subject, threadKey(session));
     const turns = (await this.collegium.getThread(conversation).catch(() => null))?.turns;
     for (const t of turns ?? []) if (!t.parent && !terminal(t.status)) ids.add(t.id);
 
@@ -733,23 +788,95 @@ export class App {
       // The turn in flight confirms in its own message and settles the session.
       live.wake({ type: "stopped", run: stopped.find((r) => r.id === following.id) });
     }
-    // Runs this process is not following: confirm each in the thread.
-    for (const run of stopped) {
-      if (run.id === following?.id || run.status !== "stopped") continue;
-      this.confirmed.set(run.id, true);
-      const turn = follow(run, { href: this.href }).settle(run);
-      await this.postView(session, renderToSlack(<TurnView turn={turn} />)).catch((e: Error) =>
-        this.log(`stop not confirmed in the thread: ${e.message}`),
-      );
+    // Runs this process is not following live. One it follows slowly is
+    // looked at again at once, and its slow follow posts its end, stopped or
+    // not. Any other is read until it ends and its end is posted here, in
+    // Slack's order: the end, then the status. One that has not ended by
+    // stopWaitMs is left to a slow follow, and the session stays working
+    // until it has.
+    const deadline = Date.now() + this.stopWaitMs;
+    const ends = await Promise.all(
+      stopped
+        .filter((run) => run.id !== following?.id)
+        .map((run) => {
+          const nudge = this.slow.get(run.id);
+          if (nudge) {
+            nudge();
+            return Promise.resolve(false);
+          }
+          return this.endOf(session, run, deadline);
+        }),
+    );
+    if (!live && ends.every(Boolean)) await this.settleSession(session);
+  }
+
+  /** Set a session's status to active: nothing is working in it any more. */
+  private async settleSession(session: Session): Promise<void> {
+    await this.slack
+      .call("agents.sessions.setStatus", {
+        channel_id: session.channel,
+        thread_ts: session.threadTs,
+        status: "active",
+      })
+      .catch((e: Error) => this.log(`session status skipped: ${e.message}`));
+  }
+
+  /**
+   * Post a run's end in its thread once: what it had said, marked stopped, or
+   * its answer when it finished before the stop reached it.
+   */
+  private async postEnd(session: Session, run: Run): Promise<void> {
+    if (!this.claim(run.id)) return;
+    if (run.status !== "stopped")
+      this.log(`run ${run.id} ended ${run.status} before the stop reached it`);
+    const turn = follow(run, { href: this.href }).settle(run);
+    await this.postView(session, renderToSlack(<TurnView turn={turn} />)).catch((e: Error) =>
+      this.log(`the end of run ${run.id} was not posted: ${e.message}`),
+    );
+  }
+
+  /**
+   * Read a run that was asked to stop until it ends, and post its end. Reports
+   * whether it ended by the deadline. One that has not is followed on slowly,
+   * and its end is posted, and the session settled, when it comes.
+   */
+  private async endOf(session: Session, run: Run, deadline: number): Promise<boolean> {
+    // A stop takes seconds, not minutes, so it is read more often than a quiet run.
+    let wait = Math.min(this.pollMs, 500);
+    let record: Run | null = run;
+    while (
+      !(record && terminal(record.status)) &&
+      !this.closing.signal.aborted &&
+      Date.now() < deadline
+    ) {
+      await sleep(Math.min(wait, Math.max(deadline - Date.now(), 0)), this.closing.signal);
+      wait = Math.min(wait * 2, 5_000);
+      record = await this.collegium.getRun(run.id).catch(() => null);
     }
-    if (!live) {
-      await this.slack
-        .call("agents.sessions.setStatus", {
-          channel_id: session.channel,
-          thread_ts: session.threadTs,
-          status: "active",
-        })
-        .catch((e: Error) => this.log(`session status skipped: ${e.message}`));
+    if (record && terminal(record.status)) {
+      await this.postEnd(session, record);
+      return true;
+    }
+    if (this.closing.signal.aborted) return false;
+    this.log(
+      `run ${run.id} was asked to stop and had not ended after ${this.stopWaitMs}ms; following it slowly`,
+    );
+    this.track(this.endLater(session, run));
+    return false;
+  }
+
+  /** Follow a stopping run by its record, less and less often, then post its end and settle the session. */
+  private async endLater(session: Session, run: Run): Promise<void> {
+    let wait = Math.min(this.pollMs, 500);
+    while (!this.closing.signal.aborted) {
+      await sleep(wait, this.closing.signal);
+      wait = Math.min(wait * 2, this.slowPollMs);
+      if (this.closing.signal.aborted) return;
+      const record = await this.collegium.getRun(run.id).catch(() => null);
+      if (!record || !terminal(record.status)) continue;
+      await this.postEnd(session, record);
+      if (!this.threads.get(sessionName(session))?.live) await this.settleSession(session);
+      return;
     }
   }
 
@@ -806,7 +933,7 @@ export class App {
     user: string,
     clickedTs?: string,
   ): Promise<"started" | "not-yours" | "elsewhere" | "not-routed"> {
-    const session = sessionOf(this.opts.subject, run.thread);
+    const session = await this.sessionOfRun(run);
     if (!session || session.team !== this.opts.team) return "elsewhere";
     const owner = this.requesters.get(run.id);
     const operator = (this.opts.operators ?? []).includes(user);
@@ -932,6 +1059,13 @@ export class App {
     }
   }
 
+  /** The Slack thread a run's conversation lives in, read from its first run's trigger id. */
+  private async sessionOfRun(run: Run): Promise<Session | null> {
+    const first =
+      run.id === run.thread ? run : await this.collegium.getRun(run.thread).catch(() => null);
+    return first?.tag_id ? sessionOf(this.opts.subject, first.tag_id) : null;
+  }
+
   /** An inbox message changed. One about a run in this app's thread is shown there, once, and kept current. */
   private async onNotice(notice: InboxNotice): Promise<void> {
     const message = await this.collegium.inbox.get(notice.id).catch(() => null);
@@ -943,7 +1077,7 @@ export class App {
     if (message.kind === "failure" || message.parts.some((p) => p.type === "failure")) return;
     const about = message.about.find((s) => s.kind === "run");
     const run = about ? await this.collegium.getRun(about.id) : null;
-    const session = run ? sessionOf(this.opts.subject, run.thread) : null;
+    const session = run ? await this.sessionOfRun(run) : null;
     if (!session || session.team !== this.opts.team) return;
     const ts = await this.postView(
       session,

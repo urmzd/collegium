@@ -92,9 +92,12 @@ button still finds the run.
 
 ## What survives a restart
 
-Nothing that matters is kept here. A Slack thread's conversation is
-`api-<subject>-slack-<team>-<channel>-<thread ts>`, so it is asked of
-collegium, not remembered. A message's run is keyed by its own timestamp, so a
+Nothing that matters is kept here. A Slack thread's conversation is the run
+started with the key `slack-<team>-<channel>-<thread ts>`, whose id the app
+computes the way the runtime does, from the workspace and the trigger id
+`api-<length of subject>-<subject>-<key>`, so it is asked of collegium, not remembered. Going the
+other way, from a run to its thread, reads the `tag_id` of the conversation's
+first run. A message's run is keyed by its own timestamp, so a
 Slack redelivery joins the run it started, and the app asks collegium before
 starting it. The stop button asks collegium which runs in the thread are still
 going.

@@ -64,23 +64,23 @@ export function ended(turn: Turn): boolean {
 /** The events that take a turn to where its run's record says it ended. None while the run is still going, or once the turn agrees. */
 export function settled(turn: Turn, run: Run): TurnEvent[] {
   if (ended(turn)) return [];
+  // What the stream did not deliver is the rest of the record's answer: the
+  // whole answer of a completed run, the partial answer of a stopped one.
+  const rest: TurnEvent[] =
+    run.answer?.startsWith(turn.text) && run.answer.length > turn.text.length
+      ? [{ type: "text.delta", text: run.answer.slice(turn.text.length) }]
+      : [];
   switch (run.status) {
-    case "completed": {
-      const out: TurnEvent[] = [];
-      // What the stream did not deliver is the rest of the record's answer.
-      if (run.answer?.startsWith(turn.text) && run.answer.length > turn.text.length) {
-        out.push({ type: "text.delta", text: run.answer.slice(turn.text.length) });
-      }
-      out.push({ type: "turn.completed" });
-      return out;
-    }
+    case "completed":
+      return [...rest, { type: "turn.completed" }];
     case "failed": {
       const failure = turnOf(run).failure;
       return failure ? [{ type: "turn.failed", failure }] : [];
     }
     case "stopped":
-      // The platform has confirmed the stop: the run can start nothing more.
-      return [{ type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" }];
+      // The platform has confirmed the stop: the run can start nothing more,
+      // and what it had said is its partial answer.
+      return [...rest, { type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" }];
     default:
       return [];
   }

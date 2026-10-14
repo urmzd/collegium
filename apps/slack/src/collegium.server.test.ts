@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { follow } from "@collegium/adapter";
+import { defaultCopy } from "@vultus/components";
 import { App } from "./app.tsx";
 import { type Collegium, httpCollegium, staticToken } from "./collegium.ts";
 import { CHANNEL, FakeSlack, mention, settle, stopPressed, TEAM, USER } from "./harness.ts";
@@ -100,7 +101,7 @@ test("the stand-in client against the real routes", { skip: !enabled }, async ()
   // The run id is the caller and the key, and the first run names its conversation.
   const key = threadKey({ team: TEAM, channel: CHANNEL, threadTs: "1700000000.000100" });
   const run = await c.createRun({ agent: "lead", text: "hello" }, key);
-  assert.equal(run.id, runId(me.subject, key));
+  assert.equal(run.id, runId(me.tenant, me.subject, key));
   assert.equal(run.thread, run.id);
   const again = await c.createRun({ agent: "lead", text: "hello" }, key);
   assert.equal(again.id, run.id, "the same key joins the run it started");
@@ -147,6 +148,7 @@ test(
       team: TEAM,
       botUser: "U00BOTBOT",
       subject: me.subject,
+      tenant: me.tenant,
       defaultAgent: "lead",
       flushMs: 0,
       pollMs: 200,
@@ -160,7 +162,11 @@ test(
     await app.handle(mention("what can you do?", ts));
     await waitFor(() => slack.methods.includes("chat.stopStream"));
     await app.idle();
-    const id = runId(me.subject, threadKey({ team: TEAM, channel: CHANNEL, threadTs: ts }));
+    const id = runId(
+      me.tenant,
+      me.subject,
+      threadKey({ team: TEAM, channel: CHANNEL, threadTs: ts }),
+    );
     assert.equal((await c.getRun(id))?.status, "completed");
     assert.match(slack.streamed, /offline provider/);
     assert.deepEqual(slack.statuses, ["processing", "active"]);
@@ -171,6 +177,7 @@ test(
       team: TEAM,
       botUser: "U00BOTBOT",
       subject: me.subject,
+      tenant: me.tenant,
       defaultAgent: "lead",
       flushMs: 0,
       pollMs: 200,
@@ -263,5 +270,68 @@ test(
         ?.outcome,
       "acknowledge",
     );
+  },
+);
+
+test(
+  "a stop pressed while a run is in flight is acknowledged, then confirmed when the run ends stopped",
+  { skip: !enabled, timeout: 120_000 },
+  async () => {
+    const c = client();
+    const me = (await c.getMe()).principal;
+    // A local model server that is not there keeps the model call retrying, so the run is in flight.
+    const made = await fetch(`${base}/api/agents`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        name: "stalling",
+        description: "never answers",
+        model: "no-such-model",
+        provider: "ollama",
+        system_prompt: "x",
+      }),
+    });
+    assert.equal(made.status, 201);
+    const slack = new FakeSlack();
+    const app = new App(slack, c, {
+      team: TEAM,
+      botUser: "U00BOTBOT",
+      subject: me.subject,
+      tenant: me.tenant,
+      defaultAgent: "stalling",
+      flushMs: 0,
+      pollMs: 200,
+    });
+    const ts = "1700002000.000100";
+    const id = runId(
+      me.tenant,
+      me.subject,
+      threadKey({ team: TEAM, channel: CHANNEL, threadTs: ts }),
+    );
+    const handled = app.handle(mention("are you there?", ts));
+    let record = await c.getRun(id);
+    for (let i = 0; i < 200 && record?.status !== "running"; i++) {
+      await new Promise((r) => setTimeout(r, 25));
+      record = await c.getRun(id);
+    }
+    assert.equal(record?.status, "running", "the run is in flight when stop is pressed");
+
+    // The route answers 202 and the run is stopping; the app follows it to the end.
+    await app.handle(stopPressed(ts));
+    await handled;
+    await app.idle();
+    for (let i = 0; i < 400 && record?.status !== "stopped"; i++) {
+      await new Promise((r) => setTimeout(r, 50));
+      record = await c.getRun(id);
+    }
+    assert.equal(record?.status, "stopped");
+    assert.equal(record?.stopping, undefined);
+    const ended = JSON.stringify(slack.of("chat.stopStream").at(-1) ?? {});
+    assert.ok(
+      !ended.includes("may still finish elsewhere"),
+      "the stop was confirmed, not reported as unconfirmed",
+    );
+    assert.ok(ended.includes(defaultCopy.stopPhase.confirmed), "the stop is shown as confirmed");
+    assert.equal(slack.statuses.at(-1), "active");
   },
 );

@@ -13,6 +13,7 @@ import (
 	"github.com/urmzd/mandatum/pkg/connector"
 	"github.com/urmzd/mandatum/pkg/connectors/mention"
 	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/runtime"
 )
 
 func workflowAction(t *testing.T, c *github.Connector, name string) connector.Action {
@@ -39,7 +40,7 @@ func TestCheckRequestRerunsOnlyTheAuthorizedAttemptAndPollsRealResults(t *testin
 	if err := fake.SeedWorkflow(ref, initial); err != nil {
 		t.Fatal(err)
 	}
-	c, tags := start(t, github.Config{API: fake, Mutations: true, MutationSecret: []byte("a stable signing secret for tests"), Agents: mention.NewNames("reviewer")})
+	c, tags := start(t, github.Config{API: fake, Mutations: true, MutationSecret: []byte("a stable signing secret for tests"), Tenant: testTenant, Agents: mention.NewNames("reviewer")})
 	raw := `{"action":"created","repository":{"name":"repo","owner":{"login":"acme"}},"sender":{"login":"human","type":"User"},"issue":{"number":42,"pull_request":{"url":"https://api.github.com/repos/acme/repo/pulls/42"}},"comment":{"id":91,"body":"@reviewer /check 123"}}`
 	w := httptest.NewRecorder()
 	c.ServeHTTP(w, deliver(t, "issue_comment", "check-request-1", raw))
@@ -52,7 +53,7 @@ func TestCheckRequestRerunsOnlyTheAuthorizedAttemptAndPollsRealResults(t *testin
 	default:
 		t.Fatal("missing tag")
 	}
-	ctx := connector.WithRunID(context.Background(), tag.ID)
+	ctx := connector.WithRunID(context.Background(), runtime.RunID(testTenant, tag.ID))
 	execute := workflowAction(t, c, "github_run_checks")
 	result, err := execute.Invoke(ctx, tag.Source, json.RawMessage(`{}`))
 	if err != nil || !strings.Contains(result.Summary, "Execution has not been verified") {

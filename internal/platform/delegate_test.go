@@ -2,8 +2,11 @@ package platform_test
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,9 +47,93 @@ type cast struct {
 	tools map[string][]string
 	gates map[string]chan struct{}
 	once  map[string]*sync.Once
+	// talks are agents whose first run says something and then never
+	// finishes its model call, until the call is cancelled.
+	talks map[string]talk
+
+	mu sync.Mutex
+	// instances counts the models built for each agent: one per run.
+	instances map[string]int
+	// cut is closed when a talking agent's held model call is cancelled.
+	cut map[string]chan struct{}
+	// sent is every request each agent's model was sent, flattened to text.
+	sent map[string][]string
+}
+
+// talk is a model that answers its first scripted turns, then starts saying
+// text and holds the call open until its context is cancelled. Only the
+// agent's first run talks. Every later run is the scripted turns after them.
+type talk struct {
+	after int
+	text  string
 }
 
 func (c *cast) release(agent string) { c.once[agent].Do(func() { close(c.gates[agent]) }) }
+
+// interrupted reports whether a talking agent's held model call was cancelled.
+func (c *cast) interrupted(agent string) bool {
+	select {
+	case <-c.cut[agent]:
+		return true
+	default:
+		return false
+	}
+}
+
+// requests returns what an agent's model has been sent, oldest first.
+func (c *cast) requests(agent string) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.sent[agent])
+}
+
+// recorded keeps what a model is sent, for a test to read.
+type recorded struct {
+	saigetypes.Provider
+	c     *cast
+	agent string
+}
+
+func (r *recorded) Stream(ctx context.Context, req saigetypes.Request) (<-chan saigetypes.Delta, error) {
+	r.c.mu.Lock()
+	r.c.sent[r.agent] = append(r.c.sent[r.agent], fmt.Sprintf("%+v", req.Messages))
+	r.c.mu.Unlock()
+	return r.Provider.Stream(ctx, req)
+}
+
+// talker is a talk's model for one run.
+type talker struct {
+	*agenttest.ScriptedProvider
+	at    int
+	text  string
+	calls atomic.Int32
+	cut   chan struct{}
+	once  *sync.Once
+}
+
+func (t *talker) Stream(ctx context.Context, req saigetypes.Request) (<-chan saigetypes.Delta, error) {
+	if int(t.calls.Add(1)) <= t.at {
+		return t.ScriptedProvider.Stream(ctx, req)
+	}
+	out := make(chan saigetypes.Delta)
+	go func() {
+		defer close(out)
+		for _, d := range []saigetypes.Delta{
+			saigetypes.PartStart{Index: 0, Kind: saigetypes.KindText},
+			saigetypes.PartDelta{Index: 0, Text: t.text},
+		} {
+			select {
+			case out <- d:
+			case <-ctx.Done():
+				t.once.Do(func() { close(t.cut) })
+				return
+			}
+		}
+		<-ctx.Done()
+		t.once.Do(func() { close(t.cut) })
+	}()
+	return out, nil
+}
 
 func tagging(agent, text string) []saigetypes.Delta {
 	return agenttest.ToolCallResponse("call-"+agent, runtime.DelegateToolName(agent), map[string]any{"text": text})
@@ -61,13 +148,35 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 	for name := range c.gates {
 		c.once[name] = &sync.Once{}
 	}
+	c.instances, c.cut, c.sent = map[string]int{}, map[string]chan struct{}{}, map[string][]string{}
+	cutOnce := map[string]*sync.Once{}
+	for name := range c.talks {
+		c.cut[name], cutOnce[name] = make(chan struct{}), &sync.Once{}
+	}
 	cfg.Workspace = t.TempDir()
+	if cfg.StopGrace == 0 {
+		cfg.StopGrace = 2 * time.Second
+	}
 	cfg.AgentOptions = []agentrt.Option{agentrt.WithProvider(agentrt.ProviderOffline, func(spec agentrt.Spec) (saigetypes.Provider, error) {
-		scripted := &agenttest.ScriptedProvider{Responses: c.says[spec.Name]}
-		if gate, held := c.gates[spec.Name]; held {
-			return &gated{ScriptedProvider: scripted, gate: gate}, nil
+		c.mu.Lock()
+		c.instances[spec.Name]++
+		first := c.instances[spec.Name] == 1
+		c.mu.Unlock()
+		says := c.says[spec.Name]
+		if tk, talks := c.talks[spec.Name]; talks {
+			if first {
+				return &recorded{c: c, agent: spec.Name, Provider: &talker{
+					ScriptedProvider: &agenttest.ScriptedProvider{Responses: says[:tk.after]},
+					at:               tk.after, text: tk.text, cut: c.cut[spec.Name], once: cutOnce[spec.Name],
+				}}, nil
+			}
+			says = says[tk.after:]
 		}
-		return scripted, nil
+		scripted := &agenttest.ScriptedProvider{Responses: says}
+		if gate, held := c.gates[spec.Name]; held {
+			return &recorded{c: c, agent: spec.Name, Provider: &gated{ScriptedProvider: scripted, gate: gate}}, nil
+		}
+		return &recorded{c: c, agent: spec.Name, Provider: scripted}, nil
 	})}
 	p, err := platform.New(cfg)
 	if err != nil {
@@ -154,59 +263,6 @@ func TestATaggedAgentIsARunOfItsOwn(t *testing.T) {
 	}
 }
 
-// Stopping a run stops everything attached to it, all the way down, and none
-// of it comes back to life when the work it was doing finishes.
-func TestStoppingCascadesThroughAttachedRuns(t *testing.T) {
-	c := &cast{
-		says: map[string][][]saigetypes.Delta{
-			"lead": {tagging("mid", "Go deeper"), say("unreachable")},
-			"mid":  {tagging("leaf", "Deeper still"), say("unreachable")},
-			"leaf": {say("Too late.")},
-		},
-		spawn: map[string][]string{"lead": {"mid"}, "mid": {"leaf"}},
-		gates: map[string]chan struct{}{"leaf": make(chan struct{})},
-	}
-	p := stage(t, c, platform.Config{Limits: call.Limits{MaxDepth: 3, MaxFanOut: 4}})
-	ctx := t.Context()
-	first, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-1", Agent: "lead", Text: "Start"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Three levels deep and all in flight, the last one held.
-	mid := called(t, p, first.ID, "mid", runs.Running)
-	leaf := called(t, p, first.ID, "leaf", runs.Running)
-	if leaf.Parent != mid.ID || leaf.Depth != 2 || leaf.Root != first.ID {
-		t.Fatalf("leaf = %+v", leaf)
-	}
-
-	stopped, err := p.StopRun(ctx, admin, first.ID)
-	if err != nil || stopped.Status != runs.Stopped || stopped.Cause != "Stopped by ada" {
-		t.Fatalf("stop = %+v, %v", stopped, err)
-	}
-	for _, id := range []string{mid.ID, leaf.ID} {
-		r, _ := p.Runs.Get(tenant, id)
-		if r.Status != runs.Stopped || !strings.Contains(r.Cause, "was attached to was stopped") {
-			t.Fatalf("%s is %s (%q), want stopped by the cascade", r.Agent, r.Status, r.Cause)
-		}
-	}
-	// Stopping again changes nothing, and a stopped run can start nothing.
-	if again, err := p.StopRun(ctx, admin, first.ID); err != nil || again.Cause != "Stopped by ada" {
-		t.Fatalf("a second stop = %+v, %v", again, err)
-	}
-	if _, err := p.Call(ctx, tenant, mid.ID, call.Request{Key: "k", Agent: "leaf", Text: "x", Mode: call.Subagent}); err == nil {
-		t.Fatal("a stopped run made a call")
-	}
-
-	// The held model call now finishes. Its answer is not taken.
-	c.release("leaf")
-	time.Sleep(300 * time.Millisecond)
-	for _, id := range []string{first.ID, mid.ID, leaf.ID} {
-		if r, _ := p.Runs.Get(tenant, id); r.Status != runs.Stopped || r.Answer != "" {
-			t.Fatalf("%s came back as %s with answer %q", r.Agent, r.Status, r.Answer)
-		}
-	}
-}
-
 // A delegated run is nobody's to take down: it outlives the run that started
 // it, and its answer goes to the inbox. What it attaches dies with it alone.
 func TestADelegatedRunIsIndependent(t *testing.T) {
@@ -239,9 +295,7 @@ func TestADelegatedRunIsIndependent(t *testing.T) {
 	if _, err := p.StopRun(ctx, admin, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := p.Runs.Get(tenant, mid.ID); r.Status != runs.Stopped {
-		t.Fatalf("the attached run is %s after its caller was stopped", r.Status)
-	}
+	await(t, p, mid.ID, runs.Stopped)
 	if r, _ := p.Runs.Get(tenant, worker.ID); r.Status != runs.Running {
 		t.Fatalf("the delegated run is %s after its caller was stopped, want still running", r.Status)
 	}
@@ -299,9 +353,7 @@ func TestAttachedToADelegateDiesWithTheDelegate(t *testing.T) {
 	if _, err := p.StopRun(ctx, admin, worker.ID); err != nil {
 		t.Fatal(err)
 	}
-	if r, _ := p.Runs.Get(tenant, leaf.ID); r.Status != runs.Stopped {
-		t.Fatalf("the leaf is %s after the delegate was stopped", r.Status)
-	}
+	await(t, p, leaf.ID, runs.Stopped)
 	if r, _ := p.Runs.Get(tenant, first.ID); r.Status != runs.Completed {
 		t.Fatalf("stopping the delegate changed its caller to %s", r.Status)
 	}

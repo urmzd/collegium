@@ -48,6 +48,7 @@ async function main() {
     team: config.slack.team,
     botUser: who.user_id,
     subject: me.subject,
+    tenant: me.tenant,
     operators: config.slack.operators,
     clientId: config.collegium.client,
     defaultAgent: config.collegium.defaultAgent,

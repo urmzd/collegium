@@ -10,24 +10,31 @@ import (
 	"github.com/urmzd/mandatum/pkg/envelope"
 )
 
-// StopFunc stops one run at the request of the Slack user who pressed stop.
-// Stopping a run that has already ended is not an error. It is an alias so a
-// composition root can ask for the capability without importing this package.
+// StopFunc asks one run to stop at the request of the Slack user who pressed
+// stop. Asking a run that has already ended is not an error. It is an alias so
+// a composition root can ask for the capability without importing this
+// package.
 type StopFunc = func(ctx context.Context, runID, slackUser string) error
 
-// maxRuns bounds how many open and stopped runs the connector remembers.
-// Forgetting an open run costs its stop button; forgetting a stopped one lets
-// the rest of its answer through.
+// maxRuns bounds how many open and stopping runs the connector remembers.
+// Forgetting an open run costs its stop button; forgetting a stopping one lets
+// a late lifecycle event set the session back to working until the run ends.
 const maxRuns = 4096
 
 // live maps Slack sessions to the runs answering in them, which is what turns
 // "stop this session" into "stop these runs". It is in memory, like the sink's
 // message handles: a restart forgets which runs a session holds.
+//
+// A run that was asked to stop moves from open to asked. It is no longer
+// stopped again by a second press, and until it ends nothing it publishes may
+// set the session back to working. Its events are still delivered: the
+// runtime ends it with lifecycle.stopped, which the sink renders as stopped
+// under what the agent had said.
 type live struct {
-	mu      sync.Mutex
-	open    map[string]session
-	stopped map[string]bool
-	stop    StopFunc
+	mu    sync.Mutex
+	open  map[string]session
+	asked map[string]bool
+	stop  StopFunc
 }
 
 // session is where one run is answering.
@@ -46,24 +53,26 @@ func (c *Connector) OnStop(fn StopFunc) {
 	c.live.stop = fn
 }
 
-// track records a run's lifecycle and reports whether the run was stopped from
-// Slack, in which case nothing more of it belongs on the surface.
-func (l *live) track(to address.Address, e envelope.Event) (discard bool) {
+// track records a run's lifecycle. It reports whether the run has been asked
+// to stop from Slack and has not ended, in which case the event may still be
+// rendered but must not move the session's status off active.
+func (l *live) track(to address.Address, e envelope.Event) (stopping bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.stopped[e.RunID] {
-		return true
-	}
 	switch e.Kind {
 	case envelope.KindAccepted, envelope.KindStarted, envelope.KindResumed, envelope.KindParked:
+		if l.asked[e.RunID] {
+			return true
+		}
 		if len(l.open) >= maxRuns {
 			clear(l.open)
 		}
 		l.open[e.RunID] = sessionOf(to)
-	case envelope.KindCompleted, envelope.KindFailed:
+	case envelope.KindCompleted, envelope.KindFailed, envelope.KindStopped:
 		delete(l.open, e.RunID)
+		delete(l.asked, e.RunID)
 	}
-	return false
+	return l.asked[e.RunID]
 }
 
 // in lists the runs open in a session. A code channel is one session, so a
@@ -80,22 +89,26 @@ func (l *live) in(s session) []string {
 	return ids
 }
 
+// settle records that a run was asked to stop.
 func (l *live) settle(runID string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	delete(l.open, runID)
-	if len(l.stopped) >= maxRuns {
-		clear(l.stopped)
+	if len(l.asked) >= maxRuns {
+		clear(l.asked)
 	}
-	l.stopped[runID] = true
+	l.asked[runID] = true
 }
 
 // stopped handles a person pressing stop on a session, in the order Slack asks
 // for: stop the work, say so, move the status off processing. Slack does none
 // of that itself.
 //
-// A run is marked stopped only once the platform accepted the stop, so a
-// failure leaves it stoppable and Slack's redelivery tries again.
+// Stopping the work is asking the runtime, which interrupts the model call and
+// ends the run with lifecycle.stopped. That event arrives on its own and is
+// rendered by the sink as stopped, under the partial answer. A run is marked
+// asked only once the platform accepted the request, so a failure leaves it
+// stoppable and Slack's redelivery tries again.
 func (c *Connector) stopped(ctx context.Context, s transport.Stop) error {
 	at := sessionOf(s.Session)
 	c.live.mu.Lock()

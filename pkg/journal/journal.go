@@ -337,12 +337,13 @@ func (j *Journal) Trace(tenant string, runIDs []string) []Span {
 				s.End, s.Error = e.At, b.Error
 				delete(o.tools, b.ID)
 			}
-		case envelope.KindCompleted, envelope.KindFailed:
+		case envelope.KindCompleted, envelope.KindFailed, envelope.KindStopped:
 			b, _ := payload.Decode[payload.Lifecycle](e)
 			o.output = nil
 			end(&o.attempt, e.At, b.Error)
-			// A failed attempt that will be retried does not end the run.
-			if e.Kind == envelope.KindCompleted || b.Terminal {
+			// A failed attempt that will be retried does not end the run. A
+			// stopped one ends it, without an error: nothing went wrong.
+			if e.Kind != envelope.KindFailed || b.Terminal {
 				for id, s := range o.tools {
 					s.End = e.At
 					delete(o.tools, id)

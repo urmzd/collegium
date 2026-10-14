@@ -75,14 +75,22 @@ export interface ResumeOptions {
   initialDelayMs?: number;
   /** The longest wait. Default 10 s. */
   maxDelayMs?: number;
+  /**
+   * How long a last read of a run that has ended waits for its ending event.
+   * The server keeps the stream open, so an event it no longer holds would
+   * otherwise be waited for forever. After it, the run's record is the
+   * answer. Default 2 s.
+   */
+  drainMs?: number;
 }
 
-const DEFAULT_RESUME: Required<ResumeOptions> = { maxRetries: 5, initialDelayMs: 500, maxDelayMs: 10_000 };
+const DEFAULT_RESUME: Required<ResumeOptions> = { maxRetries: 5, initialDelayMs: 500, maxDelayMs: 10_000, drainMs: 2_000 };
 
 /**
  * `runEvents` could not follow a run to an event that ends it. `reason` says
- * why: `stopped` (the run was stopped, which publishes no ending event),
- * `ended` (its record says it is over and no ending event was found), or
+ * why: `stopped` (its record says it was stopped and its `lifecycle.stopped`
+ * event was no longer on the stream), `ended` (its record says it completed or
+ * failed and no ending event was found), or
  * `gave-up` (the stream kept dropping). `run` is the last record read.
  */
 export class StreamEndedError extends Error {
@@ -193,12 +201,12 @@ export function decodeEvent(event: RunEvent): DecodedRunEvent {
 }
 
 /**
- * Whether an event ends its run on the stream: it completed, or it failed and
- * will not be retried. A stopped run publishes no such event, so the run's
- * record (`getRun`) stays the authority on whether a run is over.
+ * Whether an event ends its run on the stream: it completed, it was stopped,
+ * or it failed and will not be retried. The run's record (`getRun`) stays the
+ * authority on whether a run is over, for a stream that missed the event.
  */
 export function endsRun(event: DecodedRunEvent): boolean {
-  if (event.kind === "lifecycle.completed") return true;
+  if (event.kind === "lifecycle.completed" || event.kind === "lifecycle.stopped") return true;
   return event.kind === "lifecycle.failed" && event.body?.terminal === true;
 }
 
@@ -279,9 +287,8 @@ export class Collegium extends ApiClient {
    * restart, a proxy's timeout), it reads the run's record and, while the
    * run is not over, reconnects after the last `seq` it yielded, with
    * backoff. It throws `StreamEndedError` when it cannot resume, or when the
-   * run's record says it ended with no event to say so, which is what a
-   * stopped run does. An error the server answers with (403, 404) is thrown
-   * as it is.
+   * run's record says it ended and its ending event is no longer on the
+   * stream. An error the server answers with (403, 404) is thrown as it is.
    *
    * The generated stream treats a dropped connection as a normal end
    * (urmzd/oag#35), which is why the resuming lives here.
@@ -298,8 +305,20 @@ export class Collegium extends ApiClient {
     let cause: unknown;
     let record: Run | undefined;
     for (;;) {
+      // A last read of an ended run is bounded: past drainMs, the record decides.
+      let drained = false;
+      const drain = draining ? new AbortController() : undefined;
+      const timer = drain
+        ? setTimeout(() => {
+            drained = true;
+            drain.abort();
+          }, resume.drainMs)
+        : undefined;
+      const forward = () => drain?.abort();
+      options?.signal?.addEventListener("abort", forward, { once: true });
+      const read = drain ? { ...options, signal: drain.signal } : options;
       try {
-        for await (const item of this.events({ topic: topicFor(run.agent, run.id), from }, options)) {
+        for await (const item of this.events({ topic: topicFor(run.agent, run.id), from }, read)) {
           if (item.type !== "event" || item.event.run_id !== run.id) continue;
           if (from !== undefined && item.event.seq <= from) continue;
           from = item.event.seq;
@@ -309,12 +328,18 @@ export class Collegium extends ApiClient {
         }
         cause = undefined;
       } catch (error) {
-        if (options?.signal?.aborted || !droppedStream(error)) throw error;
-        cause = error;
+        if (!drained && (options?.signal?.aborted || !droppedStream(error))) throw error;
+        cause = drained ? undefined : error;
+      } finally {
+        clearTimeout(timer);
+        options?.signal?.removeEventListener("abort", forward);
       }
       if (draining) {
         // The record said the run was over and a last read found no event
         // to end it.
+        if (record?.status === "stopped") {
+          throw new StreamEndedError("stopped", `run ${run.id} was stopped`, record, cause);
+        }
         throw new StreamEndedError("ended", `run ${run.id} ended without an event that says so`, record, cause);
       }
       try {
@@ -326,10 +351,7 @@ export class Collegium extends ApiClient {
         cause = error;
         record = undefined;
       }
-      if (record?.status === "stopped") {
-        throw new StreamEndedError("stopped", `run ${run.id} was stopped`, record, cause);
-      }
-      if (record?.status === "completed" || record?.status === "failed") {
+      if (record?.status === "completed" || record?.status === "failed" || record?.status === "stopped") {
         // It ended while the stream was down. Its last events are read once
         // more, without waiting.
         draining = true;
