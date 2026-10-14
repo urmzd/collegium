@@ -36,12 +36,14 @@ const (
 
 // Entry is one line of the ledger.
 type Entry struct {
-	Kind    Kind      `json:"kind"`
-	Tenant  string    `json:"tenant"`
-	Project string    `json:"project,omitempty"`
-	Agent   string    `json:"agent"`
-	RunID   string    `json:"run_id,omitempty"`
-	At      time.Time `json:"at"`
+	Kind    Kind   `json:"kind"`
+	Tenant  string `json:"tenant"`
+	Project string `json:"project,omitempty"`
+	Agent   string `json:"agent"`
+	// Client is the external client that raised the run, if one did.
+	Client string    `json:"client,omitempty"`
+	RunID  string    `json:"run_id,omitempty"`
+	At     time.Time `json:"at"`
 	// For a warning or a refusal: the policy that caused it, at the version
 	// it had then, the limit it turned on, and the reason given.
 	Scope   *policy.Scope `json:"scope,omitempty"`
@@ -57,8 +59,8 @@ const (
 )
 
 type admission struct {
-	project, agent, runID string
-	at                    time.Time
+	project, agent, client, runID string
+	at                            time.Time
 }
 
 type tenant struct {
@@ -101,7 +103,7 @@ func (l *Ledger) apply(e Entry) {
 	t := l.of(e.Tenant)
 	switch e.Kind {
 	case Admitted:
-		a := admission{project: e.Project, agent: e.Agent, runID: e.RunID, at: e.At}
+		a := admission{project: e.Project, agent: e.Agent, client: e.Client, runID: e.RunID, at: e.At}
 		t.admissions = append(t.admissions, a)
 		t.active[e.RunID] = a
 	case Ended:
@@ -133,6 +135,8 @@ func matches(s policy.Scope, a admission) bool {
 		return a.project == s.Name
 	case policy.Agent:
 		return a.agent == s.Name
+	case policy.Client:
+		return a.client == s.Name
 	}
 	return true
 }

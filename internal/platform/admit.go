@@ -29,25 +29,18 @@ func (e *Denied) Error() string { return "platform: " + e.Decision.Reason }
 // Every run passes through here, whatever raised it: a person, a schedule, an
 // eval, or another agent. Only the platform's own housekeeping is exempt, since
 // refusing it would leave a conversation unnamed for a reason nobody chose.
-func (p *Platform) admit(tag envelope.Tag, edge call.Edge) error {
+func (p *Platform) admit(tag envelope.Tag, edge call.Edge, project, client string) error {
 	if tag.Origin == runs.OriginSystem {
 		return nil
 	}
-	// A run called by an agent belongs to its root's project.
-	project := runs.ProjectOf(tag)
-	if edge.Parent != "" {
-		if root, err := p.Runs.Get(tag.Tenant, runtime.RunID(edge.Root)); err == nil {
-			project = root.Project
-		}
-	}
 	now := p.now()
 	var applied []policy.Applied
-	for _, pol := range p.Policies.For(tag.Tenant, project, tag.Agent) {
+	for _, pol := range p.Policies.For(tag.Tenant, project, tag.Agent, client) {
 		since := policy.PeriodStart(pol.Period, now)
 		applied = append(applied, policy.Applied{Policy: pol, Usage: p.Usage.Usage(tag.Tenant, pol.Scope, since)})
 	}
 	d := policy.Decide(applied, policy.Request{Lease: edge.Lease})
-	entry := usage.Entry{Tenant: tag.Tenant, Project: project, Agent: tag.Agent, RunID: runtime.RunID(tag.ID), At: now}
+	entry := usage.Entry{Tenant: tag.Tenant, Project: project, Agent: tag.Agent, Client: client, RunID: runtime.RunID(tag.ID), At: now}
 	if d.Policy != nil {
 		entry.Scope, entry.Version, entry.Limit, entry.Reason = &d.Policy.Scope, d.Policy.Version, d.Limit, d.Reason
 	}
@@ -68,6 +61,19 @@ func (p *Platform) admit(tag envelope.Tag, edge call.Edge) error {
 	entry.Kind, entry.Scope, entry.Version, entry.Limit, entry.Reason = usage.Admitted, nil, 0, "", ""
 	p.Usage.Append(entry)
 	return nil
+}
+
+// placeOf is the project a run is filed under and the external client that
+// raised it. A run called by an agent has its root's of both, so a tree counts
+// against the limits of whatever started it.
+func (p *Platform) placeOf(tag envelope.Tag, edge call.Edge) (project, client string) {
+	project, client = runs.ProjectOf(tag), runs.ClientOf(tag)
+	if edge.Parent != "" {
+		if root, err := p.Runs.Get(tag.Tenant, runtime.RunID(edge.Root)); err == nil {
+			project, client = root.Project, root.Client
+		}
+	}
+	return project, client
 }
 
 // limitOf is the number a policy sets for one of its limits.

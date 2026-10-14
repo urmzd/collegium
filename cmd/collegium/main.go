@@ -114,9 +114,8 @@ func run(args []string) error {
 	}
 
 	p, err := platform.New(platform.Config{
-		Connections: func(store registry.Store) ([]platform.Connection, error) {
-			return connections(store, *tenant, log)
-		},
+		// A client may keep its secrets in this process's environment.
+		Env:             os.LookupEnv,
 		Limits:          call.Limits{MaxDepth: *maxDepth, MaxFanOut: *maxFanOut},
 		Log:             log,
 		BuiltinProvider: *builtinProvider,
@@ -143,6 +142,9 @@ func run(args []string) error {
 		if _, err := p.Agents.Create(ctx, *tenant, spec, "startup"); err != nil {
 			return fmt.Errorf("agent spec %s: %w", path, err)
 		}
+	}
+	if err := seedClients(ctx, p, *tenant, os.Getenv); err != nil {
+		return err
 	}
 	if *seed {
 		if err := seedAgents(ctx, p, *tenant); err != nil {

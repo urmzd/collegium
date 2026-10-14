@@ -115,7 +115,7 @@ func (s *Store) List(tenantName string) []Policy {
 		return []Policy{}
 	}
 	out := slices.Clone(t.policies)
-	order := map[Kind]int{Tenant: 0, Project: 1, Agent: 2}
+	order := map[Kind]int{Tenant: 0, Project: 1, Agent: 2, Client: 3}
 	slices.SortFunc(out, func(a, b Policy) int {
 		if d := order[a.Scope.Kind] - order[b.Scope.Kind]; d != 0 {
 			return d
@@ -132,8 +132,9 @@ func (s *Store) List(tenantName string) []Policy {
 }
 
 // For returns the policies a run falls under, most specific first: its agent's,
-// its project's, then the tenant's.
-func (s *Store) For(tenantName, project, agent string) []Policy {
+// the client's that raised it, its project's, then the tenant's. An empty name
+// means the run has no such scope.
+func (s *Store) For(tenantName, project, agent, client string) []Policy {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	t, ok := s.tenants[tenantName]
@@ -141,7 +142,7 @@ func (s *Store) For(tenantName, project, agent string) []Policy {
 		return nil
 	}
 	var out []Policy
-	for _, want := range []Scope{{Agent, agent}, {Project, project}, {Kind: Tenant}} {
+	for _, want := range []Scope{{Agent, agent}, {Client, client}, {Project, project}, {Kind: Tenant}} {
 		if want.Kind != Tenant && want.Name == "" {
 			continue
 		}

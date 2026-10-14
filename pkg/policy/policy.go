@@ -1,8 +1,8 @@
 // Package policy decides whether a run may start, given the limits a workspace
 // has set and what has already been used.
 //
-// A policy belongs to a scope: the whole tenant, one project, or one agent. A
-// run is checked against every policy whose scope it falls in, and the
+// A policy belongs to a scope: the whole tenant, one project, one agent, or one
+// client (a Slack or GitHub installation that raises runs). A run is checked against every policy whose scope it falls in, and the
 // strictest answer wins, so a narrower policy can tighten what applies but can
 // never loosen it.
 //
@@ -41,7 +41,13 @@ const (
 	Tenant  Kind = "tenant"
 	Project Kind = "project"
 	Agent   Kind = "agent"
+	// Client is one external client of the workspace. Its name is the
+	// client's id, and a run falls under it when that client raised it.
+	Client Kind = "client"
 )
+
+// MaxClientsCeiling is the most clients a tenant policy may allow.
+const MaxClientsCeiling = 100
 
 // Scope names what a policy covers. A tenant scope has no name.
 type Scope struct {
@@ -114,6 +120,11 @@ type Policy struct {
 	// MaxStorage is the most bytes of published files the scope may hold. It
 	// is a standing total, not a rate, so the period does not apply to it.
 	MaxStorage int64 `json:"max_storage,omitempty"`
+	// MaxClients is the most external clients the workspace may have, and
+	// MaxClientsPerSurface the most on any one surface. They are standing
+	// totals and belong to the tenant's policy alone.
+	MaxClients           int `json:"max_clients,omitempty"`
+	MaxClientsPerSurface int `json:"max_clients_per_surface,omitempty"`
 	// WarnAt is the share of a limit, in percent, at which usage warns. Zero
 	// means DefaultWarnAt.
 	WarnAt int    `json:"warn_at,omitempty"`
@@ -135,17 +146,25 @@ func (p Policy) warnAt() int {
 // Validate checks a policy on its own.
 func (p Policy) Validate() error {
 	switch {
-	case p.Scope.Kind != Tenant && p.Scope.Kind != Project && p.Scope.Kind != Agent:
-		return fmt.Errorf("%w: a policy covers the tenant, a project or an agent", ErrInvalid)
+	case p.Scope.Kind != Tenant && p.Scope.Kind != Project && p.Scope.Kind != Agent && p.Scope.Kind != Client:
+		return fmt.Errorf("%w: a policy covers the tenant, a project, an agent or a client", ErrInvalid)
 	case p.Scope.Kind == Tenant && p.Scope.Name != "":
 		return fmt.Errorf("%w: the tenant policy has no name", ErrInvalid)
 	case p.Scope.Kind != Tenant && p.Scope.Name == "":
 		return fmt.Errorf("%w: a %s policy names the %s it covers", ErrInvalid, p.Scope.Kind, p.Scope.Kind)
 	case p.Period != Day && p.Period != Month:
 		return fmt.Errorf("%w: the period is day or month", ErrInvalid)
-	case p.MaxRuns < 0 || p.MaxConcurrent < 0 || p.SpendLimit < 0 || p.MaxLease < 0 || p.MaxStorage < 0:
+	case p.MaxRuns < 0 || p.MaxConcurrent < 0 || p.SpendLimit < 0 || p.MaxLease < 0 || p.MaxStorage < 0 ||
+		p.MaxClients < 0 || p.MaxClientsPerSurface < 0:
 		return fmt.Errorf("%w: a limit cannot be negative", ErrInvalid)
-	case p.MaxRuns == 0 && p.MaxConcurrent == 0 && p.SpendLimit == 0 && p.MaxLease == 0 && p.MaxStorage == 0:
+	case p.Scope.Kind != Tenant && (p.MaxClients > 0 || p.MaxClientsPerSurface > 0):
+		return fmt.Errorf("%w: only the tenant's policy limits how many clients there are", ErrInvalid)
+	case p.Scope.Kind == Client && p.MaxStorage > 0:
+		return fmt.Errorf("%w: storage is not counted per client", ErrInvalid)
+	case p.MaxClients > MaxClientsCeiling || p.MaxClientsPerSurface > MaxClientsCeiling:
+		return fmt.Errorf("%w: a workspace may have at most %d clients", ErrInvalid, MaxClientsCeiling)
+	case p.MaxRuns == 0 && p.MaxConcurrent == 0 && p.SpendLimit == 0 && p.MaxLease == 0 && p.MaxStorage == 0 &&
+		p.MaxClients == 0 && p.MaxClientsPerSurface == 0:
 		return fmt.Errorf("%w: a policy sets at least one limit", ErrInvalid)
 	case p.WarnAt < 0 || p.WarnAt > 100:
 		return fmt.Errorf("%w: the warning threshold is a percentage from 1 to 100", ErrInvalid)

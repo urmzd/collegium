@@ -53,6 +53,20 @@ const (
 	MetaProject = "collegium.project"
 )
 
+// MetaClient is the key the platform's ingress writes into a tag's Meta to
+// say which external client raised it. Ingress overwrites whatever a
+// connector put there, and only a tag whose origin is a client surface is
+// believed.
+const MetaClient = "collegium.client"
+
+// ClientOf returns the external client that raised a tag, or "".
+func ClientOf(tag envelope.Tag) string {
+	if tag.Origin == "slack" || tag.Origin == "github" {
+		return tag.Meta[MetaClient]
+	}
+	return ""
+}
+
 // ProjectOf returns the project a tag files its run under, or "". Only origins
 // whose project the server itself wrote are believed: the API, the cron trigger
 // (a schedule's project is set when the schedule is created) and a person's
@@ -137,6 +151,9 @@ type Run struct {
 	Picked string `json:"picked,omitempty"`
 	// Project is the project the conversation is filed under, if any.
 	Project string `json:"project,omitempty"`
+	// Client is the external client (a Slack or GitHub installation) that
+	// raised the run. A run called by an agent has its root's.
+	Client string `json:"client,omitempty"`
 
 	// Lease is the run's budget in micro-USD. Zero means unmetered.
 	Lease int64 `json:"lease"`
@@ -219,7 +236,7 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 	}
 	// A run is its own conversation unless the API placed it in one. A run
 	// called by an agent belongs to its root's conversation.
-	thread, prev, picked, text, project := runID, "", "", tag.Text, ""
+	thread, prev, picked, text, project, client := runID, "", "", tag.Text, "", ClientOf(tag)
 	// A schedule's project is written by the server when the schedule is
 	// created, so the cron trigger and a person's run-now are believed too.
 	project = ProjectOf(tag)
@@ -235,11 +252,11 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 		}
 	}
 	if root, ok := x.runs[runtime.RunID(edge.Root)]; ok && parent != "" {
-		thread, project = root.Thread, root.Project
+		thread, project, client = root.Thread, root.Project, root.Client
 	}
 	x.runs[runID] = &Run{
 		ID: runID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
-		Text: text, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project,
+		Text: text, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project, Client: client,
 		Root: runtime.RunID(edge.Root), Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
 		Lease: edge.Lease, Schedule: schedule,
 		Status: Accepted, CreatedAt: tag.At, UpdatedAt: tag.At,
@@ -430,6 +447,18 @@ func (x *Index) Get(tenant, runID string) (Run, error) {
 		return Run{}, ErrNotFound
 	}
 	return *r, nil
+}
+
+// Owner returns the tenant a run id belongs to, whoever asks. It answers only
+// whether an id is taken, for refusing a second tenant the same id.
+func (x *Index) Owner(runID string) (string, bool) {
+	x.mu.RLock()
+	defer x.mu.RUnlock()
+	r, ok := x.runs[runID]
+	if !ok {
+		return "", false
+	}
+	return r.Tenant, true
 }
 
 // List returns a tenant's runs, newest first, at most limit of them.
