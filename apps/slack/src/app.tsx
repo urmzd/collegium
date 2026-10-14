@@ -183,10 +183,10 @@ export function echoed(text: string): string {
   let out = "";
   let at = 0;
   for (const m of raw.matchAll(kept)) {
-    out += escape(raw.slice(at, m.index)) + m[0];
+    out += encode(raw.slice(at, m.index)) + m[0];
     at = (m.index ?? 0) + m[0].length;
   }
-  return out + escape(raw.slice(at));
+  return out + encode(raw.slice(at));
 }
 
 export function forSlack(message: PlatformMessage): PlatformMessage {
