@@ -17,6 +17,7 @@ package inbox
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -75,8 +76,9 @@ const (
 	PartFailure PartType = "failure"
 	PartMemory  PartType = "memory"
 	PartBudget  PartType = "budget"
-	// PartApproval, PartChoice and PartReply are for a run waiting on a
-	// person. Nothing raises them yet: a run cannot be parked on one.
+	// PartApproval, PartChoice and PartReply are a question a run is parked
+	// on: approve or deny a tool call, choose one of some options, or reply
+	// in words. Each carries the question in Question.
 	PartApproval PartType = "approval"
 	PartChoice   PartType = "choice"
 	PartReply    PartType = "reply"
@@ -170,6 +172,42 @@ type BudgetPart struct {
 	Current Limits `json:"current"`
 }
 
+// QuestionTool is the call an approval is about.
+type QuestionTool struct {
+	Name string `json:"name"`
+	// Arguments are what the model asked to call it with, as a JSON object.
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	// Schema is the tool's parameter schema. Edited arguments must satisfy it.
+	Schema json.RawMessage `json:"schema,omitempty"`
+}
+
+// QuestionPart is a question a run is parked on.
+type QuestionPart struct {
+	// Run is the run that asked, and ID the question within it.
+	Run string `json:"run"`
+	ID  string `json:"id"`
+	// Kind is approval, choice or reply.
+	Kind   string `json:"kind"`
+	Agent  string `json:"agent,omitempty"`
+	Prompt string `json:"prompt"`
+	// Options are what a choice offers.
+	Options []string      `json:"options,omitempty"`
+	Tool    *QuestionTool `json:"tool,omitempty"`
+	// AskedOf is who the agent asked, as a hint for routing.
+	AskedOf string `json:"asked_of,omitempty"`
+	// ExpiresAt is when the question takes its default if nobody answers.
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// Default is what the run carries on with if it expires: "deny" for an
+	// approval, the stated default for a choice or a reply, or empty when
+	// the agent is told nobody answered.
+	Default string `json:"default,omitempty"`
+	// AskedAt is when the run asked.
+	AskedAt time.Time `json:"asked_at,omitzero"`
+	// Via is the run the question was raised through, when a run waiting on
+	// another shows its question: the caller of the run that asked.
+	Via string `json:"via,omitempty"`
+}
+
 // Outcome is what was decided about a part, and by whom.
 type Outcome struct {
 	Action string    `json:"action"`
@@ -193,6 +231,8 @@ type Part struct {
 	Failure *FailurePart `json:"failure,omitempty"`
 	Memory  *MemoryPart  `json:"memory,omitempty"`
 	Budget  *BudgetPart  `json:"budget,omitempty"`
+	// Question is set on approval, choice and reply parts.
+	Question *QuestionPart `json:"question,omitempty"`
 }
 
 // Message is one thing in the inbox.
@@ -203,7 +243,15 @@ type Message struct {
 	Key    string `json:"-"`
 	Tenant string `json:"-"`
 	// To is the one person it is for. Empty means everyone who may see its kind.
-	To           string    `json:"to,omitempty"`
+	To string `json:"to,omitempty"`
+	// Audience, when set, is who the message is for: principals by subject,
+	// and roles as "role:<name>". A reader sees it only if they are named or
+	// hold a role named. Empty means everyone who may see its kind.
+	Audience []string `json:"-"`
+	// Excluded are principals the message is never shown to, whatever else
+	// admits them: the person whose request raised a call they may not
+	// approve.
+	Excluded     []string  `json:"-"`
 	Kind         Kind      `json:"kind"`
 	Subject      string    `json:"subject"`
 	From         From      `json:"from"`
@@ -226,6 +274,15 @@ func (m Message) clone() Message {
 			o := *p.Outcome
 			p.Outcome = &o
 		}
+		if p.Question != nil {
+			q := *p.Question
+			q.Options = slices.Clone(q.Options)
+			if q.Tool != nil {
+				t := *q.Tool
+				q.Tool = &t
+			}
+			p.Question = &q
+		}
 		if p.Memory != nil {
 			mem := *p.Memory
 			mem.Notes = slices.Clone(mem.Notes)
@@ -233,7 +290,39 @@ func (m Message) clone() Message {
 		}
 		p.Actions = slices.Clone(p.Actions)
 	}
+	m.Audience = slices.Clone(m.Audience)
+	m.Excluded = slices.Clone(m.Excluded)
 	return m
+}
+
+// Reader is who is reading: their subject, and the roles they hold, which
+// decide whether a message addressed to a role is theirs.
+type Reader struct {
+	Subject string
+	Roles   []string
+}
+
+// For reports whether a message is addressed to a reader. Who may see its
+// kind at all is the caller's to decide.
+func (m Message) For(r Reader) bool {
+	if m.To != "" && m.To != r.Subject {
+		return false
+	}
+	if slices.Contains(m.Excluded, r.Subject) {
+		return false
+	}
+	if len(m.Audience) == 0 {
+		return true
+	}
+	if r.Subject != "" && slices.Contains(m.Audience, r.Subject) {
+		return true
+	}
+	for _, role := range r.Roles {
+		if role != "" && slices.Contains(m.Audience, "role:"+role) {
+			return true
+		}
+	}
+	return false
 }
 
 // at reports the message's state at a moment: a snooze that has run out is open.
@@ -435,17 +524,23 @@ func (s *Store) ByKey(tenantName, key string) (Message, bool) {
 	return m.clone(), true
 }
 
-// Get returns one message as a reader sees it.
+// Get returns one message as a reader known only by their subject sees it.
 func (s *Store) Get(tenantName, id, reader string) (Message, error) {
+	return s.GetAs(tenantName, id, Reader{Subject: reader})
+}
+
+// GetAs returns one message as a reader sees it. A message not addressed to
+// them does not exist for them.
+func (s *Store) GetAs(tenantName, id string, r Reader) (Message, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.of(tenantName)
 	m := t.byID[id]
-	if m == nil || m.To != "" && m.To != reader {
+	if m == nil || !m.For(r) {
 		return Message{}, fmt.Errorf("%w: message %q", ErrNotFound, id)
 	}
 	out := m.clone()
-	out.Unread = !t.read[id][reader]
+	out.Unread = !t.read[id][r.Subject]
 	return out, nil
 }
 
@@ -543,6 +638,8 @@ type Query struct {
 	// Reader is whose inbox this is: it decides unread, and which messages
 	// addressed to one person are included.
 	Reader string
+	// Roles are the roles the reader holds, for messages addressed to a role.
+	Roles []string
 	// State keeps messages in one state. Empty means open. "all" means any.
 	State State
 	Kind  Kind
@@ -561,7 +658,7 @@ type Query struct {
 const All State = "all"
 
 func (t *tenant) match(m *Message, q Query) bool {
-	if m.To != "" && m.To != q.Reader {
+	if !m.For(Reader{Subject: q.Reader, Roles: q.Roles}) {
 		return false
 	}
 	if q.Visible != nil && !q.Visible(m.Kind) {

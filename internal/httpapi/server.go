@@ -96,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/{id}/tree", s.authed(auth.RunsRead, s.runTree))
 	mux.HandleFunc("POST /api/runs/{id}/calls", s.authed(auth.RunsWrite, s.createCall))
 	mux.HandleFunc("POST /api/runs/{id}/stop", s.authed(auth.RunsWrite, s.stopRun))
+	mux.HandleFunc("POST /api/runs/{id}/questions/{question}/answer", s.authed(auth.RunsWrite, s.answerQuestion))
 	mux.HandleFunc("GET /api/schedules", s.authed(auth.SchedulesRead, s.listSchedules))
 	mux.HandleFunc("POST /api/schedules", s.authed(auth.SchedulesWrite, s.createSchedule))
 	mux.HandleFunc("DELETE /api/schedules/{name}", s.authed(auth.SchedulesWrite, s.deleteSchedule))
@@ -332,6 +333,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 		After string `json:"after"`
 		// Project files a new conversation under a project.
 		Project string `json:"project"`
+		// ActAs is the person a surface asks for: a Slack user its client
+		// maps. The run is theirs, so they do not approve its calls.
+		ActAs *platform.ActAs `json:"act_as"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -340,14 +344,22 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 		fail(w, http.StatusBadRequest, "a run needs a request")
 		return
 	}
+	actor := envelope.Actor{ID: who.Subject, Display: who.Name, Bot: who.Kind == auth.Machine}
+	if body.ActAs != nil {
+		person, err := s.P.ActsFor(who, *body.ActAs)
+		if err != nil {
+			s.problem(w, err)
+			return
+		}
+		actor = envelope.Actor{ID: person, Display: person}
+	}
 	// A caller that retries sends the same key and joins the run it started.
 	id := "api-r-" + token()[:22]
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
 		id = APITagID(who.Subject, key)
 	}
 	run, err := s.P.Converse(r.Context(), who.Tenant, platform.Turn{
-		ID: id, Agent: body.Agent, Text: body.Text, After: body.After, Project: body.Project,
-		Actor: envelope.Actor{ID: who.Subject, Display: who.Name, Bot: who.Kind == auth.Machine},
+		ID: id, Agent: body.Agent, Text: body.Text, After: body.After, Project: body.Project, Actor: actor,
 	})
 	if err != nil {
 		s.problem(w, err)

@@ -107,6 +107,9 @@ type Config struct {
 	// again. Nil means duraturo's, which doubles from a quarter second. For
 	// tests only: it lets a test fail a run through all its attempts quickly.
 	Backoff func(attempt int) time.Duration
+	// QuestionTTL is how long a question a run parks on waits for an answer
+	// before its default applies. Zero means the runtime's, a day.
+	QuestionTTL time.Duration
 	// OfflineHooks lets housekeeping run on the offline provider. It exists
 	// for tests: an offline answer is a notice, not a title or a fact.
 	OfflineHooks bool
@@ -277,6 +280,12 @@ func New(cfg Config) (*Platform, error) {
 		// run waits in the queue or between attempts is honoured however long
 		// it waits. It is the same ledger the runs execute from.
 		runtime.WithStopLedger(p.ledger),
+		// A run parked on a person is woken through the queue as soon as
+		// it is answered or stopped, not at the worker's next poll.
+		runtime.WithWaker(p.queue),
+		// A spec's approvers and answerers may name this workspace's roles.
+		runtime.WithRoles(p.rolesOf),
+		runtime.WithQuestionTTL(cfg.QuestionTTL),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("platform: runtime: %w", err)
@@ -533,7 +542,9 @@ func (p *Platform) observe(ctx context.Context, e envelope.Event) {
 		p.observeUsage(ctx, e)
 		return
 	}
-	if run, ended := p.Runs.Observe(e); ended {
+	run, ended := p.Runs.Observe(e)
+	p.observeQuestion(ctx, e)
+	if ended {
 		p.ended(ctx, run)
 	}
 }

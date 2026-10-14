@@ -25,10 +25,13 @@ import (
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
+	"github.com/urmzd/mandatum/pkg/agentrt"
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 	"github.com/urmzd/mandatum/pkg/agentspec"
 	"github.com/urmzd/mandatum/pkg/envelope"
 	"github.com/urmzd/mandatum/pkg/runtime"
+	"github.com/urmzd/saige/agent/agenttest"
+	saigetypes "github.com/urmzd/saige/agent/types"
 	"go.yaml.in/yaml/v4"
 
 	"github.com/urmzd/collegium/internal/platform"
@@ -578,7 +581,7 @@ func TestSpecSchemasHaveTheFieldsTheGoTypesMarshal(t *testing.T) {
 		"InboxNotice": {typ: inbox.Notice{}}, "InboxFrom": {typ: inbox.From{}}, "InboxSource": {typ: inbox.Source{}},
 		"InboxOutcome": {typ: inbox.Outcome{}}, "InboxLimits": {typ: inbox.Limits{}}, "InboxAlertPart": {typ: inbox.AlertPart{}},
 		"InboxFailurePart": {typ: inbox.FailurePart{}}, "InboxNoteRef": {typ: inbox.NoteRef{}}, "InboxMemoryPart": {typ: inbox.MemoryPart{}},
-		"InboxBudgetPart": {typ: inbox.BudgetPart{}}, "InboxPart": {typ: inbox.Part{}}, "InboxMessage": {typ: inbox.Message{}},
+		"InboxBudgetPart": {typ: inbox.BudgetPart{}}, "InboxPart": {typ: inbox.Part{}}, "InboxQuestionPart": {typ: inbox.QuestionPart{}}, "InboxQuestionTool": {typ: inbox.QuestionTool{}}, "InboxMessage": {typ: inbox.Message{}},
 		"InboxChange": {typ: inbox.Change{}},
 		"Artifact":    {typ: artifacts.Artifact{}}, "StorageShare": {typ: artifacts.Share{}},
 		"AnalyticsGroup": {typ: runs.Group{}}, "AnalyticsBucket": {typ: runs.Bucket{}}, "Summary": {typ: runs.Summary{}},
@@ -596,7 +599,8 @@ func TestSpecSchemasHaveTheFieldsTheGoTypesMarshal(t *testing.T) {
 		"ClientView": {typ: clientView{}}, "ClientCaps": {typ: clients.Caps{}}, "ClientInput": {typ: clientBody{}, written: true},
 		"TextPayload": {typ: payload.Text{}}, "ThinkingPayload": {typ: payload.Thinking{}}, "ToolCallPayload": {typ: payload.ToolCall{}},
 		"ToolDonePayload": {typ: payload.ToolDone{}}, "Provenance": {typ: payload.Provenance{}}, "CitationPayload": {typ: payload.Citation{}},
-		"LifecyclePayload": {typ: payload.Lifecycle{}}, "ActionPayload": {typ: payload.Action{}},
+		"LifecyclePayload": {typ: payload.Lifecycle{}}, "Question": {typ: payload.Question{}}, "Answer": {typ: payload.Answer{}},
+		"QuestionTool": {typ: payload.QuestionTool{}}, "ChildQuestion": {typ: payload.ChildQuestion{}}, "ActAs": {typ: platform.ActAs{}}, "ActionPayload": {typ: payload.Action{}},
 		"StoppedPayload": {typ: payload.Stopped{}}, "Cost": {typ: payload.Cost{}}, "Usage": {typ: payload.Usage{}},
 		"ContextUsage": {typ: payload.ContextUsage{}}, "RunUsage": {typ: payload.RunUsage{}},
 		"UsageCallPayload": {typ: payload.UsageCall{}}, "UsageChildPayload": {typ: payload.UsageChild{}},
@@ -641,7 +645,7 @@ func TestSpecSchemasHaveTheFieldsTheGoTypesMarshal(t *testing.T) {
 	declared := []string{
 		string(envelope.KindText), string(envelope.KindThinking), string(envelope.KindToolCall), string(envelope.KindToolDone),
 		string(envelope.KindCitation), string(envelope.KindAccepted), string(envelope.KindStarted), string(envelope.KindParked),
-		string(envelope.KindResumed), string(envelope.KindCompleted), string(envelope.KindFailed), string(envelope.KindStopped), string(envelope.KindActionTaken),
+		string(envelope.KindResumed), string(envelope.KindCompleted), string(envelope.KindFailed), string(envelope.KindChildParked), string(envelope.KindStopped), string(envelope.KindActionTaken),
 		string(envelope.KindUsageCall), string(envelope.KindUsageChild),
 		string(envelope.KindAgentCreated), string(envelope.KindAgentRevised), string(envelope.KindAgentDeleted),
 	}
@@ -818,7 +822,16 @@ func (c *contract) settled(tok, id string) reply {
 }
 
 func TestResponsesMatchTheSpec(t *testing.T) {
-	f := newFixture(t)
+	// An agent on the "ollama" provider asks a person, so a run can park on
+	// a question here. Every other agent is offline.
+	f := newFixtureWith(t, platform.Config{AgentOptions: []agentrt.Option{
+		agentrt.WithProvider(agentrt.ProviderOllama, func(agentrt.Spec) (saigetypes.Provider, error) {
+			return &agenttest.ScriptedProvider{Responses: [][]saigetypes.Delta{
+				agenttest.ToolCallResponse("call-ask", "ask_person", map[string]any{"question": "Which colour?", "options": []any{"red", "blue"}}),
+				agenttest.TextResponse("Red."),
+			}}, nil
+		}),
+	}})
 	c := &contract{t: t, f: f, spec: loadSpec(t), seen: map[string]bool{}}
 	acme, globex := f.machine(t, "acme", everything...), f.machine(t, "globex", everything...)
 
@@ -861,6 +874,8 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"  "}`, http.StatusBadRequest)
 	c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"hi","metadata":{"channel":"C1"}}`, http.StatusBadRequest)
 	c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"ghost","text":"hi"}`, http.StatusNotFound)
+	// A surface asks for a person only through a client that maps them.
+	c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"hi","act_as":{"client":"nope","user":"U0X"}}`, http.StatusForbidden)
 	if done := c.settled(acme, id); done.str("status") != "completed" || done.str("answer") == "" {
 		t.Fatalf("the first turn = %s", done.raw)
 	}
@@ -904,6 +919,30 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	if !asked {
 		t.Error("no stop found a run still working")
 	}
+	// A run that asks a person: its question on the run and in the inbox,
+	// and answered in place.
+	c.call(acme, "POST", "/api/agents", "/api/agents", `{"name":"asker","model":"x","provider":"ollama","system_prompt":"Ask.","tools":["ask_person"],"answerers":["svc-acme"]}`, http.StatusCreated)
+	parked := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"asker","text":"Pick"}`, http.StatusAccepted)
+	var question string
+	for deadline := time.Now().Add(10 * time.Second); question == "" && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		now := c.call(acme, "GET", "/api/runs/{id}", "/api/runs/"+parked.str("id"), "", http.StatusOK)
+		question, _ = obj(now.field("question"))["id"].(string)
+	}
+	if question == "" {
+		t.Fatal("the asking run never parked on its question")
+	}
+	answer := "/api/runs/{id}/questions/{question}/answer"
+	at := "/api/runs/" + parked.str("id") + "/questions/" + question + "/answer"
+	c.call(acme, "GET", "/api/inbox", "/api/inbox?kind=clarification", "", http.StatusOK)
+	c.call(acme, "POST", answer, at, `{"action":"choose","choice":"green"}`, http.StatusBadRequest)
+	c.call(acme, "POST", answer, at, `{"action":"choose","choice":"red","act_as":{"client":"nope","user":"U0X"}}`, http.StatusForbidden)
+	c.call(globex, "POST", answer, at, `{"action":"choose","choice":"red"}`, http.StatusNotFound)
+	c.call(acme, "POST", answer, "/api/runs/"+parked.str("id")+"/questions/q-404/answer", `{"action":"choose","choice":"red"}`, http.StatusNotFound)
+	settledQ := c.call(acme, "POST", answer, at, `{"action":"choose","choice":"red"}`, http.StatusOK)
+	if o := obj(obj(sliceOf(settledQ.field("parts"))[0])["outcome"]); o["action"] != "choose" || o["note"] != "red" {
+		t.Errorf("the answered question = %s", settledQ.raw)
+	}
+	c.settled(acme, parked.str("id"))
 	c.call(acme, "POST", "/api/runs/{id}/calls", "/api/runs/"+id+"/calls", `{"key":"k1","agent":"helper","text":"hi","mode":"subagent"}`, http.StatusForbidden)
 	c.call(acme, "POST", "/api/runs/{id}/calls", "/api/runs/"+id+"/calls", `{"mode":7}`, http.StatusBadRequest)
 	c.call(acme, "POST", "/api/agents", "/api/agents", `{"name":"lead","model":"offline","provider":"offline","system_prompt":"Lead.","access":{"spawn":["helper"]}}`, http.StatusCreated)

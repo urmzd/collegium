@@ -100,8 +100,8 @@ github.com/urmzd/duraturo/adapters/postgres v0.1.1 h1:K6Y2qvzdLHK1XsEQS2EiSy94hO
 github.com/urmzd/duraturo/adapters/postgres v0.1.1/go.mod h1:Bj46TlSspiokph+88ynwMJU++IiWOovkCtovzirZVuU=
 github.com/urmzd/legatus v0.2.0 h1:wFJRhDnHFzkaowEuaXhmwhvzmMy3U1abf80D8JbrFtQ=
 github.com/urmzd/legatus v0.2.0/go.mod h1:nPIyCvr6Blf9DfuR5b5FceFRGB2+4VIpZlXYE8UTMvQ=
-github.com/urmzd/mandatum v0.10.0 h1:PycJshLc9kF5dxgoZDIxOht6ATO0uFg+9GD3VjGPK+w=
-github.com/urmzd/mandatum v0.10.0/go.mod h1:AQ7R2loSMN3etLZ/N1KNYS627web6D5he3KCzdnVRYs=
+github.com/urmzd/mandatum v0.11.0 h1:clv9xackpjdHG2jjgQcgW9K+Il8xLdNNV/7slFkbWhU=
+github.com/urmzd/mandatum v0.11.0/go.mod h1:AQ7R2loSMN3etLZ/N1KNYS627web6D5he3KCzdnVRYs=
 github.com/urmzd/saige v0.36.0 h1:m+bQT1jA5XueqjcMSH5HgaURj77WXEdgfQsVbhOaE3o=
 github.com/urmzd/saige v0.36.0/go.mod h1:ZOZDpR/T2anVUotDUEAe5cGCaSX8YCBlmpTxsDgWTv4=
 github.com/urmzd/vultus/go v0.1.0 h1:ECUo31ia5Yjw+f2jxrRzCqZ4UzhZaRSDwID7upUSh7Y=

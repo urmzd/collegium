@@ -592,6 +592,52 @@ paths:
           content:
             application/json:
               schema: {$ref: "#/components/schemas/ErrorBody"}
+  /api/runs/{id}/questions/{question}/answer:
+    post:
+      operationId: answerQuestion
+      tags: [runs]
+      summary: Answer the question a run is waiting on
+      description: |
+        A run parks on a person to approve a tool call (`approve` or `deny`,
+        optionally with edited `arguments` for an approval), to choose one of
+        some options (`choose` with `choice`), or to reply in words (`reply`
+        with `text`). The question is on the run as `question`, on its stream
+        as `lifecycle.parked`, and in the inbox as a message addressed to the
+        people who may answer it. Answering here is the same as resolving that
+        message's part, and returns the message.
+
+        Who may answer is decided from the run's pinned revision: the spec's
+        `approvers` or `answerers` when it names them, else anyone in the
+        workspace, and never the person whose request raised a call they are
+        asked to approve, unless the spec sets `self_approval`. Anyone else is
+        403 and nothing changes. A surface that authenticated a person itself
+        answers for them with `act_as`: only the credential its client names,
+        and only for a person its client maps.
+
+        The first answer recorded is the answer. An answer after it, or after
+        the question expired or its run was stopped, answers 200 with the
+        message showing what was recorded. Another workspace's run is 404.
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+        - {name: question, in: path, required: true, description: "The question's id: `question.id` on the run.", schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/QuestionAnswer"}
+      responses:
+        "200":
+          description: The question's message, settled with the answer that was recorded.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InboxMessage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
   /api/runs/{id}/trace:
     get:
       operationId: getRunTrace
@@ -1155,10 +1201,14 @@ paths:
         | `memory` | `keep` (with `ids`), `discard` | `agents:write` |
         | `budget` | `raise_limit` (with `limits`) | `billing:write` |
         | `budget` | `acknowledge` | `alerts:write` |
+        | `approval` | `approve` (optionally with `arguments`), `deny` | `runs:write` |
+        | `choice` | `choose` (with `choice`) | `runs:write` |
+        | `reply` | `reply` (with `text`) | `runs:write` |
 
-        `approval`, `choice` and `reply` parts are defined and never raised,
-        because a run cannot be parked on a person, so `approve` and `deny`
-        are not actions today. Resolving a part that is already resolved
+        Answering a question is `answerQuestion` by another route, with the
+        same rules: a person the question is not addressed to does not see
+        it, and one the runtime refuses is 403. `act_as` answers for a person
+        a surface authenticated. Resolving a part that is already resolved
         returns the first outcome. `retry` starts a new run, so it can be
         refused by a limit with 429 or 402.
       x-permission: runs:read
@@ -2642,6 +2692,27 @@ components:
           type: array
           items: {$ref: "#/components/schemas/AgentSource"}
         access: {$ref: "#/components/schemas/AgentAccess"}
+        approvals:
+          description: |
+            Tools whose every call waits for a person to approve it. Each is a
+            tool the agent is granted. `ask_person` in `tools` lets the agent
+            ask a person to choose or reply.
+          type: array
+          items: {type: string}
+        approvers:
+          description: |
+            When set, the only people who may answer an approval: principals by
+            subject, or this workspace's roles as `role:<name>`. Empty lets
+            anyone in the workspace approve, except the person who asked.
+          type: array
+          items: {type: string}
+        self_approval:
+          description: Lets the person whose request raised a call approve it. Off by default.
+          type: boolean
+        answerers:
+          description: When set, the only people who may answer a choice or a reply, named as approvers are.
+          type: array
+          items: {type: string}
     Revision:
       description: One immutable revision of an agent.
       type: object
@@ -2821,6 +2892,9 @@ components:
         reason:
           description: What a parked run is waiting for.
           type: string
+        question:
+          description: What a parked run is waiting on a person for. Absent once it resumes or ends.
+          $ref: "#/components/schemas/Question"
         cause:
           description: Why a stopped run was stopped, as the runtime reported it, such as `Stopped by ada`.
           type: string
@@ -2862,6 +2936,19 @@ components:
         project:
           description: Files a new conversation under a project. A follow-up keeps its conversation's project.
           type: string
+        act_as:
+          description: |
+            The person a surface asks for, such as a Slack user its client
+            maps. The run's actor is that person, so they do not approve its
+            calls. Only the credential the client names may send it.
+          $ref: "#/components/schemas/ActAs"
+    ActAs:
+      description: A person a surface authenticated itself, named by the surface's client and the surface's own user id.
+      type: object
+      required: [client, user]
+      properties:
+        client: {type: string}
+        user: {type: string}
     CreateCallRequest:
       type: object
       required: [key, agent, text, mode]
@@ -3002,7 +3089,7 @@ components:
           items: {$ref: "#/components/schemas/Run"}
 
     InboxKind:
-      description: What a message is about. `approval`, `clarification` are defined and never raised today.
+      description: What a message is about. `approval` and `clarification` are questions a run is waiting on.
       type: string
       enum: [alert, failure, memory, budget, approval, clarification, result]
     InboxState:
@@ -3103,10 +3190,55 @@ components:
         refused: {type: boolean}
         max: {type: integer, format: int64}
         current: {$ref: "#/components/schemas/InboxLimits"}
+    InboxQuestionTool:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        arguments:
+          description: What the model asked to call the tool with, as a JSON object.
+          type: object
+        schema:
+          description: The tool's parameter schema. Edited arguments must satisfy it.
+          type: object
+    InboxQuestionPart:
+      description: A question a run is parked on.
+      type: object
+      required: [run, id, kind, prompt]
+      properties:
+        run: {type: string}
+        id: {type: string}
+        kind:
+          type: string
+          enum: [approval, choice, reply]
+        agent: {type: string}
+        prompt: {type: string}
+        options:
+          type: array
+          items: {type: string}
+        tool: {$ref: "#/components/schemas/InboxQuestionTool"}
+        asked_of:
+          description: Who the agent asked, as a hint. It admits nobody.
+          type: string
+        expires_at:
+          description: When the question takes its default if nobody answers.
+          type: string
+          format: date-time
+        default:
+          description: What the run carries on with if it expires. `deny` for an approval; empty when the agent is told nobody answered.
+          type: string
+        asked_at: {type: string, format: date-time}
+        via:
+          description: The run whose stream showed the question, when that is a run waiting on the one that asked.
+          type: string
     InboxPart:
       description: |
         One typed part of a message. `type` says which of `text`, `alert`,
-        `failure`, `memory` or `budget` carries the body.
+        `failure`, `memory`, `budget` or `question` carries the body:
+        `approval`, `choice` and `reply` parts carry `question`. A settled
+        question's `outcome` is `approve`, `deny`, `choose` (the option in
+        `note`), `reply` (the words in `note`), `expired`, `stopped` or
+        `closed`.
       type: object
       required: [id, type, state, actions]
       properties:
@@ -3122,13 +3254,14 @@ components:
           type: array
           items:
             type: string
-            enum: [acknowledge, retry, keep, discard, raise_limit]
+            enum: [acknowledge, retry, keep, discard, raise_limit, approve, deny, choose, reply]
         outcome: {$ref: "#/components/schemas/InboxOutcome"}
         text: {type: string}
         alert: {$ref: "#/components/schemas/InboxAlertPart"}
         failure: {$ref: "#/components/schemas/InboxFailurePart"}
         memory: {$ref: "#/components/schemas/InboxMemoryPart"}
         budget: {$ref: "#/components/schemas/InboxBudgetPart"}
+        question: {$ref: "#/components/schemas/InboxQuestionPart"}
     InboxMessage:
       description: One message in the inbox.
       type: object
@@ -3173,16 +3306,50 @@ components:
       properties:
         action:
           type: string
-          enum: [acknowledge, retry, keep, discard, raise_limit]
+          enum: [acknowledge, retry, keep, discard, raise_limit, approve, deny, choose, reply]
         ids:
           description: The proposed notes to keep, with `keep`.
           type: array
           items: {type: string}
         note:
-          description: At most 500 characters.
+          description: At most 500 characters. On a denial the model is shown it.
           type: string
           maxLength: 500
         limits: {$ref: "#/components/schemas/InboxLimits"}
+        arguments:
+          description: Edited arguments for `approve`, as a JSON object that satisfies the tool's schema. Left out keeps the model's.
+          type: object
+        choice:
+          description: The option chosen, with `choose`.
+          type: string
+          maxLength: 4000
+        text:
+          description: The reply, with `reply`. A reply part also takes its words as `note`.
+          type: string
+          maxLength: 4000
+        act_as: {$ref: "#/components/schemas/ActAs"}
+    QuestionAnswer:
+      description: An answer to the question a run is waiting on.
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [approve, deny, choose, reply]
+        arguments:
+          description: Edited arguments for `approve`, as a JSON object that satisfies the tool's schema.
+          type: object
+        choice:
+          type: string
+          maxLength: 4000
+        text:
+          type: string
+          maxLength: 4000
+        note:
+          description: At most 500 characters. On a denial the model is shown it.
+          type: string
+          maxLength: 500
+        act_as: {$ref: "#/components/schemas/ActAs"}
 
     ArtifactKind:
       type: string
@@ -3766,6 +3933,16 @@ components:
         commands:
           type: array
           items: {$ref: "#/components/schemas/SlackCommand"}
+        machine:
+          description: The subject of the credential a Slack app signs in to the API with. Only it may act for `people`.
+          type: string
+        people:
+          description: |
+            Slack user ids in the client's team, each mapped to the principal it
+            is in this workspace, by subject. An answer clicked in Slack by a
+            person it maps is that principal's answer; anyone else is refused.
+          type: object
+          additionalProperties: {type: string}
     GitHubOptions:
       type: object
       properties:
@@ -3878,6 +4055,7 @@ components:
         - lifecycle.resumed
         - lifecycle.completed
         - lifecycle.failed
+        - lifecycle.child.parked
         - lifecycle.stopped
         - action.taken
         - usage.call
@@ -3970,6 +4148,75 @@ components:
         usage:
           description: What the run used, on `lifecycle.completed`.
           $ref: "#/components/schemas/RunUsage"
+        question:
+          description: What the run is waiting on a person for, on `lifecycle.parked`.
+          $ref: "#/components/schemas/Question"
+        answer:
+          description: The answer the run resumed with, on `lifecycle.resumed` after a question.
+          $ref: "#/components/schemas/Answer"
+    QuestionTool:
+      type: object
+      required: [name, call_id]
+      properties:
+        name: {type: string}
+        call_id: {type: string}
+        arguments:
+          description: The arguments the model asked for, as a JSON object.
+          type: object
+        schema:
+          description: The tool's parameter schema.
+          type: object
+    Question:
+      description: |
+        What a run is waiting on a person for: to approve a tool call, to
+        choose one of `options`, or to reply. `asked_of` is a routing hint and
+        admits nobody. `default` is what applies when it expires.
+      type: object
+      required: [id, kind, prompt]
+      properties:
+        id: {type: string}
+        kind:
+          type: string
+          enum: [approval, choice, reply, delegation]
+        agent: {type: string}
+        prompt: {type: string}
+        options:
+          type: array
+          items: {type: string}
+        tool: {$ref: "#/components/schemas/QuestionTool"}
+        asked_of: {type: string}
+        expires_at: {type: string, format: date-time}
+        default: {$ref: "#/components/schemas/Answer"}
+        at: {type: string, format: date-time}
+        child_run_id: {type: string}
+    Answer:
+      description: An answer to a question, or its default when nobody answered in time (`expired`).
+      type: object
+      required: [question_id]
+      properties:
+        question_id: {type: string}
+        decision:
+          type: string
+          enum: [approve, deny]
+        arguments:
+          type: object
+        choice: {type: string}
+        text: {type: string}
+        note: {type: string}
+        by:
+          description: Who answered.
+          type: string
+        at: {type: string, format: date-time}
+        expired: {type: boolean}
+        run_id: {type: string}
+    ChildQuestion:
+      description: The body of `lifecycle.child.parked`, a question a run this one waits on asked.
+      type: object
+      required: [run_id, question]
+      properties:
+        run_id: {type: string}
+        agent: {type: string}
+        question: {$ref: "#/components/schemas/Question"}
     StoppedPayload:
       description: |
         The body of `lifecycle.stopped`: the run was asked to stop and wrapped
@@ -4143,6 +4390,7 @@ components:
         - $ref: "#/components/schemas/RunResumedEvent"
         - $ref: "#/components/schemas/RunCompletedEvent"
         - $ref: "#/components/schemas/RunFailedEvent"
+        - $ref: "#/components/schemas/ChildParkedEvent"
         - $ref: "#/components/schemas/RunStoppedEvent"
         - $ref: "#/components/schemas/ActionTakenEvent"
         - $ref: "#/components/schemas/UsageCallEvent"
@@ -4164,6 +4412,7 @@ components:
           lifecycle.resumed: "#/components/schemas/RunResumedEvent"
           lifecycle.completed: "#/components/schemas/RunCompletedEvent"
           lifecycle.failed: "#/components/schemas/RunFailedEvent"
+          lifecycle.child.parked: "#/components/schemas/ChildParkedEvent"
           lifecycle.stopped: "#/components/schemas/RunStoppedEvent"
           action.taken: "#/components/schemas/ActionTakenEvent"
           usage.call: "#/components/schemas/UsageCallEvent"
@@ -4275,6 +4524,19 @@ components:
               contentEncoding: base64
               contentMediaType: application/json
               contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    ChildParkedEvent:
+      description: A run this one is waiting on is waiting on a person. Answer it on that run.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.child.parked}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/ChildQuestion"}
     RunResumedEvent:
       description: A parked run carried on.
       allOf:
@@ -4416,6 +4678,7 @@ components:
         - $ref: "#/components/schemas/ManifestRunResumedEvent"
         - $ref: "#/components/schemas/ManifestRunCompletedEvent"
         - $ref: "#/components/schemas/ManifestRunFailedEvent"
+        - $ref: "#/components/schemas/ManifestChildParkedEvent"
         - $ref: "#/components/schemas/ManifestRunStoppedEvent"
         - $ref: "#/components/schemas/ManifestActionTakenEvent"
         - $ref: "#/components/schemas/ManifestUsageCallEvent"
@@ -4437,6 +4700,7 @@ components:
           lifecycle.resumed: "#/components/schemas/ManifestRunResumedEvent"
           lifecycle.completed: "#/components/schemas/ManifestRunCompletedEvent"
           lifecycle.failed: "#/components/schemas/ManifestRunFailedEvent"
+          lifecycle.child.parked: "#/components/schemas/ManifestChildParkedEvent"
           lifecycle.stopped: "#/components/schemas/ManifestRunStoppedEvent"
           action.taken: "#/components/schemas/ManifestActionTakenEvent"
           usage.call: "#/components/schemas/ManifestUsageCallEvent"
@@ -4508,6 +4772,14 @@ components:
           properties:
             kind: {type: string, const: lifecycle.parked}
             body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestChildParkedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.child.parked}
+            body: {$ref: "#/components/schemas/ChildQuestion"}
     ManifestRunResumedEvent:
       allOf:
         - $ref: "#/components/schemas/ManifestEventBase"

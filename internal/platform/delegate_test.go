@@ -47,6 +47,14 @@ type cast struct {
 	tools map[string][]string
 	gates map[string]chan struct{}
 	once  map[string]*sync.Once
+	// shape sets anything else on an agent's spec: what waits for approval,
+	// and who may answer.
+	shape map[string]func(*agentspec.AgentSpec)
+	// continues keeps one script per agent across the models built for it,
+	// so a run that parks and resumes in a new attempt carries on where its
+	// script left off rather than starting it again.
+	continues bool
+	scripts   map[string]*agenttest.ScriptedProvider
 	// talks are agents whose first run says something and then never
 	// finishes its model call, until the call is cancelled.
 	talks map[string]talk
@@ -149,6 +157,7 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 		c.once[name] = &sync.Once{}
 	}
 	c.instances, c.cut, c.sent = map[string]int{}, map[string]chan struct{}{}, map[string][]string{}
+	c.scripts = map[string]*agenttest.ScriptedProvider{}
 	cutOnce := map[string]*sync.Once{}
 	for name := range c.talks {
 		c.cut[name], cutOnce[name] = make(chan struct{}), &sync.Once{}
@@ -173,6 +182,14 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 			says = says[tk.after:]
 		}
 		scripted := &agenttest.ScriptedProvider{Responses: says}
+		if c.continues {
+			c.mu.Lock()
+			if c.scripts[spec.Name] == nil {
+				c.scripts[spec.Name] = scripted
+			}
+			scripted = c.scripts[spec.Name]
+			c.mu.Unlock()
+		}
 		if gate, held := c.gates[spec.Name]; held {
 			return &recorded{c: c, agent: spec.Name, Provider: &gated{ScriptedProvider: scripted, gate: gate}}, nil
 		}
@@ -200,6 +217,9 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 		spec := agentspec.AgentSpec{
 			Name: name, Model: "offline", Provider: "offline", SystemPrompt: "x",
 			Tools: c.tools[name], Access: agentspec.Access{Spawn: c.spawn[name]},
+		}
+		if shape := c.shape[name]; shape != nil {
+			shape(&spec)
 		}
 		if _, err := p.Agents.Create(ctx, tenant, spec, "test"); err != nil {
 			t.Fatal(err)

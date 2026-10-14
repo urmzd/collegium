@@ -2,6 +2,7 @@ package platform
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -50,6 +51,13 @@ type Resolution struct {
 	Note string
 	// Limits are the new numbers when raising a limit.
 	Limits inbox.Limits
+	// Arguments, Choice and Text answer a question: edited arguments for an
+	// approval, the option chosen, the words of a reply.
+	Arguments json.RawMessage
+	Choice    string
+	Text      string
+	// ActAs is the person a surface answers a question for.
+	ActAs *ActAs
 }
 
 func alertKey(id string) string { return "alert:" + id }
@@ -100,15 +108,24 @@ func needs(t inbox.PartType, action string) (auth.Permission, bool) {
 		return auth.BillingWrite, true
 	case t == inbox.PartBudget && action == ActAcknowledge:
 		return auth.AlertsWrite, true
+	case t == inbox.PartApproval && (action == ActApprove || action == ActDeny),
+		t == inbox.PartChoice && action == ActChoose,
+		t == inbox.PartReply && action == ActReply:
+		// Answering resumes a run. Who may answer at all is the run's
+		// spec's to say, and is checked by the runtime besides.
+		return auth.RunsWrite, true
 	}
 	return "", false
 }
 
 var offered = map[inbox.PartType][]string{
-	inbox.PartAlert:   {ActAcknowledge},
-	inbox.PartFailure: {ActRetry, ActAcknowledge},
-	inbox.PartMemory:  {ActKeep, ActDiscard},
-	inbox.PartBudget:  {ActRaiseLimit, ActAcknowledge},
+	inbox.PartAlert:    {ActAcknowledge},
+	inbox.PartFailure:  {ActRetry, ActAcknowledge},
+	inbox.PartMemory:   {ActKeep, ActDiscard},
+	inbox.PartBudget:   {ActRaiseLimit, ActAcknowledge},
+	inbox.PartApproval: {ActApprove, ActDeny},
+	inbox.PartChoice:   {ActChoose},
+	inbox.PartReply:    {ActReply},
 }
 
 // seenBy fills in what a reader may do with each part.
@@ -131,8 +148,18 @@ func seenBy(m inbox.Message, who auth.Principal) inbox.Message {
 	return m
 }
 
+// readerOf is who a person is to the inbox: their subject and their roles,
+// which decide what is addressed to them.
+func readerOf(who auth.Principal) inbox.Reader {
+	roles := make([]string, 0, len(who.Roles))
+	for _, r := range who.Roles {
+		roles = append(roles, string(r))
+	}
+	return inbox.Reader{Subject: who.Subject, Roles: roles}
+}
+
 func (p *Platform) inboxQuery(who auth.Principal, q inbox.Query) inbox.Query {
-	q.Reader, q.Now = who.Subject, p.now()
+	q.Reader, q.Roles, q.Now = who.Subject, readerOf(who).Roles, p.now()
 	q.Visible = func(k inbox.Kind) bool { return who.Can(reads(k)) }
 	return q
 }
@@ -157,7 +184,14 @@ func (p *Platform) InboxCount(who auth.Principal) (open, unread int) {
 
 // InboxGet returns one message as a person sees it.
 func (p *Platform) InboxGet(who auth.Principal, id string) (inbox.Message, error) {
-	m, err := p.Inbox.Get(who.Tenant, id, who.Subject)
+	return p.inboxGetAs(who, readerOf(who), id)
+}
+
+// inboxGetAs returns one message as it is shown to reader, with the actions
+// the caller may take. reader is the caller, or the person a surface answers
+// for.
+func (p *Platform) inboxGetAs(who auth.Principal, reader inbox.Reader, id string) (inbox.Message, error) {
+	m, err := p.Inbox.GetAs(who.Tenant, id, reader)
 	if err != nil {
 		return inbox.Message{}, err
 	}
@@ -211,6 +245,11 @@ func (p *Platform) InboxDismiss(who auth.Principal, id string) (inbox.Message, e
 	if !who.Can(writes(m.Kind)) {
 		return inbox.Message{}, fmt.Errorf("%w: dismissing this needs %s", ErrForbidden, writes(m.Kind))
 	}
+	// A run is waiting on the answer. Setting the question aside would not
+	// stop it waiting, so it is answered, or the run is stopped.
+	if slices.ContainsFunc(m.Parts, func(x inbox.Part) bool { return x.Question != nil && x.State == inbox.PartOpen }) {
+		return inbox.Message{}, fmt.Errorf("%w: a run is waiting on this question; answer it, or stop the run", ErrAction)
+	}
 	if m.Source.Alert != "" {
 		if _, err := p.AckAlert(who.Tenant, m.Source.Alert, who.Subject); err != nil {
 			return inbox.Message{}, err
@@ -226,7 +265,14 @@ func (p *Platform) InboxDismiss(who auth.Principal, id string) (inbox.Message, e
 // and records it. Resolving a part that is already resolved does nothing and
 // returns the message with the first outcome.
 func (p *Platform) InboxResolve(ctx context.Context, who auth.Principal, id, partID string, r Resolution) (inbox.Message, error) {
-	m, err := p.InboxGet(who, id)
+	reader := readerOf(who)
+	if r.ActAs != nil {
+		var err error
+		if reader, _, err = p.answerer(who, r.ActAs); err != nil {
+			return inbox.Message{}, err
+		}
+	}
+	m, err := p.inboxGetAs(who, reader, id)
 	if err != nil {
 		return inbox.Message{}, err
 	}
@@ -235,6 +281,17 @@ func (p *Platform) InboxResolve(ctx context.Context, who auth.Principal, id, par
 		return inbox.Message{}, fmt.Errorf("%w: part %q", inbox.ErrNotFound, partID)
 	}
 	part := m.Parts[i]
+	if part.Question != nil {
+		if _, known := needs(part.Type, r.Action); !known {
+			return inbox.Message{}, fmt.Errorf("%w: a %s part does not take %q", ErrAction, part.Type, r.Action)
+		}
+		return p.answer(ctx, who, m, QuestionAnswer{
+			Action: r.Action, Arguments: r.Arguments, Choice: r.Choice, Text: r.Text, Note: r.Note, ActAs: r.ActAs,
+		})
+	}
+	if r.ActAs != nil {
+		return inbox.Message{}, fmt.Errorf("%w: only a question is answered for someone else", ErrAction)
+	}
 	perm, known := needs(part.Type, r.Action)
 	if !known {
 		return inbox.Message{}, fmt.Errorf("%w: a %s part does not take %q", ErrAction, part.Type, r.Action)

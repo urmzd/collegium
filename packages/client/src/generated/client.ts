@@ -56,6 +56,7 @@ import type {
   Preferences,
   Project,
   QueryJournalResponse,
+  QuestionAnswer,
   Resolution,
   ReviseAgentBody,
   Revision,
@@ -865,6 +866,48 @@ answers 404.
     });
   }
 
+  /** A run parks on a person to approve a tool call (`approve` or `deny`,
+optionally with edited `arguments` for an approval), to choose one of
+some options (`choose` with `choice`), or to reply in words (`reply`
+with `text`). The question is on the run as `question`, on its stream
+as `lifecycle.parked`, and in the inbox as a message addressed to the
+people who may answer it. Answering here is the same as resolving that
+message's part, and returns the message.
+
+Who may answer is decided from the run's pinned revision: the spec's
+`approvers` or `answerers` when it names them, else anyone in the
+workspace, and never the person whose request raised a call they are
+asked to approve, unless the spec sets `self_approval`. Anyone else is
+403 and nothing changes. A surface that authenticated a person itself
+answers for them with `act_as`: only the credential its client names,
+and only for a person its client maps.
+
+The first answer recorded is the answer. An answer after it, or after
+the question expired or its run was stopped, answers 200 with the
+message showing what was recorded. Another workspace's run is 404.
+ */
+  async answerQuestion(id: string, question: string, body: QuestionAnswer, options?: RequestOptions): Promise<InboxMessage> {
+    let path = "/api/runs/{id}/questions/{question}/answer";
+    path = path.replace("{id}", encodeURIComponent(String(id)));
+    path = path.replace("{question}", encodeURIComponent(String(question)));
+    return this.request<InboxMessage>("POST", path, {
+      body,
+      contentType: "application/json",
+      ...options,
+    });
+  }
+
+  async answerQuestionRaw(id: string, question: string, body: QuestionAnswer, options?: RequestOptions): Promise<ApiResponse<InboxMessage>> {
+    let path = "/api/runs/{id}/questions/{question}/answer";
+    path = path.replace("{id}", encodeURIComponent(String(id)));
+    path = path.replace("{question}", encodeURIComponent(String(question)));
+    return this.rawRequest<InboxMessage>("POST", path, {
+      body,
+      contentType: "application/json",
+      ...options,
+    });
+  }
+
   /** Get a run's tree with the spans inside each run */
   async getRunTrace(id: string, options?: RequestOptions): Promise<GetRunTraceResponse> {
     let path = "/api/runs/{id}/trace";
@@ -1289,10 +1332,14 @@ inbox, and an action the caller lacks the permission for answers 403:
 | `memory` | `keep` (with `ids`), `discard` | `agents:write` |
 | `budget` | `raise_limit` (with `limits`) | `billing:write` |
 | `budget` | `acknowledge` | `alerts:write` |
+| `approval` | `approve` (optionally with `arguments`), `deny` | `runs:write` |
+| `choice` | `choose` (with `choice`) | `runs:write` |
+| `reply` | `reply` (with `text`) | `runs:write` |
 
-`approval`, `choice` and `reply` parts are defined and never raised,
-because a run cannot be parked on a person, so `approve` and `deny`
-are not actions today. Resolving a part that is already resolved
+Answering a question is `answerQuestion` by another route, with the
+same rules: a person the question is not addressed to does not see
+it, and one the runtime refuses is 403. `act_as` answers for a person
+a surface authenticated. Resolving a part that is already resolved
 returns the first outcome. `retry` starts a new run, so it can be
 refused by a limit with 429 or 402.
  */

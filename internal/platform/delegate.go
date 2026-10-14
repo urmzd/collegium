@@ -111,6 +111,11 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 		return "", err
 	}
 	tell(report, runtime.DelegateToolName(target), child, text)
+	// A question the run asks a person is shown on the caller's stream too,
+	// as lifecycle.child.parked: the caller is waiting on it as well.
+	if err := runtime.WatchChildQuestions(ctx, child.ID); err != nil {
+		p.log.Warn("platform: an attached run's questions will not show on its caller", "run", child.ID, "caller", parent.RunID, "error", err)
+	}
 
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
