@@ -227,7 +227,7 @@ does not change who may answer a question a run already asked:
 
 | Question | Who may answer |
 |---|---|
-| Approval | `approvers` when the spec names them, else anyone in the workspace. Never the person whose request raised the run, nor the person who started the tree it is in, unless the spec sets `self_approval` |
+| Approval | `approvers` when the spec names them, else anyone in the workspace. Never the person whose request raised the run, nor the person who started the tree it is in, by any name they go by (a Slack user is also the principal the run's client maps them to), unless the spec sets `self_approval`. mandatum's `AnswerRequest` takes no requester alias, so collegium checks this before it asks the runtime. A GitHub actor is mapped to no principal, so self-approval there is not detected |
 | Choice, reply | `answerers` when the spec names them, else anyone in the workspace |
 
 `approvers` and `answerers` name principals by subject and this workspace's
@@ -242,8 +242,14 @@ people: a reader sees it only when the spec names them or a role they hold,
 and the requester never sees an approval of their own call. The agent's
 `asked_of` hint narrows that to whom it asked, when that is one of them; it
 admits nobody. A question whose rules cannot be read is addressed to nobody.
-Answering needs `runs:write` as well, and the runtime checks who may answer
-again before it records anything.
+Answering needs `runs:write` as well (for a person a surface answers for,
+their own grant must include it, not only the surface's credential's), and the
+runtime checks who may answer again before it records anything.
+
+Addressing routes a question to its inbox; it is not confidential. The
+question and an approval's arguments are also on the run, its event stream
+and its manifest, for anyone with `runs:read`. See
+[security](security.md#the-inbox).
 
 ### Answering
 

@@ -520,7 +520,8 @@ grant operator to subject "olu"
 		t.Fatal(err)
 	}
 	machine := auth.Principal{Subject: "svc-slack", Tenant: tenant, Kind: auth.Machine, Scopes: []auth.Permission{auth.RunsRead, auth.RunsWrite}}.WithPolicy(pol)
-	other := auth.Principal{Subject: "svc-other", Tenant: tenant, Kind: auth.Machine, Scopes: []auth.Permission{auth.RunsRead, auth.RunsWrite}}
+	// Under the same policy, so only the credential the client names tells it apart.
+	other := auth.Principal{Subject: "svc-other", Tenant: tenant, Kind: auth.Machine, Scopes: []auth.Permission{auth.RunsRead, auth.RunsWrite}}.WithPolicy(pol)
 	ctx := t.Context()
 	run := ask(t, p, "api-1", "picker")
 	m := questionFor(t, p, run.ID)

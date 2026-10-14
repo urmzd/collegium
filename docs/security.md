@@ -82,9 +82,18 @@ no permission, grants nothing.
   API answers a question, or asks for a run, for a Slack person (`act_as`) only
   through a Slack client that names the app's own credential as its `machine`
   and maps that person in `people`. Anyone unmapped is refused (403) and the
-  app does not ask. The answer is recorded as the mapped principal, with the
+  app does not ask. To answer, the mapped person's own grant (what the policy
+  grants their subject) must include `runs:write`, as well as the
+  credential's. The answer is recorded as the mapped principal, with the
   credential as `Via`: a credential never approves a call in a run it raised
   as itself, whoever it names. Mapping a person is `clients:write`.
+- **The machine holds its people's votes.** Whoever holds the credential a
+  Slack client names as `machine` can answer every question as any person the
+  client maps, within what each may answer, and raise runs as them. The Slack
+  app is trusted to say truthfully which Slack user clicked; the platform
+  cannot check it. Keep that credential as you would those people's sign-ins,
+  map only people who use that Slack workspace, and remove a mapping when
+  someone leaves.
 - **Lineage cannot be forged.** Only the platform's call path mints a tag with
   origin `agent`. A trigger's tag claiming it is dropped.
 - **An agent calls only who its spec allows.** The caller's pinned revision
@@ -202,7 +211,22 @@ count. A question is addressed to the people its run's pinned spec lets answer
 it (`approvers` or `answerers`, by subject or `role:<name>`), and never to the
 person who asked for an approval's run or its tree. Someone who can see the run
 but may not answer is refused with 403 on `answerQuestion`, and nothing is
-recorded. See [People in the loop](architecture.md#people-in-the-loop). The right is checked before saying whether a part is still open. A
+recorded. See [People in the loop](architecture.md#people-in-the-loop).
+
+Addressing routes a question; it does not keep it confidential. The question,
+its prompt and an approval's tool arguments are also on the run
+(`GET /api/runs/{id}`, `question`), on its event stream (`lifecycle.parked`,
+and `lifecycle.child.parked` on its caller's), and in its manifest, all
+readable by anyone in the workspace with `runs:read`. Do not have an agent put
+in a question what everyone who can read runs may not see.
+
+Who may not approve: the person whose request raised the run, and the person
+who started the tree it is in, by every name they go by: their subject, the
+trigger's actor id, and for a run a Slack connector raised, the principal the
+run's client maps that Slack user to. The platform checks this itself before
+it asks the runtime, because mandatum's `AnswerRequest` takes no requester
+alias. A GitHub connector's actor is a login no client maps, so a person
+approving a call their own GitHub event raised is not detected. The right is checked before saying whether a part is still open. A
 change is pushed to the browser as an id only, and only to callers who may see
 that kind.
 
