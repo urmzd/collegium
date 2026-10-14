@@ -568,7 +568,7 @@ func TestSpecSchemasHaveTheFieldsTheGoTypesMarshal(t *testing.T) {
 		written bool
 	}
 	shapes := map[string]shape{
-		"Principal": {typ: auth.Principal{}}, "AgentSpec": {typ: agentspec.AgentSpec{}}, "AgentSource": {typ: agentspec.Source{}},
+		"Principal": {typ: auth.Principal{}}, "AccessDecision": {typ: accessDecision{}}, "AccessHeldRole": {typ: heldRole{}}, "AgentSpec": {typ: agentspec.AgentSpec{}}, "AgentSource": {typ: agentspec.Source{}},
 		"AgentAccess": {typ: agentspec.Access{}}, "Revision": {typ: agentspec.Revision{}}, "Choice": {typ: pick.Choice{}},
 		"Note": {typ: memory.Note{}}, "Actor": {typ: envelope.Actor{}}, "Run": {typ: runs.Run{}},
 		"ThreadSummary": {typ: runs.ThreadSummary{}}, "Project": {typ: platform.Project{}}, "ProjectView": {typ: projectView{}},
@@ -820,6 +820,9 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	c.call("", "GET", "/api/me", "/api/me", "", http.StatusUnauthorized)
 	c.call(f.machine(t, "acme"), "GET", "/api/agents", "/api/agents", "", http.StatusForbidden)
 	c.call(f.machine(t, "acme"), "GET", "/api/me", "/api/me", "", http.StatusOK)
+	c.call(f.machine(t, "acme"), "GET", "/api/access/explain", "/api/access/explain?permission=runs:read", "", http.StatusOK)
+	c.call(acme, "GET", "/api/access/explain", "/api/access/explain?permission=runs:read", "", http.StatusOK)
+	c.call(acme, "GET", "/api/access/explain", "/api/access/explain?permission=everything", "", http.StatusBadRequest)
 
 	// Agents, revisions and what they remember.
 	c.call(acme, "POST", "/api/agents", "/api/agents", helperSpec, http.StatusCreated)

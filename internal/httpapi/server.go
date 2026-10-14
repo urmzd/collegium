@@ -73,6 +73,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /auth/logout", s.Authn.handleLogout)
 
 	mux.HandleFunc("GET /api/me", s.authed("", s.me))
+	// Any signed-in caller may ask, and only about themselves: it takes a
+	// permission and no subject.
+	mux.HandleFunc("GET /api/access/explain", s.authed("", s.explainAccess))
 	mux.HandleFunc("GET /api/agents", s.authed(auth.AgentsRead, s.listAgents))
 	mux.HandleFunc("POST /api/agents", s.authed(auth.AgentsWrite, s.createAgent))
 	mux.HandleFunc("PUT /api/agents/{name}", s.authed(auth.AgentsWrite, s.reviseAgent))
