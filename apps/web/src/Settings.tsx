@@ -1,10 +1,11 @@
 import { type FormEvent, useRef, useState } from "react";
+import { AccessExplain } from "./AccessExplain.tsx";
 import { ApiError, api, type Me, type Preferences, type Revision, type Settings as Workspace } from "./api.ts";
 import { BillingSettings } from "./Billing.tsx";
 import { ClientSettings } from "./Clients.tsx";
 import { agentOptions, button, card, field, Label, Menu, Problem, primary, Segmented, Switch } from "./ui.tsx";
 
-type Section = "profile" | "appearance" | "workspace" | "limits" | "connections" | "access";
+export type Section = "profile" | "appearance" | "workspace" | "limits" | "connections" | "access";
 
 const accents: { id: string; label: string }[] = [
   { id: "purple", label: "Purple" },
@@ -44,6 +45,10 @@ export function Settings({
   workspace,
   agents,
   canAdmin,
+  section,
+  onSection,
+  explain,
+  onExplain,
   onPrefs,
   onWorkspace,
 }: {
@@ -52,10 +57,16 @@ export function Settings({
   workspace: Workspace | null;
   agents: Revision[];
   canAdmin: boolean;
+  /** The section on screen. The sidebar links to some of them, so the caller holds it. */
+  section: Section;
+  onSection: (next: Section) => void;
+  /** The permission the Access section explains. */
+  explain: string;
+  onExplain: (permission: string) => void;
   onPrefs: (next: Preferences) => void;
   onWorkspace: (next: Workspace) => void;
 }) {
-  const [section, setSection] = useState<Section>("profile");
+  const setSection = onSection;
   const [problem, setProblem] = useState<string | null>(null);
   const [name, setName] = useState(prefs.display_name);
   const [project, setProject] = useState({ name: "", description: "" });
@@ -394,6 +405,7 @@ export function Settings({
                   ))}
                 </ul>
               </section>
+              <AccessExplain name={shown} permission={explain} onPermission={onExplain} />
             </>
           )}
         </div>

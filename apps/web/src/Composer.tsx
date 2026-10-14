@@ -11,10 +11,34 @@ const MAX_FILE_BYTES = 200 * 1024;
 // does not say.
 const TEXT_EXT = /\.(txt|md|markdown|csv|tsv|json|ya?ml|toml|xml|html?|css|log|sql|sh|py|go|rs|ts|tsx|js|jsx|java|rb|c|h|cpp)$/i;
 
-interface Attached {
+export interface Attached {
   id: string;
   name: string;
   text: string;
+}
+
+/** Read picked files as text to send with a message, and say why any were left out. */
+export async function readAttached(picked: FileList | File[], already: Attached[]): Promise<{ files: Attached[]; skipped: string[] }> {
+  const skipped: string[] = [];
+  const next = [...already];
+  for (const file of Array.from(picked)) {
+    const textual = file.type.startsWith("text/") || /json|xml|yaml|javascript/.test(file.type) || TEXT_EXT.test(file.name);
+    if (next.length >= MAX_FILES) skipped.push(`${file.name}: at most ${MAX_FILES} files`);
+    else if (!textual) skipped.push(`${file.name}: only text files can be attached`);
+    else if (file.size > MAX_FILE_BYTES) skipped.push(`${file.name}: larger than ${MAX_FILE_BYTES / 1024} KB`);
+    else {
+      const text = await file.text();
+      // A NUL byte means the file is not text, whatever its name says.
+      if (text.includes("\u0000")) skipped.push(`${file.name}: only text files can be attached`);
+      else next.push({ id: `${file.name}:${file.size}:${file.lastModified}`, name: file.name, text });
+    }
+  }
+  return { files: next, skipped };
+}
+
+/** A message with its attached files after it. */
+export function withAttached(text: string, files: Attached[]): string {
+  return [text.trim(), ...files.map((f) => `Attached file: ${f.name}\n\`\`\`\n${f.text}\n\`\`\``)].filter(Boolean).join("\n\n");
 }
 
 // The browser's speech recognizer, where it exists. It has no standard type yet.
@@ -120,8 +144,7 @@ export function Composer({
 
   const send = (now: boolean) => {
     if (!ready) return;
-    const parts = [value.trim(), ...files.map((f) => `Attached file: ${f.name}\n\`\`\`\n${f.text}\n\`\`\``)];
-    const text = parts.filter(Boolean).join("\n\n");
+    const text = withAttached(value, files);
     if (now) queue.sendNow(text);
     else queue.send(text);
     change("");
@@ -139,20 +162,7 @@ export function Composer({
 
   const attach = async (picked: FileList | null) => {
     if (!picked) return;
-    const skipped: string[] = [];
-    const next = [...files];
-    for (const file of Array.from(picked)) {
-      const textual = file.type.startsWith("text/") || /json|xml|yaml|javascript/.test(file.type) || TEXT_EXT.test(file.name);
-      if (next.length >= MAX_FILES) skipped.push(`${file.name}: at most ${MAX_FILES} files`);
-      else if (!textual) skipped.push(`${file.name}: only text files can be attached`);
-      else if (file.size > MAX_FILE_BYTES) skipped.push(`${file.name}: larger than ${MAX_FILE_BYTES / 1024} KB`);
-      else {
-        const text = await file.text();
-        // A NUL byte means the file is not text, whatever its name says.
-        if (text.includes("\u0000")) skipped.push(`${file.name}: only text files can be attached`);
-        else next.push({ id: `${file.name}:${file.size}:${file.lastModified}`, name: file.name, text });
-      }
-    }
+    const { files: next, skipped } = await readAttached(picked, files);
     setFiles(next);
     setNotice(skipped.length > 0 ? skipped.join(". ") : null);
   };

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+
+	"github.com/urmzd/collegium/pkg/authz"
 )
 
 // ScopePrefix namespaces this platform's scopes at the identity provider, so a
@@ -33,9 +35,44 @@ type OIDCConfig struct {
 	// GroupsClaim names the claim listing a person's groups. Empty means
 	// "groups".
 	GroupsClaim string
-	// GroupRoles maps a provider group to a role. A group not listed here
-	// grants nothing.
+	// Policy decides which roles a person's claims earn and what each role
+	// allows. Nil means DefaultPolicy, which grants no role by itself.
+	Policy *Policy
+	// GroupRoles maps a provider group to a role. Each entry becomes a
+	// grant added to Policy when the verifier is made, so a role it names
+	// must be declared there. A group not granted anything grants nothing.
 	GroupRoles map[string]Role
+}
+
+// Identity is what a policy's grants are matched against, taken from a
+// verified token's claims. The email is included only when the token says
+// it is verified, so "email domain" cannot be met by an address nobody
+// proved they own.
+func (c OIDCConfig) Identity(subject string, claims map[string]any) (authz.Identity, error) {
+	tenant, err := c.tenant(claims)
+	if err != nil {
+		return authz.Identity{}, err
+	}
+	groups := c.GroupsClaim
+	if groups == "" {
+		groups = "groups"
+	}
+	id := authz.Identity{Subject: subject, Tenant: tenant, Groups: strs(claims[groups]), Claims: claims}
+	if verified, _ := claims["email_verified"].(bool); verified {
+		id.Email = str(claims["email"])
+	}
+	return id, nil
+}
+
+func (c OIDCConfig) tenant(claims map[string]any) (string, error) {
+	if c.TenantClaim == "" {
+		return c.Tenant, nil
+	}
+	t := str(claims[c.TenantClaim])
+	if t == "" {
+		return "", fmt.Errorf("%w: token has no %q claim", ErrUnauthenticated, c.TenantClaim)
+	}
+	return t, nil
 }
 
 func (c OIDCConfig) validate() error {
@@ -60,7 +97,9 @@ func isLoopbackURL(u string) bool {
 
 // Verifier turns tokens from the identity provider into principals.
 type Verifier struct {
-	cfg      OIDCConfig
+	cfg OIDCConfig
+	// policy is cfg.Policy with cfg.GroupRoles added as grants.
+	policy   *Policy
 	provider *oidc.Provider
 	id       *oidc.IDTokenVerifier
 	access   *oidc.IDTokenVerifier
@@ -75,17 +114,31 @@ func NewVerifier(ctx context.Context, cfg OIDCConfig) (*Verifier, error) {
 	if cfg.GroupsClaim == "" {
 		cfg.GroupsClaim = "groups"
 	}
+	policy := cfg.Policy
+	if policy == nil {
+		policy = DefaultPolicy()
+	}
+	// Before discovery, so a bad table fails without a network call.
+	policy, err := policy.WithGroupRoles(cfg.GroupRoles)
+	if err != nil {
+		return nil, err
+	}
 	provider, err := oidc.NewProvider(ctx, cfg.Issuer)
 	if err != nil {
 		return nil, fmt.Errorf("auth: discover %s: %w", cfg.Issuer, err)
 	}
 	return &Verifier{
 		cfg:      cfg,
+		policy:   policy,
 		provider: provider,
 		id:       provider.Verifier(&oidc.Config{ClientID: cfg.ClientID}),
 		access:   provider.Verifier(&oidc.Config{ClientID: cfg.Audience}),
 	}, nil
 }
+
+// Policy is what the verifier assigns roles with: the configured policy plus
+// the GroupRoles grants.
+func (v *Verifier) Policy() *Policy { return v.policy }
 
 // Provider exposes the discovered endpoints for the sign-in flow.
 func (v *Verifier) Provider() *oidc.Provider { return v.provider }
@@ -121,10 +174,12 @@ func (v *Verifier) Bearer(ctx context.Context, raw string) (Principal, error) {
 	if _, isPerson := claims[v.cfg.GroupsClaim]; isPerson {
 		return v.person(tok.Subject, claims)
 	}
-	tenant, err := v.tenant(claims)
+	tenant, err := v.cfg.tenant(claims)
 	if err != nil {
 		return Principal{}, err
 	}
+	// A machine is never given roles, so the policy cannot widen it. It
+	// gets exactly the scopes on its token.
 	p := Principal{Subject: tok.Subject, Tenant: tenant, Kind: Machine, Name: str(claims["cid"])}
 	for _, s := range scopes(claims) {
 		name, ok := strings.CutPrefix(s, ScopePrefix)
@@ -141,34 +196,28 @@ func (v *Verifier) Bearer(ctx context.Context, raw string) (Principal, error) {
 }
 
 func (v *Verifier) person(subject string, claims map[string]any) (Principal, error) {
-	tenant, err := v.tenant(claims)
+	id, err := v.cfg.Identity(subject, claims)
 	if err != nil {
 		return Principal{}, err
 	}
+	// The grants that matched are kept with the roles, so a decision can
+	// later say which grant gave a role. The claims themselves are not.
+	held := v.policy.c.Held(id)
+	var roles []Role
+	for _, h := range held {
+		roles = append(roles, Role(h.Role))
+	}
 	p := Principal{
 		Subject: subject,
-		Tenant:  tenant,
+		Tenant:  id.Tenant,
 		Kind:    User,
 		Name:    str(claims["name"]),
 		Email:   str(claims["email"]),
-	}
-	for _, g := range strs(claims[v.cfg.GroupsClaim]) {
-		if role, ok := v.cfg.GroupRoles[g]; ok {
-			p.Roles = append(p.Roles, role)
-		}
+		Roles:   roles,
+		policy:  v.policy,
+		held:    held,
 	}
 	return p, nil
-}
-
-func (v *Verifier) tenant(claims map[string]any) (string, error) {
-	if v.cfg.TenantClaim == "" {
-		return v.cfg.Tenant, nil
-	}
-	t := str(claims[v.cfg.TenantClaim])
-	if t == "" {
-		return "", fmt.Errorf("%w: token has no %q claim", ErrUnauthenticated, v.cfg.TenantClaim)
-	}
-	return t, nil
 }
 
 // scopes reads Okta's "scp" array or the standard space-separated "scope".
