@@ -34,7 +34,8 @@ platform. vultus supplies the components. The design is in
 - `pkg/clients`: the Slack apps and GitHub installations a workspace answers through. `internal/platform/connectors.go`: one surface per scheme, fanning in and out to them.
 - `pkg/evals`: suites and runs, scored by saige. `pkg/pick`: who answers a message. `pkg/prefs`: a person's own settings.
 - `internal/platform`: the composition root. `internal/httpapi`: routes, sessions, event stream.
-- `cmd/collegium`: the binary. `apps/web`: the console, built on vultus.
+- `cmd/collegium`: the binary. `apps/web`: the console, built on vultus. `apps/slack`: the Slack app, a client of the API.
+- `packages/adapter`: the one adapter between the platform's wire shapes and vultus's model. The console and the Slack app both use it; nothing surface-specific goes in it.
 
 ## Commands
 
@@ -45,6 +46,8 @@ platform. vultus supplies the components. The design is in
 | Test | `make test` |
 | Preview | `make dev`, then `make web` |
 | Web checks | `cd apps/web && pnpm typecheck && pnpm test` |
+| Adapter checks | `cd packages/adapter && pnpm typecheck && pnpm test` |
+| Slack app checks | `cd apps/slack && pnpm exec biome check && pnpm typecheck && pnpm test` |
 
 ## Conventions
 
