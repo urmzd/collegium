@@ -4,6 +4,10 @@
  * (`apps/slack-sandbox/src/manifest.ts` and `serve.tsx`), where they are
  * private to that app. They belong in a vultus package: until they move, this
  * file is the copy, and it holds nothing else.
+ *
+ * vultus: export ENTRY (with the manifest), the ask form as askForm() in
+ * @vultus/render-slack (like feedbackModal), and these words in copy.ts as
+ * copy.ask.{title,label,send,cancel} and copy.notInChannel.
  */
 
 /** Ways into the agent besides a direct message or a mention. They match the sandbox manifest. */

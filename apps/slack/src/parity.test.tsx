@@ -1,14 +1,22 @@
 import "./react.ts";
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { type BusEvent, follow, fromServer, type Run, replay } from "@collegium/adapter";
+import {
+  type BusEvent,
+  follow,
+  fromServer,
+  type PlatformMessage,
+  type Run,
+  replay,
+} from "@collegium/adapter";
 import { defaultCopy, MessageView, TurnView } from "@vultus/components";
-import type { Turn } from "@vultus/core";
+import { type MessagePart, partResolution, type Turn } from "@vultus/core";
 import { renderToSlack } from "@vultus/render-slack";
 import { WebSurface } from "@vultus/render-web";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { failureMail, memoryMail } from "./harness.ts";
+import { forSlack } from "./app.tsx";
+import { alertMail, budgetMail, failureMail, memoryMail } from "./harness.ts";
 
 /**
  * One state, two renderers. A recorded run goes through the shared adapter
@@ -75,6 +83,74 @@ function web(element: ReactElement): string {
     .replace(/\s+/g, " ");
 }
 
+/** Text as both surfaces reduce it: no markup, no emphasis, single spaces. */
+const plain = (t: string) =>
+  t
+    .replace(/[*_`>]/g, "")
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+
+/**
+ * Everything a turn holds that a person must be able to read, taken from the
+ * model and not from either renderer. A renderer that drops a task's output,
+ * a citation, a file, the failure or the stop fails the comparison.
+ */
+function turnContent(turn: Turn): string[] {
+  return [
+    ...turn.text.split(/\n+/),
+    ...turn.tasks.flatMap((t) => [t.title, t.output ?? ""]),
+    ...turn.citations.map((c) => c.title),
+    ...(turn.attachments ?? []).map((a) => ("title" in a ? (a.title ?? "") : "")),
+    ...turn.notices.flatMap((n) => [n.title ?? "", n.body]),
+    turn.failure?.message ?? "",
+    turn.status === "stopped" ? defaultCopy.stopped : "",
+    turn.stop ? defaultCopy.stopPhase[turn.stop] : "",
+    defaultCopy.disclaimer(turn.agent.name),
+  ]
+    .map(plain)
+    .filter(Boolean);
+}
+
+/** Everything an inbox message holds that a person must be able to read. */
+function messageContent(message: PlatformMessage): string[] {
+  const part = (p: MessagePart): string[] => {
+    const done = partResolution(p);
+    const record = done?.detail ? [done.detail] : [];
+    switch (p.type) {
+      case "text":
+        return [p.text];
+      case "memory":
+        return [...p.proposals.map((n) => n.text), ...record];
+      case "alert":
+        return [p.alert.title, p.alert.body ?? "", ...record];
+      case "failure":
+        return [p.failure.message, ...record];
+      case "budget":
+        return [defaultCopy.budgetTitle, ...record];
+      default:
+        return record;
+    }
+  };
+  return [message.subject, ...message.parts.flatMap(part)].map(plain).filter(Boolean);
+}
+
+/** What each surface is missing of some content. Both lists must be empty. */
+function missing(slackText: string, webText: string, content: string[]) {
+  const s = plain(slackText);
+  const w = plain(webText);
+  return {
+    slack: content.filter((c) => !s.includes(c)),
+    web: content.filter((c) => !w.includes(c)),
+  };
+}
+
+/** Both surfaces show all of a turn. */
+function bothShow(turn: Turn) {
+  const el = <TurnView turn={turn} />;
+  assert.deepEqual(missing(slack(el), web(el), turnContent(turn)), { slack: [], web: [] });
+}
+
 /** Both surfaces say each of these. */
 function bothSay(element: ReactElement, ...phrases: string[]) {
   const s = slack(element);
@@ -90,6 +166,25 @@ const answered = [
   ev("lifecycle.started", { attempt: 1 }),
   ev("delta.tool.call", { id: "t1", name: "github.search", phase: "requested" }),
   ev("delta.tool.done", { id: "t1", result: "3 commits" }),
+  ev("delta.citation", {
+    label: "c1",
+    index: 1,
+    text: "Deploy 4812 went out at 14:52.",
+    source: { document_title: "Deploy log", source_uri: "https://deploys.example.com/4812" },
+  }),
+  ev("delta.tool.call", { id: "t2", name: "publish_artifact" }),
+  ev("action.taken", {
+    name: "publish_artifact",
+    data: {
+      id: "art-1",
+      title: "deploy-notes.md",
+      kind: "document",
+      mime: "text/markdown",
+      size: 120,
+      version: 1,
+    },
+  }),
+  ev("delta.tool.done", { id: "t2", result: "published" }),
   ev("delta.text", { text: "Three commits " }),
   ev("delta.text", { text: "went out." }),
   ev("lifecycle.completed", { text: "Three commits went out." }),
@@ -103,14 +198,14 @@ test("a streamed answer with a tool call is one turn, rendered by both surfaces"
   assert.equal(turn.text, "Three commits went out.");
   assert.deepEqual(
     turn.tasks.map((t) => [t.title, t.status, t.output]),
-    [["Github search", "complete", "3 commits"]],
+    [
+      ["Github search", "complete", "3 commits"],
+      ["Publish artifact", "complete", "published"],
+    ],
   );
-  bothSay(
-    <TurnView turn={turn} />,
-    "Three commits went out.",
-    "Github search",
-    defaultCopy.disclaimer("lead"),
-  );
+  assert.equal(turn.citations.length, 1);
+  assert.equal(turn.attachments?.length, 1);
+  bothShow(turn);
 });
 
 test("a failed run is the same failure in both", () => {
@@ -128,7 +223,8 @@ test("a failed run is the same failure in both", () => {
     reference: RUN,
   });
   // The reference is a copy chip on the web and a line of text on Slack: the same id either way.
-  bothSay(<TurnView turn={turn} />, "provider: 529 overloaded", defaultCopy.retry, RUN);
+  bothSay(<TurnView turn={turn} />, defaultCopy.retry, RUN);
+  bothShow(turn);
 
   // A run whose final event is gone is ended from its record, to the same state.
   const fromRecord = live(
@@ -145,13 +241,8 @@ test("a stopped run is stopped in both, with nothing after the stop", () => {
   assert.equal(turn.status, "stopped");
   assert.equal(turn.stop, "confirmed");
   assert.equal(turn.text, "Part one. ");
-  bothSay(
-    <TurnView turn={turn} />,
-    "Part one.",
-    defaultCopy.stopped,
-    defaultCopy.stopPhase.confirmed,
-    defaultCopy.resume,
-  );
+  bothSay(<TurnView turn={turn} />, defaultCopy.resume);
+  bothShow(turn);
 
   // The model call was not interrupted, so the record may still gain an answer. A stopped turn does not.
   const f = follow(run());
@@ -201,6 +292,20 @@ test("an inbox item is one message, with the same choices in both", () => {
   bothSay(<MessageView message={decided} />, "Kept 1 of 2");
   assert.ok(!slack(<MessageView message={decided} />).includes(defaultCopy.keepSelected));
   assert.ok(!/Keep \d/.test(web(<MessageView message={decided} />)));
+});
+
+test("every kind of inbox message holds the same content on both, as each surface is given it", () => {
+  for (const wire of [memoryMail(RUN), failureMail(RUN), alertMail(), budgetMail()]) {
+    const message = fromServer(wire);
+    // The console renders the message as the platform sends it, Slack as the app hands it over.
+    const s = slack(<MessageView message={forSlack(message)} />);
+    const w = web(<MessageView message={message} />);
+    assert.deepEqual(
+      missing(s, w, messageContent(message)),
+      { slack: [], web: [] },
+      String(wire.id),
+    );
+  }
 });
 
 test("an approval for a run that waits on a person is not something the platform sends yet", () => {

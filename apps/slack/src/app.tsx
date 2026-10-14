@@ -23,8 +23,14 @@ import {
   type Turn,
   type UiAction,
 } from "@vultus/core";
-import { decodeSlackAction, LIMITS, reactionChanges, renderToSlack } from "@vultus/render-slack";
-import { choose, type Routing } from "./agents.ts";
+import {
+  decodeSlackAction,
+  LIMITS,
+  reactionChanges,
+  renderToSlack,
+  type SerializeResult,
+} from "@vultus/render-slack";
+import { choose, mayRoute, type Routing } from "./agents.ts";
 import {
   type Agent,
   type ClientRecord,
@@ -67,6 +73,8 @@ export interface AppOptions {
   flushMs?: number;
   /** How often a run's record is read while it is being followed. */
   pollMs?: number;
+  /** How long a run may go without an event or a change to its record before the turn stops waiting for it. */
+  stallMs?: number;
   log?: (line: string) => void;
 }
 
@@ -80,6 +88,11 @@ interface Job {
   key: string;
   /** Set when a turn is asked again: who answers and where it continues are already known. */
   again?: { agent: string; after?: string };
+  /**
+   * Who the run is for, when that is not the person who sent this. A turn
+   * asked again stays its first asker's; null when nobody is known.
+   */
+  requester?: string | null;
 }
 
 type Item =
@@ -146,12 +159,54 @@ class Recent<V> extends Map<string, V> {
  * only fixed amounts to raise a limit to, and the platform names none, so on
  * Slack a reached limit is something to read: it is raised in the console.
  */
-function forSlack(message: PlatformMessage): PlatformMessage {
+// vultus: MessagePartView's budget part needs a raise control that takes an amount (not only
+// fixed `raiseTo` buttons) and an Acknowledge button, and render-slack must drop an empty actions
+// block. Until then a limit is read-only here.
+export function forSlack(message: PlatformMessage): PlatformMessage {
   return {
     ...message,
     parts: message.parts.map((p) => (p.type === "budget" ? { ...p, allowed: [] } : p)),
   };
 }
+
+/**
+ * A refusal or an error from collegium, as vultus's failure copy. The
+ * platform's own words go to the log, never to Slack: they can name internals.
+ */
+function publicFailure(e: unknown): Failure {
+  const status = e instanceof CollegiumError ? e.status : 0;
+  if (status === 429 || status === 402) {
+    const resets = e instanceof CollegiumError ? e.refusal?.resets_at : undefined;
+    const wait = resets ? Math.max(0, Math.round((Date.parse(resets) - Date.now()) / 1000)) : 0;
+    return {
+      kind: "rate_limited",
+      message: defaultCopy.budgetTitle,
+      httpStatus: status,
+      ...(wait ? { retryAfterSeconds: wait } : {}),
+    };
+  }
+  // vultus: failure copy has titles only (copy.failure[kind]); a body per kind, such as
+  // copy.failureBody[kind], would stop the title being repeated as the message here.
+  if (status === 401 || status === 403) {
+    return { kind: "forbidden", message: defaultCopy.failure.forbidden(), httpStatus: status };
+  }
+  if (status === 0 || status >= 500) {
+    return {
+      kind: "unavailable",
+      service: "collegium",
+      message: defaultCopy.failure.unavailable("collegium"),
+      ...(status ? { httpStatus: status } : {}),
+    };
+  }
+  return { kind: "internal", message: defaultCopy.failure.internal(), httpStatus: status };
+}
+
+/** Nobody this app may reach can answer. */
+// vultus: needs copy for this, such as copy.noAgent(how to name one).
+const NO_AGENT: Failure = {
+  kind: "forbidden",
+  message: "No agent answers here yet. Name one this app may reach, as @name.",
+};
 
 const short = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 20);
 
@@ -162,13 +217,14 @@ export class App {
   /** Who asked for each run, by Slack user id. */
   private readonly requesters = new Recent<string>(10_000);
   /** Inbox messages posted to a thread, so a change edits the post instead of adding one. */
-  private readonly mail = new Recent<{ channel: string; ts: string }>(2_000);
+  private readonly mail = new Recent<{ channel: string; ts: string; threadTs?: string }>(2_000);
   private readonly work = new Set<Promise<unknown>>();
   private native = true;
   private agentList: { at: number; agents: Agent[] } | null = null;
   private clientRecord: { at: number; client: ClientRecord | null } | null = null;
   private readonly flushMs: number;
   private readonly pollMs: number;
+  private readonly stallMs: number;
 
   constructor(
     private readonly slack: SlackApi,
@@ -177,6 +233,7 @@ export class App {
   ) {
     this.flushMs = opts.flushMs ?? 700;
     this.pollMs = opts.pollMs ?? 5_000;
+    this.stallMs = opts.stallMs ?? 15 * 60_000;
   }
 
   private log(line: string) {
@@ -239,11 +296,8 @@ export class App {
     if (!this.opts.clientId) return { defaultAgent: this.opts.defaultAgent };
     if (!this.clientRecord || Date.now() - this.clientRecord.at >= 30_000) {
       const found = await this.collegium.getClient(this.opts.clientId);
-      // A client that is gone, or is for another surface or team, routes to nothing.
-      const ours =
-        found &&
-        found.surface === "slack" &&
-        (!found.identity?.team || found.identity.team === this.opts.team);
+      // A client that is gone, is for another surface, or does not name this team routes to nothing.
+      const ours = found && found.surface === "slack" && found.identity?.team === this.opts.team;
       this.clientRecord = {
         at: Date.now(),
         client: ours
@@ -423,16 +477,15 @@ export class App {
       placed = await this.place(job);
       // Collegium already has a run for this Slack event: it was answered before a restart.
       if (placed === "duplicate") return "done" as const;
+      const routing = await this.routing();
       if (!job.again) {
-        const choice = choose(job.text, await this.agents(), await this.routing());
-        if (choice.agent === null) {
-          return this.refuse(job, presenter, "", {
-            kind: "forbidden",
-            message: "No agent answers here yet. Name one this app may reach, as @name.",
-          });
-        }
+        const choice = choose(job.text, await this.agents(), routing);
+        if (choice.agent === null) return this.refuse(job, presenter, "", NO_AGENT);
         agent = choice.agent;
         text = choice.text;
+      } else if (!mayRoute(routing, agent)) {
+        // Asked again after the client was disabled or the agent left its list.
+        return this.refuse(job, presenter, agent, NO_AGENT);
       }
       // Stop was pressed before there was a run to stop: say so and settle the session.
       if (live.stopped) {
@@ -448,24 +501,8 @@ export class App {
         placed.key,
       );
     } catch (e) {
-      if (!(e instanceof CollegiumError)) throw e;
-      const refusal = e.refusal;
-      const wait = refusal?.resets_at
-        ? Math.max(0, Math.round((Date.parse(refusal.resets_at) - Date.now()) / 1000))
-        : undefined;
-      return this.refuse(job, presenter, agent, {
-        kind:
-          e.status === 429
-            ? "rate_limited"
-            : e.status === 402 || e.status === 403
-              ? "forbidden"
-              : e.status >= 500
-                ? "unavailable"
-                : "internal",
-        message: e.message,
-        httpStatus: e.status,
-        ...(wait ? { retryAfterSeconds: wait } : {}),
-      });
+      this.log(`collegium refused the turn: ${(e as Error).message}`);
+      return this.refuse(job, presenter, agent, publicFailure(e));
     }
 
     live.run = run;
@@ -474,7 +511,8 @@ export class App {
       const told = await this.collegium.stopRun(run.id).catch(() => undefined);
       items.push({ type: "stopped", run: told });
     }
-    this.requesters.set(run.id, job.user);
+    const owner = job.requester === undefined ? job.user : job.requester;
+    if (owner) this.requesters.set(run.id, owner);
     this.log(`run ${run.id} for ${job.user} in ${job.session.channel}, answered by ${run.agent}`);
     const following = follow(run, { href: this.href });
     const abort = new AbortController();
@@ -527,6 +565,8 @@ export class App {
     let dirty = false;
     let last = 0;
     let over = 0;
+    let progress = Date.now();
+    let seen = run.updated_at;
     for (;;) {
       const item = await items.next();
       if (item.type === "stopped") {
@@ -539,7 +579,12 @@ export class App {
       }
       // Stop was pressed: nothing more of this run is rendered while collegium is told.
       if (live.stopped) continue;
+      if (item.type === "record" && item.run.updated_at !== seen) {
+        seen = item.run.updated_at;
+        progress = Date.now();
+      }
       if (item.type === "event" && item.event.run_id === run.id) {
+        progress = Date.now();
         const before = following.turn;
         dirty = following.apply(item.event) !== before || dirty;
       } else if (item.type === "record" && terminal(item.run.status)) {
@@ -547,6 +592,18 @@ export class App {
         // for its final event to arrive, so the streamed answer is not cut short.
         over += 1;
         if (item.run.status === "stopped" || over > 1) following.settle(item.run);
+      } else if (item.type === "record" && Date.now() - progress > this.stallMs) {
+        // Nothing has moved for too long. The turn stops waiting; the run is not stopped.
+        this.log(`run ${run.id} made no progress for ${this.stallMs}ms, no longer following it`);
+        following.push({
+          type: "turn.failed",
+          failure: {
+            kind: "timeout",
+            message: defaultCopy.failure.timeout(),
+            reference: run.id,
+            retryable: false,
+          },
+        });
       } else if (item.type === "broken") {
         this.log(`event stream for ${run.id} ended: ${item.error.message}`);
         await read();
@@ -602,15 +659,9 @@ export class App {
     for (const run of stopped) {
       if (run.id === following?.id || run.status !== "stopped") continue;
       const turn = follow(run, { href: this.href }).settle(run);
-      const view = renderToSlack(<TurnView turn={turn} />);
-      await this.slack
-        .call("chat.postMessage", {
-          channel: session.channel,
-          thread_ts: session.threadTs,
-          text: view.text.slice(0, LIMITS.fallbackText),
-          blocks: view.blocks,
-        })
-        .catch((e: Error) => this.log(`stop not confirmed in the thread: ${e.message}`));
+      await this.postView(session, renderToSlack(<TurnView turn={turn} />)).catch((e: Error) =>
+        this.log(`stop not confirmed in the thread: ${e.message}`),
+      );
     }
     if (!live) {
       await this.slack
@@ -654,29 +705,43 @@ export class App {
     if (message) return this.onMail(p, ui, message);
     if (ui.id === ActionId.retry || ui.id === ActionId.resume) {
       const run = await this.collegium.getRun(ui.payload.turnId);
-      if (!run || !this.again(run, p.user.id, p.message?.ts)) {
-        await this.whisper(p, defaultCopy.cantRetry);
-      }
+      const outcome = run ? await this.again(run, p.user.id, p.message?.ts) : "elsewhere";
+      if (outcome === "not-yours") await this.whisper(p, defaultCopy.notYours);
+      else if (outcome !== "started") await this.whisper(p, defaultCopy.cantRetry);
     }
     // Opening a called run, reporting and reconnecting have nowhere to go from Slack yet.
   }
 
-  /** Ask a turn again, in the thread it was asked in. False when that thread is not this app's. */
-  private again(run: Run, user: string, clickedTs?: string): boolean {
+  /**
+   * Ask a turn again, in the thread it was asked in. Only the person who asked
+   * for it, or an operator, may: a retry is a new run on their behalf. When
+   * who asked is not known (after a restart) only an operator may. The new run
+   * stays its first asker's, and the routing rules are checked again.
+   */
+  private async again(
+    run: Run,
+    user: string,
+    clickedTs?: string,
+  ): Promise<"started" | "not-yours" | "elsewhere" | "not-routed"> {
     const session = sessionOf(this.opts.subject, run.thread);
-    if (!session || session.team !== this.opts.team) return false;
+    if (!session || session.team !== this.opts.team) return "elsewhere";
+    const owner = this.requesters.get(run.id);
+    const operator = (this.opts.operators ?? []).includes(user);
+    if (!operator && (!owner || owner !== user)) return "not-yours";
+    if (!mayRoute(await this.routing(), run.agent)) return "not-routed";
     const { agent, text, after } = retryOf(run);
     this.enqueue({
       session,
       text,
       triggerTs: clickedTs ?? session.threadTs,
       user,
+      requester: owner ?? null,
       // One retry per run: a second click joins the first.
       key: `slack-again-${short(run.id)}`,
       // The first turn of a conversation is asked again after itself, so the thread stays one conversation.
       again: { agent, after: after ?? run.id },
     });
-    return true;
+    return "started";
   }
 
   /**
@@ -706,7 +771,7 @@ export class App {
     let request = toRequest(message, ui);
     if (ui.id === ActionId.retry && part?.type === "failure" && part.failure.reference) {
       const run = await this.collegium.getRun(part.failure.reference);
-      if (run && this.again(run, p.user.id, p.message?.ts)) {
+      if (run && (await this.again(run, p.user.id, p.message?.ts)) === "started") {
         request = { call: "resolve", partId: part.id, action: "acknowledge" };
       }
     }
@@ -715,25 +780,67 @@ export class App {
     try {
       updated = await this.collegium.inbox.send(message, request);
     } catch (e) {
-      if (!(e instanceof CollegiumError)) throw e;
-      return this.whisper(p, e.message);
+      // The platform's words stay in the log. The person is told in vultus's.
+      this.log(`inbox ${message.id} was not settled: ${(e as Error).message}`);
+      const status = e instanceof CollegiumError ? e.status : 0;
+      return this.whisper(
+        p,
+        status === 403 ? defaultCopy.noPermission : defaultCopy.failure.internal(),
+      );
     }
     const channel = p.channel?.id ?? p.container?.channel_id;
     if (p.container?.type === "view" || p.view?.type === "home") {
       await this.publishHome(p.user.id);
     } else if (channel && p.message?.ts) {
-      await this.showMail(updated, { channel, ts: p.message.ts });
+      await this.showMail(updated, {
+        channel,
+        ts: p.message.ts,
+        ...(p.message.thread_ts ? { threadTs: p.message.thread_ts } : {}),
+      });
     }
   }
 
-  private async showMail(message: PlatformMessage, at: { channel: string; ts: string }) {
+  /** Post a rendered view in a thread, every page of it. Returns the first message. */
+  private async postView(
+    at: { channel: string; threadTs: string },
+    view: SerializeResult,
+  ): Promise<string> {
+    let first = "";
+    for (const [i, blocks] of view.pages.entries()) {
+      const sent = await this.slack.call<{ ts: string }>("chat.postMessage", {
+        channel: at.channel,
+        thread_ts: at.threadTs,
+        // vultus: needs a fallback-text helper for continued pages, as for turns.
+        text: (i === 0 ? view.text : `(${i + 1}/${view.pages.length}) ${view.text}`).slice(
+          0,
+          LIMITS.fallbackText,
+        ),
+        blocks,
+      });
+      first ||= sent.ts;
+    }
+    return first;
+  }
+
+  /** Edit a posted view. Pages beyond the first follow it in the thread. */
+  private async showMail(
+    message: PlatformMessage,
+    at: { channel: string; ts: string; threadTs?: string },
+  ) {
     const view = renderToSlack(<MessageView message={forSlack(message)} />);
+    const [first = [], ...rest] = view.pages;
     await this.slack.call("chat.update", {
       channel: at.channel,
       ts: at.ts,
       text: view.text.slice(0, LIMITS.fallbackText),
-      blocks: view.blocks,
+      blocks: first,
     });
+    if (rest.length > 0 && at.threadTs) {
+      await this.postView(
+        { channel: at.channel, threadTs: at.threadTs },
+        { ...view, pages: rest, blocks: rest[0] ?? [] },
+      );
+    }
   }
 
   /** An inbox message changed. One about a run in this app's thread is shown there, once, and kept current. */
@@ -749,14 +856,11 @@ export class App {
     const run = about ? await this.collegium.getRun(about.id) : null;
     const session = run ? sessionOf(this.opts.subject, run.thread) : null;
     if (!session || session.team !== this.opts.team) return;
-    const view = renderToSlack(<MessageView message={forSlack(message)} />);
-    const sent = await this.slack.call<{ ts: string }>("chat.postMessage", {
-      channel: session.channel,
-      thread_ts: session.threadTs,
-      text: view.text.slice(0, LIMITS.fallbackText),
-      blocks: view.blocks,
-    });
-    this.mail.set(message.id, { channel: session.channel, ts: sent.ts });
+    const ts = await this.postView(
+      session,
+      renderToSlack(<MessageView message={forSlack(message)} />),
+    );
+    this.mail.set(message.id, { channel: session.channel, ts, threadTs: session.threadTs });
   }
 
   /** The Home tab: what is waiting on this person. An operator sees the whole inbox the app may read. */
@@ -790,6 +894,8 @@ export class App {
     try {
       root = await this.slack.call("chat.postMessage", {
         channel: where.channel,
+        // vultus: needs a component for the asking message itself, such as RequestView({by, text}),
+        // which the web shows as the user's bubble. Until then it is the person and their words.
         text: `<@${where.user}>: ${text}`,
       });
     } catch (e) {
@@ -815,6 +921,7 @@ export class App {
     const text = (c.text ?? "").trim();
     if (!text || text === "help") {
       // Who can be asked, in the platform's own words.
+      // vultus: needs an AgentList component (name, description), as the console's agent menu shows.
       const routing = await this.routing();
       const lines = (await this.agents())
         .filter((a) => choose(`@${a.name}`, [a], routing).how === "named")

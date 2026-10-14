@@ -5,6 +5,8 @@ import { slackClient, socketMode } from "./slack.ts";
 
 /** The permissions the app cannot work without. Others unlock more of the inbox, see the README. */
 const NEEDED = ["runs:read", "runs:write", "agents:read"];
+/** What some buttons can use when granted. Anything beyond is more than the app needs. */
+const USEFUL = [...NEEDED, "clients:read", "agents:write", "alerts:read", "alerts:write"];
 
 const log = (line: string) => console.log(`${new Date().toISOString()} ${line}`);
 
@@ -24,6 +26,13 @@ async function main() {
   );
   if (lacking.length > 0) {
     throw new Error(`The collegium credential lacks ${lacking.join(", ")}.`);
+  }
+  // More than the app can use is allowed, but every button in Slack acts with it.
+  const extra = permissions.filter((p) => !USEFUL.includes(p));
+  if (extra.length > 0) {
+    log(
+      `warning: the collegium credential also grants ${extra.join(", ")}, which this app never uses`,
+    );
   }
 
   // The bot token decides the team in the same way.

@@ -72,7 +72,16 @@ Every button in Slack acts with the app's rights, so each extra scope lets the
 people in the loop do more: `agents:write` keeps or discards memories,
 `alerts:read` and `alerts:write` show and acknowledge alerts. Only the person
 who asked for the run, or someone in `SLACK_OPERATORS`, may settle an inbox
-item. A reached limit is shown, not raised: raise it in the console.
+item or ask a turn again; a retry stays the first asker's, and is checked
+against the client's agents again. When who asked is not known (after a
+restart), only an operator may. A reached limit is shown, not raised: raise it
+in the console.
+
+A refusal or error from collegium is shown in vultus's failure words; the
+platform's own text goes to the log. A Slack write that fails mid-turn stops
+the streaming, and the whole turn is posted when it ends, with the session set
+off processing. A run that makes no progress for 15 minutes is no longer
+waited for (it is not stopped).
 
 ## What survives a restart
 
@@ -86,7 +95,7 @@ going.
 Kept in memory, and lost on restart:
 
 - Who asked for each run. After a restart only operators can settle that run's
-  inbox items, and Home shows a person nothing until they ask again.
+  inbox items or retry it, and Home shows a person nothing until they ask again.
 - Which inbox messages were posted to a thread. A change to one after a
   restart is not reflected in the thread.
 - The queue of messages waiting behind a turn.

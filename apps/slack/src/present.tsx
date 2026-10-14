@@ -64,6 +64,8 @@ export class Presenter {
   /** Native streaming until Slack refuses it, then post and update. */
   private native: boolean;
   private closed = false;
+  /** A write failed mid-turn. Nothing more is written until the turn ends. */
+  private degraded = false;
   /** The session status Slack was last told. */
   private session: string | null = null;
   /** A session in a code channel is the channel itself, with no thread. */
@@ -231,57 +233,93 @@ export class Presenter {
     return true;
   }
 
-  /** Bring Slack up to a turn that is still going. */
+  /**
+   * Bring Slack up to a turn that is still going. A write Slack refuses does
+   * not end the turn: the presenter stops writing as it goes, and `finish`
+   * still ends it.
+   */
   async update(turn: Turn): Promise<void> {
-    if (this.closed) return;
+    if (this.closed || this.degraded) return;
     await this.sync(turn);
-    if (this.native) {
-      try {
-        if (!this.ts) await this.open(turn);
-        const { chunks } = streamUpdate(this.sent, turn);
-        if (chunks.length > 0) await this.append(turn, chunks);
-        this.sent = turn;
-        return;
-      } catch (e) {
-        if (!this.refused(e)) throw e;
+    try {
+      if (this.native) {
+        try {
+          if (!this.ts) await this.open(turn);
+          const { chunks } = streamUpdate(this.sent, turn);
+          if (chunks.length > 0) await this.append(turn, chunks);
+          this.sent = turn;
+          return;
+        } catch (e) {
+          if (!this.refused(e)) throw e;
+        }
       }
+      const view = renderToSlack(<TurnView turn={turn} />);
+      const [first = []] = view.pages;
+      if (first.length === 0) return;
+      if (!this.ts) await this.post(first, view.text);
+      else await this.edit(first, view.text);
+      this.sent = turn;
+    } catch (e) {
+      // The rest is written once, whole, when the turn ends.
+      this.degraded = true;
+      this.log(`writing the turn failed, it will be posted when it ends: ${(e as Error).message}`);
     }
-    const view = renderToSlack(<TurnView turn={turn} />);
-    const [first = []] = view.pages;
-    if (first.length === 0) return;
-    if (!this.ts) await this.post(first, view.text);
-    else await this.edit(first, view.text);
-    this.sent = turn;
   }
 
-  /** End the turn on Slack with its final layout, and settle the reaction and the session. */
+  /**
+   * End the turn on Slack with its final layout, and settle the reaction and
+   * the session. It always gets as far as the session: when the message being
+   * written cannot take the end of the turn, the stream is closed and the
+   * whole turn is posted again as a new message.
+   */
   async finish(turn: Turn): Promise<Presented> {
     if (this.closed) return { ts: this.ts, messages: this.messages };
     this.closed = true;
-    if (this.native && this.ts) {
-      // Flush what was not yet appended, then stop with the final layout.
-      const { chunks } = streamUpdate(this.sent, turn);
-      if (chunks.length > 0) await this.append(turn, chunks);
-      const title = streamStopTitle(turn);
-      const final = renderToSlack(<TurnView turn={turn} streamed />);
-      const [first = [], ...rest] = final.pages;
-      await this.slack.call("chat.stopStream", {
-        channel: this.target.channel,
-        ts: this.ts,
-        ...(title ? { chunks: [{ type: "plan_update", title }] } : {}),
-        blocks: first,
-      });
-      await this.overflow(rest, final.text, final.pages.length);
-      for (const w of final.warnings) this.log(`render warning: ${w}`);
-    } else {
-      // Nothing was streamed, so the message carries the whole turn.
+    try {
+      if (this.degraded) throw new Error("an earlier write failed");
+      if (this.native && this.ts) {
+        // Flush what was not yet appended, then stop with the final layout.
+        const { chunks, rewritten } = streamUpdate(this.sent, turn);
+        // Words Slack already has were changed: a stream cannot take that back.
+        if (rewritten) throw new Error("the answer was rewritten after it streamed");
+        if (chunks.length > 0) await this.append(turn, chunks);
+        const title = streamStopTitle(turn);
+        const final = renderToSlack(<TurnView turn={turn} streamed />);
+        const [first = [], ...rest] = final.pages;
+        await this.slack.call("chat.stopStream", {
+          channel: this.target.channel,
+          ts: this.ts,
+          ...(title ? { chunks: [{ type: "plan_update", title }] } : {}),
+          blocks: first,
+        });
+        await this.overflow(rest, final.text, final.pages.length);
+        for (const w of final.warnings) this.log(`render warning: ${w}`);
+      } else {
+        // Nothing was streamed, so the message carries the whole turn.
+        const final = renderToSlack(<TurnView turn={turn} />);
+        const [first = [], ...rest] = final.pages;
+        if (!this.ts) await this.post(first, final.text);
+        else await this.edit(first, final.text);
+        await this.overflow(rest, final.text, final.pages.length);
+        for (const w of final.warnings) this.log(`render warning: ${w}`);
+      }
+    } catch (e) {
+      this.log(`ending the turn in place failed, posting it whole: ${(e as Error).message}`);
+      if (this.native && this.ts) {
+        await this.slack
+          .call("chat.stopStream", { channel: this.target.channel, ts: this.ts })
+          .catch(() => {});
+      }
       const final = renderToSlack(<TurnView turn={turn} />);
-      const [first = [], ...rest] = final.pages;
-      if (!this.ts) await this.post(first, final.text);
-      else await this.edit(first, final.text);
-      await this.overflow(rest, final.text, final.pages.length);
-      for (const w of final.warnings) this.log(`render warning: ${w}`);
+      try {
+        const [first = [], ...rest] = final.pages;
+        await this.post(first, final.text);
+        await this.overflow(rest, final.text, final.pages.length);
+      } catch (again) {
+        this.log(`the turn could not be posted: ${(again as Error).message}`);
+      }
     }
+    // Reactions and the session status are each tried, whatever happened above.
     await this.sync(turn);
     return { ts: this.ts, messages: this.messages };
   }
@@ -289,6 +327,7 @@ export class Presenter {
   /** Final blocks that outgrew one message follow it. Each needs its own fallback text. */
   private async overflow(rest: Block[][], text: string, total: number) {
     for (const [i, blocks] of rest.entries()) {
+      // vultus: needs a fallback-text helper for continued pages, such as copy.continued(page, of, text).
       await this.post(blocks, `(${i + 2}/${total}) ${text}`);
     }
   }

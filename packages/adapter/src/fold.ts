@@ -37,7 +37,14 @@ export function follow(run: Pick<Run, "id" | "agent">, opts: Options = {}): Foll
     },
     apply: (e) => push(...to(e)),
     push,
-    settle: (record) => push(...settled(turn, record)),
+    settle: (record) => {
+      // The record's answer is the whole answer. When the streamed text is not
+      // where it begins, the stream missed or changed something: the record wins.
+      if (record.status === "completed" && record.answer && !ended(turn)) {
+        if (!record.answer.startsWith(turn.text)) turn = { ...turn, text: "" };
+      }
+      return push(...settled(turn, record));
+    },
   };
 }
 
@@ -60,7 +67,10 @@ export function settled(turn: Turn, run: Run): TurnEvent[] {
   switch (run.status) {
     case "completed": {
       const out: TurnEvent[] = [];
-      if (!turn.text && run.answer) out.push({ type: "text.delta", text: run.answer });
+      // What the stream did not deliver is the rest of the record's answer.
+      if (run.answer?.startsWith(turn.text) && run.answer.length > turn.text.length) {
+        out.push({ type: "text.delta", text: run.answer.slice(turn.text.length) });
+      }
       out.push({ type: "turn.completed" });
       return out;
     }
