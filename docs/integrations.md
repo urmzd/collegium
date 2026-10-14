@@ -8,10 +8,9 @@ the review and guide Markdown. Existing web/Slack components remain in vultus.
 
 ## Local setup
 
-Keep sibling checkouts of `collegium`, `mandatum`, and `vultus`. The Go modules
-temporarily use explicit local replacements until coordinated releases exist.
-Use `go test ./... -race` in collegium and `go test ./...` in vultus/go to verify
-the composition. Run `go run ./examples/github-review` for a token-free preview.
+The Go modules (`mandatum`, `vultus/go`) are pinned to released versions in
+`go.mod`, so the server builds from this checkout alone. Use `go test ./... -race`
+to verify the composition. Run `go run ./examples/github-review` for a token-free preview.
 
 Provide `ANTHROPIC_API_KEY` and `COLLEGIUM_AGENT_MODEL` for a model available to
 your Anthropic account. The example specs use the supported `anthropic` provider.

@@ -37,13 +37,12 @@
 |-------------|---------|
 | Go version from [`go.mod`](go.mod) | Build the server |
 | Node.js 22.12+ or 24+, pnpm | Build the Vite console |
-| Sibling `mandatum` and `vultus` checkouts | Current local Go replacements and linked web packages |
+| Sibling `vultus` checkout | The console links its web packages, which are not published to npm |
 | Chrome/Chromium and [teasr](https://github.com/urmzd/teasr) | Optional screenshot capture |
 
-Keep all three repositories in the same parent directory:
+The Go modules are published and need no sibling checkout. The console does: keep `vultus` beside `collegium`.
 
 ```sh
-git clone https://github.com/urmzd/mandatum.git
 git clone https://github.com/urmzd/vultus.git
 git clone https://github.com/urmzd/collegium.git
 cd collegium
@@ -52,8 +51,6 @@ cd apps/web
 pnpm install
 cd ../..
 ```
-
-The integration branch temporarily references sibling Go modules and web packages while coordinated changes await release versions. Check out matching integration revisions when working on unreleased connector features.
 
 A workspace answers through one or more [clients](docs/clients.md): a Slack app
 or a GitHub installation, each with its own identity, secrets, agents and limits.
