@@ -200,14 +200,22 @@ func (v *Verifier) person(subject string, claims map[string]any) (Principal, err
 	if err != nil {
 		return Principal{}, err
 	}
+	// The grants that matched are kept with the roles, so a decision can
+	// later say which grant gave a role. The claims themselves are not.
+	held := v.policy.c.Held(id)
+	var roles []Role
+	for _, h := range held {
+		roles = append(roles, Role(h.Role))
+	}
 	p := Principal{
 		Subject: subject,
 		Tenant:  id.Tenant,
 		Kind:    User,
 		Name:    str(claims["name"]),
 		Email:   str(claims["email"]),
-		Roles:   v.policy.Roles(id),
+		Roles:   roles,
 		policy:  v.policy,
+		held:    held,
 	}
 	return p, nil
 }

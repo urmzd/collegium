@@ -90,8 +90,16 @@ as a grant only if it is set on the command line.
 `denied` or `no match`), the rule that decided, the role it reached the caller
 through, the grant that gave that role, and every role held.
 `auth.Policy.Explain(principal, permission)` does the same for a signed-in
-`Principal`, which keeps its roles but not its claims, so it names the rule
-and not the grant.
+`Principal`. A sign-in keeps the person's roles and, for each, the grant of
+the policy that gave it, so the explanation names the grant. It does not keep
+the claims or the token. A `Principal` made any other way names the rule and
+not the grant.
+
+A signed-in person asks about themselves with
+`GET /api/access/explain?permission=agents:write`. It takes a permission and
+no subject, so nobody can ask about someone else, and any signed-in caller may
+call it. The console shows the answer under Access, reached from "Why can I do
+this?" on the home page.
 
 From the command line, with the same environment and flags as `serve`:
 

@@ -144,8 +144,9 @@ func (d Decision) String() string {
 }
 
 // Explain answers Can and says why. A Principal keeps its roles and not the
-// claims that earned them, so this names the rule but not the grant. To see
-// the grant, explain the claims with Compiled().Explain.
+// claims that earned them. One signed in through a Verifier also keeps the
+// grant behind each role, and the explanation names it; otherwise it names
+// the rule and not the grant, and Compiled().Explain over the claims does.
 func (p *Policy) Explain(who Principal, perm Permission) Decision {
 	d := Decision{Permission: perm}
 	if who.Subject == "" || who.Tenant == "" {
@@ -156,7 +157,11 @@ func (p *Policy) Explain(who Principal, perm Permission) Decision {
 		d.Allowed, d.Scope = true, true
 		return d
 	}
-	d.Policy = p.c.ExplainRoles(roleNames(who.Roles), string(perm))
+	if who.policy == p && len(who.held) > 0 {
+		d.Policy = p.c.ExplainHeld(who.held, string(perm))
+	} else {
+		d.Policy = p.c.ExplainRoles(roleNames(who.Roles), string(perm))
+	}
 	d.Allowed = d.Policy.Allowed
 	return d
 }

@@ -153,6 +153,15 @@ func TestPrincipalIsDecidedByItsVerifiersPolicy(t *testing.T) {
 	if d.Allowed || d.Policy.Role != "auditor" || !strings.Contains(d.String(), "deny read on billing") {
 		t.Fatalf("explain:\n%s", d)
 	}
+	// The sign-in kept the grant behind the role, though not the claims, so
+	// the explanation names it.
+	if d.Policy.Grant == nil || d.Policy.Grant.String() != `grant auditor to claim department = "finance"` {
+		t.Fatalf("explain names no grant:\n%s", d)
+	}
+	// Under another policy the kept grants mean nothing, so none is named.
+	if d := auth.DefaultPolicy().Explain(p.WithPolicy(nil), auth.RunsRead); d.Policy.Grant != nil {
+		t.Fatalf("a grant of another policy was named:\n%s", d)
+	}
 	// The same roles under the built-in policy would be decided differently,
 	// which is why a principal carries the policy that assigned them.
 	if !p.WithPolicy(nil).Can(auth.BillingRead) {
