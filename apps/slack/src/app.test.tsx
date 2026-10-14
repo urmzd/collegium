@@ -1189,4 +1189,8 @@ test("asking from the shortcut form cannot make the app notify a whole channel",
   const root = w.slack.of("chat.postMessage")[0];
   assert.ok(root, "the question was posted");
   assert.ok(!String(root?.text).includes("<!channel>"), String(root?.text));
+  // End the run, or the app keeps following it and the test never finishes.
+  await emit(w, "lifecycle.accepted");
+  await emit(w, "lifecycle.completed", { text: "Nothing yet." });
+  await w.app.idle();
 });
