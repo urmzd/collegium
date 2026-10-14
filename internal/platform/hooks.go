@@ -50,6 +50,8 @@ func (p *Platform) ended(ctx context.Context, run runs.Run) {
 		p.Usage.Append(usage.Entry{Kind: usage.Ended, Tenant: run.Tenant, RunID: run.ID, At: p.now()})
 	}
 	p.raise(run)
+	// A question nobody answered is not waiting any more.
+	p.settleQuestionsOf(run)
 	p.cascade(ctx, run)
 	switch {
 	case run.Origin == runs.OriginSystem:

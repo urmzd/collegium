@@ -314,3 +314,42 @@ func TestSlug(t *testing.T) {
 		}
 	}
 }
+
+// A Slack client maps people only for a credential it names, and a person it
+// does not map is nobody to it.
+func TestASlackClientActsOnlyForThePeopleItMaps(t *testing.T) {
+	c := Client{
+		ID: "app", Name: "App", Surface: Slack, Enabled: true, Identity: Identity{Team: "T01ABCDEF"},
+		Slack: &SlackOptions{Machine: "svc-slack", People: map[string]string{"U0ANA": "ana"}},
+	}
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if who, ok := c.ActsFor("svc-slack", "U0ANA"); !ok || who != "ana" {
+		t.Fatalf("a mapped person = %q, %v", who, ok)
+	}
+	for name, try := range map[string][2]string{
+		"an unmapped person": {"svc-slack", "U0BOB"}, "another credential": {"svc-other", "U0ANA"}, "no credential": {"", "U0ANA"},
+	} {
+		if _, ok := c.ActsFor(try[0], try[1]); ok {
+			t.Errorf("%s was admitted", name)
+		}
+	}
+	off := c.clone()
+	off.Enabled = false
+	if _, ok := off.ActsFor("svc-slack", "U0ANA"); ok {
+		t.Error("a disabled client acts for someone")
+	}
+	bad := map[string]*SlackOptions{
+		"people with no machine": {People: map[string]string{"U0ANA": "ana"}},
+		"a user that is no id":   {Machine: "m", People: map[string]string{"ana": "ana"}},
+		"an empty subject":       {Machine: "m", People: map[string]string{"U0ANA": " "}},
+	}
+	for name, opts := range bad {
+		c := c.clone()
+		c.Slack = opts
+		if err := c.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s = %v, want invalid", name, err)
+		}
+	}
+}

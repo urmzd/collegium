@@ -72,6 +72,12 @@ export class Presenter {
   private session: string | null = null;
   /** A session in a code channel is the channel itself, with no thread. */
   private threadless = false;
+  /**
+   * The message a question was shown in, closed with its buttons while the
+   * run waits, and the turn it showed. The answer, when it comes, settles the
+   * card there; the rest of the turn continues in a new message.
+   */
+  private paused: { ts: string; turn: Turn } | null = null;
 
   constructor(
     private readonly slack: SlackApi,
@@ -243,6 +249,9 @@ export class Presenter {
   async update(turn: Turn): Promise<void> {
     if (this.closed || this.degraded) return;
     await this.sync(turn);
+    // The question's message is closed and nothing new has been said: the
+    // next message opens once the run carries on.
+    if (this.paused && !this.ts && turn.status === "waiting") return;
     try {
       if (this.native) {
         try {
@@ -269,6 +278,61 @@ export class Presenter {
   }
 
   /**
+   * The turn is waiting on a person. A streamed message cannot show buttons
+   * until it is closed, so it is closed now with the question's card, and the
+   * turn continues in a new message once it is answered. A posted message
+   * already carries the card.
+   */
+  async pause(turn: Turn): Promise<void> {
+    if (this.closed || this.degraded || this.paused) return;
+    await this.update(turn);
+    // A posted message is edited with the whole turn, buttons included.
+    if (!this.native || !this.ts || this.degraded) return;
+    try {
+      const final = renderToSlack(<TurnView turn={turn} streamed />);
+      await this.slack.call("chat.stopStream", {
+        channel: this.target.channel,
+        ts: this.ts,
+        blocks: final.pages[0] ?? [],
+      });
+      this.paused = { ts: this.ts, turn };
+      // What follows the answer opens a message of its own.
+      this.ts = "";
+      this.page += 1;
+      this.budget = emptyBudget();
+    } catch (e) {
+      this.degraded = true;
+      this.log(
+        `the question could not be shown, it will be posted when the turn ends: ${(e as Error).message}`,
+      );
+    }
+  }
+
+  /** Settle a question's card where it was shown, with how it was answered. */
+  async settleQuestion(turn: Turn): Promise<void> {
+    const paused = this.paused;
+    if (!paused) return;
+    const now = new Map(turn.interrupts.map((i) => [i.id, i]));
+    const shown: Turn = {
+      ...paused.turn,
+      interrupts: paused.turn.interrupts.map((i) => now.get(i.id) ?? i),
+    };
+    if (JSON.stringify(shown.interrupts) === JSON.stringify(paused.turn.interrupts)) return;
+    const view = renderToSlack(<TurnView turn={shown} streamed={this.native} />);
+    await this.slack
+      .call("chat.update", {
+        channel: this.target.channel,
+        ts: paused.ts,
+        text: view.text.slice(0, LIMITS.fallbackText),
+        blocks: view.pages[0] ?? [],
+      })
+      .catch((e: Error) =>
+        this.log(`the answered question could not be settled in place: ${e.message}`),
+      );
+    this.paused = { ts: paused.ts, turn: shown };
+  }
+
+  /**
    * End the turn on Slack with its final layout, and settle the reaction and
    * the session. It always gets as far as the session: when the message being
    * written cannot take the end of the turn, the stream is closed and the
@@ -277,6 +341,12 @@ export class Presenter {
   async finish(turn: Turn): Promise<Presented> {
     if (this.closed) return { ts: this.ts, messages: this.messages };
     this.closed = true;
+    if (this.paused && !this.ts && this.native) {
+      // It ended while it waited: the question's message is where it stands.
+      await this.settleQuestion(turn);
+      await this.sync(turn);
+      return { ts: this.paused.ts, messages: this.messages };
+    }
     try {
       if (this.degraded) throw new Error("an earlier write failed");
       if (this.native && this.ts) {

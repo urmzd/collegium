@@ -191,6 +191,9 @@ type Run struct {
 	// Reason says what a parked run is waiting for, or that a run which has
 	// answered is waiting for the agents attached to it.
 	Reason string `json:"reason,omitempty"`
+	// Question is what a parked run is waiting on a person for. It is gone
+	// once the run resumes or ends.
+	Question *payload.Question `json:"question,omitempty"`
 	// Cause says why a stopped run was stopped.
 	Cause string `json:"cause,omitempty"`
 	// Stopping is true from the moment someone asks a run to stop until the
@@ -210,6 +213,9 @@ type Run struct {
 	// tag is what the run was accepted with. A call from this run is built
 	// from it.
 	tag envelope.Tag
+	// requesters are every name the person who asked for the run went by
+	// when it was accepted, pinned so a mapping removed later still counts.
+	requesters []string
 	// tally sums the usage reported while the run works. final is set once
 	// the runtime's own figure has replaced it.
 	tally *payload.Tally
@@ -218,6 +224,19 @@ type Run struct {
 	// Spend changes nothing. settledUp is set once its spend has been
 	// settled into its caller, so a call that ends later climbs past it.
 	closed, settledUp bool
+}
+
+// Requesters returns the names pinned for the person who asked for the run.
+func (r Run) Requesters() []string { return slices.Clone(r.requesters) }
+
+// PinRequesters records every name the person who asked for a run goes by,
+// once, when it is accepted.
+func (x *Index) PinRequesters(runID string, names []string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if r, ok := x.runs[runID]; ok && r.requesters == nil {
+		r.requesters = slices.Clone(names)
+	}
 }
 
 // Tag returns the tag the run was accepted with.
@@ -350,9 +369,9 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 	r.UpdatedAt = e.At
 	switch e.Kind {
 	case envelope.KindStarted, envelope.KindResumed:
-		r.Status, r.Reason = Running, ""
+		r.Status, r.Reason, r.Question = Running, "", nil
 	case envelope.KindParked:
-		r.Status, r.Reason = Parked, body.Reason
+		r.Status, r.Reason, r.Question = Parked, body.Reason, body.Question
 	case envelope.KindCompleted:
 		r.Answer = body.Text
 		if body.Usage != nil {
@@ -383,7 +402,7 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 		r.Cause = causeOf(stopped.Reason, stopped.By)
 	}
 	if r.Status.Terminal() {
-		r.Stopping = false
+		r.Stopping, r.Question = false, nil
 	}
 	return *r, r.Status.Terminal()
 }
@@ -550,7 +569,7 @@ func (x *Index) End(runID string, status Status, answer, failure string, at time
 	if status == Completed && x.hold(r) {
 		return Run{}, false
 	}
-	r.Status, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = status, at, false, "", false
+	r.Status, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping, r.Question = status, at, false, "", false, nil
 	return *r, true
 }
 
@@ -623,7 +642,7 @@ func (x *Index) Stop(runID, answer, cause string, at time.Time) (Run, bool) {
 	if answer != "" {
 		r.Answer = answer
 	}
-	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = Stopped, causeOf(cause, ""), at, false, "", false
+	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping, r.Question = Stopped, causeOf(cause, ""), at, false, "", false, nil
 	return *r, true
 }
 

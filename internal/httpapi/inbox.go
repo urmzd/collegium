@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strconv"
 	"time"
@@ -111,16 +112,72 @@ func (s *Server) resolveInbox(w http.ResponseWriter, r *http.Request, who auth.P
 		IDs    []string     `json:"ids"`
 		Note   string       `json:"note"`
 		Limits inbox.Limits `json:"limits"`
+		answerBody
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	if len(body.Note) > 500 {
-		fail(w, http.StatusBadRequest, "a note is at most 500 characters")
+	if !body.valid(w, body.Note) {
 		return
 	}
 	m, err := s.P.InboxResolve(r.Context(), who, r.PathValue("id"), r.PathValue("part"),
-		platform.Resolution{Action: body.Action, IDs: body.IDs, Note: body.Note, Limits: body.Limits})
+		platform.Resolution{
+			Action: body.Action, IDs: body.IDs, Note: body.Note, Limits: body.Limits,
+			Arguments: body.Arguments, Choice: body.Choice, Text: body.Text, ActAs: body.ActAs,
+		})
+	s.inboxAnswer(w, m, err)
+}
+
+// answerBody is what answers a question, besides the action and a note.
+type answerBody struct {
+	// Arguments replace the model's on an approval, as a JSON object that
+	// satisfies the tool's schema.
+	Arguments json.RawMessage `json:"arguments"`
+	Choice    string          `json:"choice"`
+	Text      string          `json:"text"`
+	// ActAs is the person a surface answers for.
+	ActAs *platform.ActAs `json:"act_as"`
+}
+
+// Bounds on an answer. The runtime clips what it records further.
+const (
+	maxNote      = 500
+	maxReply     = 4000
+	maxArguments = 64 << 10
+)
+
+func (b answerBody) valid(w http.ResponseWriter, note string) bool {
+	switch {
+	case len(note) > maxNote:
+		fail(w, http.StatusBadRequest, "a note is at most 500 characters")
+	case len(b.Text) > maxReply || len(b.Choice) > maxReply:
+		fail(w, http.StatusBadRequest, "an answer is at most 4000 characters")
+	case len(b.Arguments) > maxArguments:
+		fail(w, http.StatusBadRequest, "edited arguments are at most 64 KB")
+	default:
+		return true
+	}
+	return false
+}
+
+// answerQuestion answers the question a run is parked on, as the inbox's
+// resolve does for its message. It is how a surface showing the run answers
+// it in place.
+func (s *Server) answerQuestion(w http.ResponseWriter, r *http.Request, who auth.Principal) {
+	var body struct {
+		Action string `json:"action"`
+		Note   string `json:"note"`
+		answerBody
+	}
+	if !decode(w, r, &body) {
+		return
+	}
+	if !body.valid(w, body.Note) {
+		return
+	}
+	m, err := s.P.AnswerQuestion(r.Context(), who, r.PathValue("id"), r.PathValue("question"), platform.QuestionAnswer{
+		Action: body.Action, Arguments: body.Arguments, Choice: body.Choice, Text: body.Text, Note: body.Note, ActAs: body.ActAs,
+	})
 	s.inboxAnswer(w, m, err)
 }
 

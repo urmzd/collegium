@@ -78,6 +78,14 @@ against the client's agents again. When who asked is not known (after a
 restart), only an operator may. A reached limit is shown, not raised: raise it
 in the console.
 
+A question a run waits on is shown in its thread with vultus's card and
+buttons. A click is answered through collegium as the Slack person, only when
+`COLLEGIUM_CLIENT` names a client whose `slack.machine` is this app's
+credential and whose `slack.people` maps them; anyone else is told they cannot,
+and collegium is not asked. The same mapping makes the runs a mapped person
+asks for theirs. A reply is typed in the console for now. See
+[clients](../../docs/clients.md#people-a-slack-app-answers-for).
+
 A refusal or error from collegium is shown in vultus's failure words; the
 platform's own text goes to the log. A Slack write that fails mid-turn stops
 the streaming, and the whole turn is posted when it ends, with the session set

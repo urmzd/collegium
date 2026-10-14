@@ -13,7 +13,8 @@
 | `/agent`, shortcuts, Home tab | No | Yes, from vultus's sandbox manifest |
 | Inbox items about a run | No | In the run's thread, and on Home |
 | Several apps per workspace, as [clients](clients.md) | Yes: tenant, limits and allow-list come from the client | Reads one client's default agent and allow-list. Its runs are not yet recorded as the client's, see below |
-| Who asked | Recorded on the run | Not recorded yet: the API takes no actor |
+| Who asked | Recorded on the run | Recorded as the person, when the app's client maps them (`act_as`); else as the app |
+| Questions a run waits on | No | In the run's thread, answered for the person the client maps. See below |
 | Tokens and cost | No | No. See [usage on a turn](clients.md#usage-on-a-turn) |
 
 Use the connector for code channels, for several apps per workspace, and where
@@ -30,14 +31,34 @@ The app works around each of these and says where in its README.
 
 | Missing | Effect today | Proposal |
 |---------|--------------|----------|
-| `actor` on `POST /api/runs` | Runs are recorded as the app's machine, not the Slack person | Accept `actor: {id, display}` from a machine holding a new `runs:act-for` permission, recorded beside the machine |
+| `actor` on `POST /api/runs` for anyone | Runs are recorded as the Slack person only when the app's client maps them (`act_as`, see [clients](clients.md#people-a-slack-app-answers-for)); anyone else's run is the app's | Built for mapped people. A Slack person nobody mapped stays unnamed on purpose |
 | `client` on `POST /api/runs`, or a machine bound to a client | The client's run limits and allow-list are not applied by the platform | Bind a machine credential to one client (a `client` claim, or a `client_id` on the token mapped in the client record) so the platform places its runs as it places webhook runs |
 | `metadata` on `POST /api/runs` | The Slack team, channel and thread a run answers are not on the run; the app derives them from the run id instead | Accept a bounded `metadata` map (string keys and values, a few hundred bytes) and return it on the run, so a surface can find its own place without encoding it in the idempotency key |
 | A picker that knows a client's allow-list | A client with a list and no default answers nothing | `GET /api/pick?client=` and the same rule in `POST /api/runs` |
 | The run a retry started, in the resolve response | Retry from Slack starts its own run and acknowledges the inbox part | Return `{message, run}` from `POST /api/inbox/{id}/parts/{part}/resolve` |
 | A stream of inbox notices alone | The app subscribes to a topic no agent can have | `GET /api/inbox/events` |
 | A route for feedback | A rating is written to the app's log | `POST /api/runs/{id}/feedback` |
-| Approvals and questions a run waits on | Never raised, so never shown | The parked-run work in [architecture](architecture.md#status) |
+| A modal to type a reply to a question | A reply is answered in the console | vultus: a reply modal in `@vultus/render-slack`, as for feedback |
+
+### Questions a run waits on
+
+The Slack app shows a run's question in the run's thread: the streamed message
+is closed with vultus's approval or choice card, so its buttons can be pressed.
+A click answers through collegium (`answerQuestion`) as the person the app's
+client maps the Slack user to; a Slack user it does not map is told in vultus's
+words that they cannot, and collegium is not asked. Collegium decides the rest:
+who may answer is the run's spec's to say, and a refusal is shown with vultus's
+`noPermission` copy. The card settles in place from the run's own events,
+whoever answered, and the answer continues in a new message. A question's inbox
+message is not posted in the thread again. Configure the client with the app's
+credential and the people it answers for:
+
+```json
+"slack": {"machine": "<subject of the app's machine credential>", "people": {"U01ANA": "ana@example.com"}}
+```
+
+The webhook connector shows a parked run as a suspended session and does not
+take answers.
 
 The Slack connector accepts signed mentions, direct messages and code channel
 slash commands. Responses use one message per run, edited as events arrive.

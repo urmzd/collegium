@@ -12,6 +12,7 @@ import {
   type SuiteView,
 } from "./api.ts";
 import { Evals } from "./Evals.tsx";
+import { ASK_PERSON, approvable, withApproval, withAsking, withNames } from "./people.ts";
 import { AgentMark, ago, button, card, Chip, field, Label, Menu, Problem, primary, Switch, Tabs, took } from "./ui.tsx";
 
 type Tab = "prompt" | "setup" | "memory" | "evals" | "alerts" | "revisions";
@@ -21,6 +22,23 @@ const models: Record<string, string> = {
   anthropic: "claude-sonnet-5-5",
   ollama: "llama3.2",
 };
+
+/** People and roles, typed freely: the draft keeps what is typed, the spec keeps the names in it. */
+function NamesField({ names, disabled, onChange }: { names?: string[]; disabled: boolean; onChange: (text: string) => void }) {
+  const [text, setText] = useState((names ?? []).join("\n"));
+  return (
+    <textarea
+      className={`${field} min-h-16 font-aui-mono text-aui-sm`}
+      value={text}
+      disabled={disabled}
+      spellCheck={false}
+      onChange={(e) => {
+        setText(e.target.value);
+        onChange(e.target.value);
+      }}
+    />
+  );
+}
 
 /** A rough size. Models count tokens differently, so this is a guide, not a bill. */
 function approxTokens(text: string): number {
@@ -418,6 +436,54 @@ export function AgentDetail({
               )}
               <p className="text-aui-xs text-aui-muted">
                 Assigning a source records the intent. Retrieval inside a run is not wired yet.
+              </p>
+            </div>
+
+            <div className={`${card} flex flex-col gap-3`}>
+              <h3 className="text-aui-sm font-medium text-aui-fg">People in the loop</h3>
+              <Switch
+                label="May ask a person"
+                hint="The agent can ask someone to choose or reply, and waits for the answer."
+                checked={(spec.tools ?? []).includes(ASK_PERSON)}
+                disabled={!canWrite}
+                onChange={(on) => setSpec((s) => withAsking(s, on))}
+              />
+              {approvable(spec).map((tool) => (
+                <Switch
+                  key={tool}
+                  label={`Approve ${tool.startsWith("tag_") ? `calls to ${tool.slice(4)}` : tool} first`}
+                  hint="Each call waits until a person approves it. Nobody answering in time denies it."
+                  checked={(spec.approvals ?? []).includes(tool)}
+                  disabled={!canWrite}
+                  onChange={(on) => setSpec((s) => withApproval(s, tool, on))}
+                />
+              ))}
+              <Label text="Who may approve" hint="People and roles, one per line, such as role:operator. Empty means anyone but the person who asked.">
+                <NamesField
+                  key={`approvers-${revision?.rev ?? 0}`}
+                  names={spec.approvers}
+                  disabled={!canWrite}
+                  onChange={(text) => setSpec((s) => withNames(s, "approvers", text))}
+                />
+              </Label>
+              <Switch
+                label="The person who asked may approve"
+                hint="Off, an approval is always someone else's."
+                checked={spec.self_approval === true}
+                disabled={!canWrite}
+                onChange={(on) => set({ self_approval: on || undefined })}
+              />
+              <Label text="Who may answer its questions" hint="People and roles, one per line. Empty means anyone in the workspace.">
+                <NamesField
+                  key={`answerers-${revision?.rev ?? 0}`}
+                  names={spec.answerers}
+                  disabled={!canWrite}
+                  onChange={(text) => setSpec((s) => withNames(s, "answerers", text))}
+                />
+              </Label>
+              <p className="text-aui-xs text-aui-muted">
+                A question reaches the inboxes of the people who may answer it. Runs started before you save keep the
+                rules they started with.
               </p>
             </div>
 

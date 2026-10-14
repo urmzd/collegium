@@ -84,6 +84,10 @@ the ledger at once and the route answers 200 with how it ended. When the runtime
 delegation because the caller was stopped (`runtime.ErrStopped` as the
 context's cause), the run collegium started for it is asked to stop too.
 
+A run parked on a person is stopped the same way: the runtime resolves its
+question as stopped and ends it without calling a model, and its inbox message
+settles as stopped, with the cause.
+
 A run that has answered and is only held open by what it attached has no turn
 left to interrupt, and was not cut short. What is attached to it is stopped
 through the runtime, and once they have ended it completes with its answer.
@@ -205,14 +209,85 @@ is the bound that holds whatever the price.
 
 ## People in the loop
 
-A run that needs a person parks. A policy names who may resolve it, by role
-rather than by person. The item lands in every matching inbox, the first valid
-decision resumes the run, and the decision is recorded for audit.
+A run that needs a person parks on a question. mandatum (v0.11.0) owns the
+waiting: the question is recorded on the run in the ledger, the run holds no
+worker while it waits, and the first answer recorded is the answer. collegium
+owns who is asked and where.
 
-A budget request is an approval. A child that exhausts its lease parks and asks
-its caller's owner for more, so one flow covers cost limits and approvals.
+| Question | Raised by | Answered with |
+|---|---|---|
+| Approval | A call to a tool the agent's spec lists in `approvals` | `approve` (optionally with edited `arguments`, checked against the tool's schema) or `deny` (with a note the model is shown) |
+| Choice | The agent calls `ask_person` with `options` | `choose` one option |
+| Reply | The agent calls `ask_person` without options | `reply` in words |
 
-An approver cannot grant more than they hold.
+### Who is asked
+
+Who may answer is decided from the run's pinned revision, so revising an agent
+does not change who may answer a question a run already asked:
+
+| Question | Who may answer |
+|---|---|
+| Approval | `approvers` when the spec names them, else anyone in the workspace. Never the person whose request raised the run, nor the person who started the tree it is in, by any name they go by (a Slack user is also every principal a Slack client of the run's team maps them to, pinned when the run starts), unless the spec sets `self_approval`. mandatum's `AnswerRequest` takes no requester alias, so collegium checks this before it asks the runtime. A GitHub actor is mapped to no principal, so self-approval there is not detected |
+| Choice, reply | `answerers` when the spec names them, else anyone in the workspace |
+
+`approvers` and `answerers` name principals by subject and this workspace's
+roles as `role:<name>`. The runtime asks collegium for a person's roles
+(`runtime.WithRoles`): the roles they signed in with, or for a person a surface
+answers for, what the authorization policy grants their subject. Anyone else
+holds no role, so a role admits nobody it was not asked about.
+
+Each question becomes one inbox message (kind `approval` or `clarification`,
+with an `approval`, `choice` or `reply` part), addressed to exactly those
+people: a reader sees it only when the spec names them or a role they hold,
+and the requester never sees an approval of their own call. The agent's
+`asked_of` hint narrows that to whom it asked, when that is one of them; it
+admits nobody. A question whose rules cannot be read is addressed to nobody.
+Answering needs `runs:write` as well (for a person a surface answers for,
+their own grant must include it, not only the surface's credential's), and the
+runtime checks who may answer again before it records anything.
+
+Addressing routes a question to its inbox; it is not confidential. The
+question and an approval's arguments are also on the run, its event stream
+and its manifest, for anyone with `runs:read`. See
+[security](security.md#the-inbox).
+
+### Answering
+
+From the inbox (`resolveInboxPart`), on the run (`answerQuestion`), or in Slack,
+an answer is one call: `runtime.Answer`, with the person as `By` and the
+credential's own subject as `Via`. A refusal is 403 and changes nothing. A
+second answer, or one after the question expired or its run was stopped, is
+answered with the message showing what was recorded. The decision is recorded
+in the inbox's record of changes, with who answered and, for a surface, which
+surface user.
+
+The message settles in place when the run resumes (`approved by olu`,
+`chose eu-west`), when nobody answered in time (`expired`, with the default
+the run carried on with: a denial for an approval), when the run is stopped
+while it waits (`stopped`, with the cause), and when the run ends without an
+answer (`closed`). A run is woken through the queue as soon as it is answered
+or stopped (`runtime.WithWaker`), and at its question's deadline, so a default
+applies when it is due. Questions wait a day by default (`QuestionTTL`).
+
+### Called runs
+
+An attached run (tagged) that parks shows its question on its caller's stream
+as `lifecycle.child.parked` (`runtime.WatchChildQuestions`), and its message is
+addressed by the called agent's own spec. The caller keeps waiting in the
+Delegator, holding its place, while the called run holds none. mandatum's
+`WithChildRuns`, which frees the caller too, is not used: it starts the child
+inside the runtime, so the call would bypass collegium's call path (the spawn
+allowlist, depth and fan-out, the lease, admission and spend, the call tree,
+and the conversation and sandbox the child shares), and it has no hook for a
+host to make or refuse that call. Usage is rolled up as before, by the
+Delegator's `ReportChildUsage`, once per child. Since one place is always kept
+for work that waits on nobody, parents waiting on parked children can refuse
+new attached calls (`ErrBusy`), never hang.
+
+### Not built
+
+A budget request is not an approval yet: a run at a limit is stopped or
+refused, not parked. See the status table.
 
 ## Decentralized
 
@@ -266,7 +341,8 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | GitHub auto-label and per-commit reviews, PR guides, explicit writer-authorized fix commits and workflow reruns | Built in `pkg/integrations/github`, on mandatum API capabilities. Rendering in vultus `go/github` |
 | Slack agent-session status and code-channel command policy | Built in `pkg/integrations/slack`. Signed command decoding and optional `AgentAPI` in mandatum. Not live-validated |
 | Slack stop button: `agent_session_stopped` asks the runtime to stop the runs answering in that session, confirms in the thread and settles the status. The run's message keeps its partial answer, marked stopped | Built, tested end to end against the fake with a scripted model whose call is shown to be cancelled. The session-to-run map is in memory and per client: one app's button cannot stop a run another app raised. Not live-validated |
-| Slack app (`apps/slack`): Socket Mode, a client of the HTTP API as a machine. DMs, mentions, `/agent`, shortcuts, Home, native streaming, session status, stop, inbox items in the run's thread. A thread's conversation is derived from the thread, so a restart loses neither it nor deduplication | Built, tested with fakes for Slack and collegium and against a real server with a fake Slack. Its runs are not yet recorded as a client's or a Slack person's: the API takes neither. Not live-validated |
+| Slack app (`apps/slack`): Socket Mode, a client of the HTTP API as a machine. DMs, mentions, `/agent`, shortcuts, Home, native streaming, session status, stop, inbox items in the run's thread. A thread's conversation is derived from the thread, so a restart loses neither it nor deduplication | Built, tested with fakes for Slack and collegium and against a real server with a fake Slack. A run is recorded as the Slack person's when the app's client maps them (`act_as`), else as the app's. Its runs are not yet recorded as a client's. Not live-validated |
+| Questions in Slack: a run's question shows in its thread with vultus's approval and choice cards and live buttons, answered through collegium as the Slack person the app's client maps (`slack.machine`, `slack.people`), refused for anyone unmapped without asking, and settled in place | Built, tested with fakes for Slack and collegium. A reply cannot be typed in Slack yet: vultus has no reply modal. Not live-validated, and not run against a real server: no model that asks is wired into `test:server` |
 | `packages/adapter`: the one collegium-to-vultus adapter, run events and inbox messages to vultus's model and vultus actions back to platform calls, shared by the console and the Slack app | Built. A parity test renders one adapted state with both renderers |
 | `pkg/call`: edge, modes, depth, fan-out and lease checks | Built, tested |
 | `pkg/runs`: run index, call tree, statistics | Built, in memory |
@@ -296,7 +372,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Console for limits: Settings, each project page, and usage against limits in Analytics, with token limits and a lower-bound note on spend | Built. Not checked in a browser |
 | Spend and token limits: enforced at admission and mid-run, with the warning threshold and a stop through the runtime. See [Usage and spend](#usage-and-spend) | Built on mandatum v0.10.0's usage reports, tested with scripted priced models under the race detector. Not run against a real provider here: no model key was available. Cost is a list price from saige's catalog, not a provider's invoice. A call in flight when the limit is crossed finishes and is counted, so a scope can end a little over its limit |
 | Unpriced calls and other currencies: counted apart, never as dollars, one lower-bound alert per scope, bounded by `max_tokens` | Built, tested |
-| Asking a person to approve a run at a limit | Not built. A run cannot be parked on a person, so the only action is to block |
+| Asking a person to approve a run at a limit | Not built. A run parks only at a tool call (`approvals`, `ask_person`): mandatum has no way for a host to park a run on a question of its own, so a mid-run limit can only stop it, and admission refuses before there is a run to park. It needs a runtime call that raises a question on a run from outside its turn (or parks it at its next model call), with a `budget` question kind |
 | Limits set by a project's owner | Not built. Only an admin sets limits, because projects have no owners |
 | First-run setup: the first admin names themselves and the workspace | Built. `first_admin`, `onboarded_at` and the workspace's setup fields |
 | Recents: conversations paged by an opaque keyset cursor, 200 a page | Built |
@@ -322,7 +398,9 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Two lifetimes for a called run. Attached (tagged, the caller waits): ends with its caller, and the caller is not done until it is. Delegated (`delegate_task`, the caller carries on): independent, and its answer goes to the inbox | Built, tested three levels deep under the race detector |
 | Stopping a run: `POST /api/runs/{id}/stop` asks the runtime to stop it and everything attached to it. The model call in flight is cancelled, the run ends `stopped` with its partial answer and cause, and what it delegated keeps running. See [Stopping a run](#stopping-a-run) | Built on mandatum v0.8.0's `runtime.Stop`, recorded in the run ledger, tested with scripted models under the race detector, three levels deep, and against a completion racing the stop |
 | A place is always kept for work that waits on nobody, so runs waiting on each other cannot fill every place and hang | Built. With `Concurrency` 4 by default, three runs may wait at once and a fourth is told no |
-| Publishing that waits for approval | Not built. A run cannot be parked on a person |
+| Publishing that waits for approval | Built: list `publish_artifact` in an agent's `approvals`. Nothing is stored until a person approves, and a denial publishes nothing. Tested |
+| Parking a run on a person: approvals of tool calls, choices and replies (`ask_person`), on mandatum v0.11.0 with the run queue as waker, collegium's roles, and a question deadline. See [People in the loop](#people-in-the-loop) | Built, tested under the race detector with scripted models: each kind, who may answer, a requester refused, two answers at once, expiry, stop while parked, a called run's question, usage counted once, tenant isolation. Not run against a real model here: no model key was available |
+| Agent editor: may ask a person, approve a tool first, who may approve, self-approval, who may answer | Built. Not checked in a browser |
 | Run manifest: one JSON document of a run, every run under it, each pinned definition, every event with its body, and the tree's usage | Built, from the journal. A run older than the journal's ring comes back marked incomplete |
 | Token counts, context window and cost per run: `usage` on the run (own, rolled-up attached runs, total, context), live while it works and the runtime's record once it ends, recorded once whatever is redelivered | Built, tested with redelivered events, a reconciler pass, a stopped run and a three-run tree. Context fill is the latest call's prompt against the window saige's catalog declares; a model with no declared window shows tokens only |
 | Leases on real cost: a called run is held to its lease by what it spends and what it has handed on, and settles with its caller when it ends, climbing past a caller that settled first | Built, tested, with a grant made before the caller's own call was counted and a call that ends after its caller. An API caller still names a lease; an agent's own calls lease half of what is left |
@@ -340,8 +418,8 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | `pkg/inbox`: one server inbox of messages with typed parts, per-person read state, paging, and a record of changes that rebuilds it | Built, in memory |
 | What lands in the inbox: fired alert rules, failed runs no rule caught, proposed memories, reached limits | Built. An alert and its message are one state: settling either settles both |
 | Resolving in the inbox: acknowledge, retry a failed turn, keep or discard proposed memories, raise a limit, dismiss, snooze | Built. Each needs the right for the thing it does, and a second resolve returns the first outcome |
-| Approve, deny, choose and reply parts for a run waiting on a person | Defined, never raised. A run cannot be parked on a person |
-| Messages addressed to one person or one role | Not built. A message goes to everyone who may read its kind |
+| Approve, deny, choose and reply parts for a run waiting on a person | Built. Raised from `lifecycle.parked`, answered through `runtime.Answer` from the inbox, the run, or Slack, each action needing `runs:write`, and settled in place when the run resumes, expires, stops or ends. Shown by the shared adapter as vultus's cards on the run and in the inbox alike, with a parity test per kind |
+| Messages addressed to one person or one role | Built for questions: addressed to the principals and `role:<name>` entries that may answer, never to the requester of an approval. Every other kind still goes to everyone who may read it |
 | Alert delivery outside the console | Not built |
 | OTel export | Not built. Traces are rebuilt from the journal |
 | Evals that run on their own, on a schedule or on each revision | Not built. Evals run when someone starts them |

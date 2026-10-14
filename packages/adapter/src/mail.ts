@@ -10,6 +10,7 @@
  * file is what changes.
  */
 import { ActionId, type InboxMessage, type MessagePart, partMatches, partTarget, type Resolution, type Tone, type UiAction } from "@vultus/core";
+import { interruptOf, settledFromOutcome, type WireQuestion } from "./question.ts";
 
 /** Something a message is about, which the console can open. */
 export type Source = { kind: "run" | "thread" | "rule" | "agent" | "project"; id: string; label: string };
@@ -29,6 +30,8 @@ export const kinds: { id: string; label: string }[] = [
   { id: "failure", label: "Failed runs" },
   { id: "memory", label: "Memory to review" },
   { id: "budget", label: "Limits" },
+  { id: "approval", label: "Approvals" },
+  { id: "clarification", label: "Questions" },
 ];
 
 export type LimitKind = "runs" | "concurrent" | "spend" | "lease" | "tokens";
@@ -83,6 +86,9 @@ const actionIds: Record<string, ActionId> = {
   discard: ActionId.discardMemories,
   raise_limit: ActionId.raiseBudget,
   reply: ActionId.reply,
+  approve: ActionId.approve,
+  deny: ActionId.deny,
+  choose: ActionId.clarify,
 };
 
 /** A reached limit as it arrives: flat scope fields, and the limits in force. */
@@ -174,11 +180,39 @@ function partFrom(raw: unknown, at: string): MessagePart | null {
         ...resolution,
       };
     }
-    case "reply":
-      return { id, type: "reply", prompt: str(p.prompt), allowed, ...resolution };
+    case "approval":
+    case "choice":
+    case "reply": {
+      // A question a run is parked on: the same card the run shows, built by
+      // the same function, settled with what was recorded.
+      const q = obj(p.question);
+      const question: WireQuestion = {
+        id: str(q.id),
+        kind: str(q.kind) || str(p.type),
+        agent: str(q.agent),
+        prompt: str(q.prompt),
+        options: list(q.options).map(str),
+        ...(q.tool ? { tool: { name: str(obj(q.tool).name), arguments: obj(q.tool).arguments } } : {}),
+        ...(str(q.expires_at) ? { expires_at: str(q.expires_at) } : {}),
+      };
+      const settled = settledFromOutcome(out);
+      if (p.type === "reply") {
+        return {
+          id,
+          type: "reply",
+          prompt: question.prompt,
+          allowed,
+          ...(settled
+            ? { resolution: { outcome: settled.action === "reply" ? "replied" : settled.action, by: settled.by && settled.by !== "system" ? settled.by : "", at: settled.at, ...(settled.note ? { detail: settled.note } : {}) } }
+            : {}),
+        };
+      }
+      const card = interruptOf(question, settled);
+      if (!card) return null;
+      return card.type === "approval" ? { id, type: "approval", approval: card, allowed } : { id, type: "choice", clarification: card, allowed };
+    }
     default:
-      // Approvals and choices have no producer on the platform yet, and a part
-      // this console does not know is left out rather than guessed at.
+      // A part this console does not know is left out rather than guessed at.
       return null;
   }
 }
@@ -259,7 +293,13 @@ export function toRequest(message: PlatformMessage, action: UiAction): Request |
     case ActionId.discardMemories:
       return resolve("discard");
     case ActionId.reply:
-      return resolve("reply", { note: payload.text ?? "" });
+      return payload.text?.trim() ? resolve("reply", { text: payload.text.trim() }) : null;
+    case ActionId.approve:
+      return part.type === "approval" ? resolve("approve") : null;
+    case ActionId.deny:
+      return part.type === "approval" ? resolve("deny") : null;
+    case ActionId.clarify:
+      return part.type === "choice" && payload.option ? resolve("choose", { choice: payload.option }) : null;
     default:
       return null;
   }

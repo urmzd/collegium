@@ -28,7 +28,7 @@
 - Connect GitHub and Slack through signed webhook ingress and tenant-bound connector capabilities.
 - Answer in Slack with the console's own components through a Socket Mode app that streams natively.
 
-**Early development:** platform records are in memory. Spend limits are recorded but not enforced. General run approvals, local accounts and per-project access are unfinished. GitHub and Slack integrations have simulated-API coverage; see the [integration trial guide](docs/integrations.md) and [status table](docs/architecture.md#status) for validation boundaries.
+**Early development:** platform records are in memory. Spend limits are recorded but not enforced. Approvals are tool calls and questions a run parks on; a run cannot yet park at a limit. Local accounts and per-project access are unfinished. GitHub and Slack integrations have simulated-API coverage; see the [integration trial guide](docs/integrations.md) and [status table](docs/architecture.md#status) for validation boundaries.
 
 ## Installation
 

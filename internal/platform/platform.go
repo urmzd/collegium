@@ -107,6 +107,9 @@ type Config struct {
 	// again. Nil means duraturo's, which doubles from a quarter second. For
 	// tests only: it lets a test fail a run through all its attempts quickly.
 	Backoff func(attempt int) time.Duration
+	// QuestionTTL is how long a question a run parks on waits for an answer
+	// before its default applies. Zero means the runtime's, a day.
+	QuestionTTL time.Duration
 	// OfflineHooks lets housekeeping run on the offline provider. It exists
 	// for tests: an offline answer is a notice, not a title or a fact.
 	OfflineHooks bool
@@ -178,6 +181,12 @@ type Platform struct {
 	// halting holds runs being stopped at a limit, by run id, so a run is
 	// asked once however many of its calls cross it.
 	halting sync.Map
+
+	// wakers are the timers that wake parked runs at their questions'
+	// deadlines, stopped with the platform.
+	wakers     sync.Mutex
+	wakerSet   map[*time.Timer]struct{}
+	wakersDone bool
 
 	// admission serializes letting a run in. It is taken inside calls, never
 	// the other way round.
@@ -277,6 +286,12 @@ func New(cfg Config) (*Platform, error) {
 		// run waits in the queue or between attempts is honoured however long
 		// it waits. It is the same ledger the runs execute from.
 		runtime.WithStopLedger(p.ledger),
+		// A run parked on a person is woken through the queue as soon as
+		// it is answered or stopped, not at the worker's next poll.
+		runtime.WithWaker(p.queue),
+		// A spec's approvers and answerers may name this workspace's roles.
+		runtime.WithRoles(p.rolesOf),
+		runtime.WithQuestionTTL(cfg.QuestionTTL),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("platform: runtime: %w", err)
@@ -376,6 +391,9 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	if err := p.Runs.Record(acc.RunID, tag, acc.Rev); err != nil {
 		return runs.Run{}, err
 	}
+	// Who asked, by every name they go by now: a mapping removed later does
+	// not let them approve their own calls.
+	p.Runs.PinRequesters(acc.RunID, p.resolveRequester(tag.Tenant, tag, client))
 	return p.Runs.Get(tag.Tenant, acc.RunID)
 }
 
@@ -533,7 +551,9 @@ func (p *Platform) observe(ctx context.Context, e envelope.Event) {
 		p.observeUsage(ctx, e)
 		return
 	}
-	if run, ended := p.Runs.Observe(e); ended {
+	run, ended := p.Runs.Observe(e)
+	p.observeQuestion(ctx, e)
+	if ended {
 		p.ended(ctx, run)
 	}
 }
@@ -591,6 +611,7 @@ func (s *Stream) Close() error { return s.inner.Close() }
 func (p *Platform) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer p.stopWakers()
 
 	// Subscribe before anything can publish, so the journal and the index
 	// never miss the first event of the first run.

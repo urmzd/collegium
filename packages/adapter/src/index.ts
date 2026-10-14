@@ -5,4 +5,5 @@
  */
 export * from "./fold.ts";
 export * from "./mail.ts";
+export * from "./question.ts";
 export * from "./run.ts";

@@ -27,6 +27,8 @@ export const words = {
   send: "Send",
   cancel: "Cancel",
   notInChannel: "I'm not in this channel yet. Invite me with `/invite`, then try again.",
+  // vultus: needs a reply modal for questions; until then this says where to answer.
+  replyInConsole: "Replies to this question are typed in the console for now.",
 };
 
 /** The form the global shortcut opens. Its text comes back on submit. */

@@ -8,7 +8,8 @@
     ".": "./src/index.ts",
     "./run": "./src/run.ts",
     "./mail": "./src/mail.ts",
-    "./fold": "./src/fold.ts"
+    "./fold": "./src/fold.ts",
+    "./question": "./src/question.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -89,6 +89,20 @@ export interface AgentSpec {
   tools?: string[];
   sources?: AgentSource[];
   access?: AgentAccess;
+  /** Tools whose every call waits for a person to approve it. Each is a
+tool the agent is granted. `ask_person` in `tools` lets the agent
+ask a person to choose or reply.
+ */
+  approvals?: string[];
+  /** When set, the only people who may answer an approval: principals by
+subject, or this workspace's roles as `role:<name>`. Empty lets
+anyone in the workspace approve, except the person who asked.
+ */
+  approvers?: string[];
+  /** Lets the person whose request raised a call approve it. Off by default. */
+  self_approval?: boolean;
+  /** When set, the only people who may answer a choice or a reply, named as approvers are. */
+  answerers?: string[];
 }
 
 /** One immutable revision of an agent. */
@@ -218,6 +232,7 @@ be empty. It is never the whole answer when `status` is `stopped`.
   error?: string;
   /** What a parked run is waiting for. */
   reason?: string;
+  question?: Question;
   /** Why a stopped run was stopped, as the runtime reported it, such as `Stopped by ada`. */
   cause?: string;
   /** The run was asked to stop and has not ended yet. It starts no further calls. Absent once the run has ended, however it ended. */
@@ -246,6 +261,13 @@ branch from that point.
   after?: string;
   /** Files a new conversation under a project. A follow-up keeps its conversation's project. */
   project?: string;
+  act_as?: ActAs;
+}
+
+/** A person a surface authenticated itself, named by the surface's client and the surface's own user id. */
+export interface ActAs {
+  client: string;
+  user: string;
 }
 
 export interface CreateCallRequest {
@@ -351,7 +373,7 @@ export interface ScheduleView {
   recent: Run[];
 }
 
-/** What a message is about. `approval`, `clarification` are defined and never raised today. */
+/** What a message is about. `approval` and `clarification` are questions a run is waiting on. */
 export type InboxKind = "alert" | "failure" | "memory" | "budget" | "approval" | "clarification" | "result";
 
 export type InboxState = "open" | "resolved" | "dismissed" | "snoozed";
@@ -438,21 +460,54 @@ export interface InboxBudgetPart {
   current: InboxLimits;
 }
 
+export interface InboxQuestionTool {
+  name: string;
+  /** What the model asked to call the tool with, as a JSON object. */
+  arguments?: unknown;
+  /** The tool's parameter schema. Edited arguments must satisfy it. */
+  schema?: unknown;
+}
+
+/** A question a run is parked on. */
+export interface InboxQuestionPart {
+  run: string;
+  id: string;
+  kind: "approval" | "choice" | "reply";
+  agent?: string;
+  prompt: string;
+  options?: string[];
+  tool?: InboxQuestionTool;
+  /** Who the agent asked, as a hint. It admits nobody. */
+  asked_of?: string;
+  /** When the question takes its default if nobody answers. */
+  expires_at?: string;
+  /** What the run carries on with if it expires. `deny` for an approval; empty when the agent is told nobody answered. */
+  default?: string;
+  asked_at?: string;
+  /** The run whose stream showed the question, when that is a run waiting on the one that asked. */
+  via?: string;
+}
+
 /** One typed part of a message. `type` says which of `text`, `alert`,
-`failure`, `memory` or `budget` carries the body.
+`failure`, `memory`, `budget` or `question` carries the body:
+`approval`, `choice` and `reply` parts carry `question`. A settled
+question's `outcome` is `approve`, `deny`, `choose` (the option in
+`note`), `reply` (the words in `note`), `expired`, `stopped` or
+`closed`.
  */
 export interface InboxPart {
   id: string;
   type: "text" | "alert" | "failure" | "memory" | "budget" | "approval" | "choice" | "reply";
   state: "open" | "resolved" | "info";
   /** What this caller may do with the part now. Empty once it is resolved, or when the caller has no permission for any action. */
-  actions: ("acknowledge" | "retry" | "keep" | "discard" | "raise_limit")[];
+  actions: ("acknowledge" | "retry" | "keep" | "discard" | "raise_limit" | "approve" | "deny" | "choose" | "reply")[];
   outcome?: InboxOutcome;
   text?: string;
   alert?: InboxAlertPart;
   failure?: InboxFailurePart;
   memory?: InboxMemoryPart;
   budget?: InboxBudgetPart;
+  question?: InboxQuestionPart;
 }
 
 /** One message in the inbox. */
@@ -487,12 +542,31 @@ export interface InboxChange {
 
 /** What a person decided about a part. */
 export interface Resolution {
-  action: "acknowledge" | "retry" | "keep" | "discard" | "raise_limit";
+  action: "acknowledge" | "retry" | "keep" | "discard" | "raise_limit" | "approve" | "deny" | "choose" | "reply";
   /** The proposed notes to keep, with `keep`. */
   ids?: string[];
-  /** At most 500 characters. */
+  /** At most 500 characters. On a denial the model is shown it. */
   note?: string;
   limits?: InboxLimits;
+  /** Edited arguments for `approve`, as a JSON object that satisfies the tool's schema. Left out keeps the model's. */
+  arguments?: unknown;
+  /** The option chosen, with `choose`. */
+  choice?: string;
+  /** The reply, with `reply`. A reply part also takes its words as `note`. */
+  text?: string;
+  act_as?: ActAs;
+}
+
+/** An answer to the question a run is waiting on. */
+export interface QuestionAnswer {
+  action: "approve" | "deny" | "choose" | "reply";
+  /** Edited arguments for `approve`, as a JSON object that satisfies the tool's schema. */
+  arguments?: unknown;
+  choice?: string;
+  text?: string;
+  /** At most 500 characters. On a denial the model is shown it. */
+  note?: string;
+  act_as?: ActAs;
 }
 
 export type ArtifactKind = "document" | "spreadsheet" | "presentation" | "image" | "pdf" | "html" | "code" | "data" | "archive";
@@ -938,6 +1012,13 @@ export interface SlackCommand {
 export interface SlackOptions {
   sessions?: boolean;
   commands?: SlackCommand[];
+  /** The subject of the credential a Slack app signs in to the API with. Only it may act for `people`. */
+  machine?: string;
+  /** Slack user ids in the client's team, each mapped to the principal it
+is in this workspace, by subject. An answer clicked in Slack by a
+person it maps is that principal's answer; anyone else is refused.
+ */
+  people?: Record<string, string>;
 }
 
 export interface GitHubOptions {
@@ -1002,7 +1083,7 @@ is rolled up into its caller. A request
 addressed to a run, such as `control.stop`, is the runtime's traffic
 and never appears on this API.
  */
-export type EventKind = "delta.text" | "delta.thinking" | "delta.tool.call" | "delta.tool.done" | "delta.citation" | "lifecycle.accepted" | "lifecycle.started" | "lifecycle.parked" | "lifecycle.resumed" | "lifecycle.completed" | "lifecycle.failed" | "lifecycle.stopped" | "action.taken" | "usage.call" | "usage.child" | "control.created" | "control.revised" | "control.deleted";
+export type EventKind = "delta.text" | "delta.thinking" | "delta.tool.call" | "delta.tool.done" | "delta.citation" | "lifecycle.accepted" | "lifecycle.started" | "lifecycle.parked" | "lifecycle.resumed" | "lifecycle.completed" | "lifecycle.failed" | "lifecycle.child.parked" | "lifecycle.stopped" | "action.taken" | "usage.call" | "usage.child" | "control.created" | "control.revised" | "control.deleted";
 
 /** One fragment of the agent's answer, in order. Concatenate fragments. */
 export interface TextPayload {
@@ -1069,6 +1150,57 @@ export interface LifecyclePayload {
   /** The final answer, on `lifecycle.completed`. */
   text?: string;
   usage?: RunUsage;
+  question?: Question;
+  answer?: Answer;
+}
+
+export interface QuestionTool {
+  name: string;
+  call_id: string;
+  /** The arguments the model asked for, as a JSON object. */
+  arguments?: unknown;
+  /** The tool's parameter schema. */
+  schema?: unknown;
+}
+
+/** What a run is waiting on a person for: to approve a tool call, to
+choose one of `options`, or to reply. `asked_of` is a routing hint and
+admits nobody. `default` is what applies when it expires.
+ */
+export interface Question {
+  id: string;
+  kind: "approval" | "choice" | "reply" | "delegation";
+  agent?: string;
+  prompt: string;
+  options?: string[];
+  tool?: QuestionTool;
+  asked_of?: string;
+  expires_at?: string;
+  default?: Answer;
+  at?: string;
+  child_run_id?: string;
+}
+
+/** An answer to a question, or its default when nobody answered in time (`expired`). */
+export interface Answer {
+  question_id: string;
+  decision?: "approve" | "deny";
+  arguments?: unknown;
+  choice?: string;
+  text?: string;
+  note?: string;
+  /** Who answered. */
+  by?: string;
+  at?: string;
+  expired?: boolean;
+  run_id?: string;
+}
+
+/** The body of `lifecycle.child.parked`, a question a run this one waits on asked. */
+export interface ChildQuestion {
+  run_id: string;
+  agent?: string;
+  question: Question;
 }
 
 /** The body of `lifecycle.stopped`: the run was asked to stop and wrapped
@@ -1205,7 +1337,7 @@ JSON, base64-encoded, because the server marshals a byte slice: decode
 the base64, then parse the JSON. The decoded shape for each kind is the
 schema named in `contentSchema`. A kind may carry no payload.
  */
-export type RunEvent = TextDeltaEvent | ThinkingDeltaEvent | ToolCallEvent | ToolDoneEvent | CitationEvent | RunAcceptedEvent | RunStartedEvent | RunParkedEvent | RunResumedEvent | RunCompletedEvent | RunFailedEvent | RunStoppedEvent | ActionTakenEvent | UsageCallEvent | UsageChildEvent | AgentCreatedEvent | AgentRevisedEvent | AgentDeletedEvent;
+export type RunEvent = TextDeltaEvent | ThinkingDeltaEvent | ToolCallEvent | ToolDoneEvent | CitationEvent | RunAcceptedEvent | RunStartedEvent | RunParkedEvent | RunResumedEvent | RunCompletedEvent | RunFailedEvent | ChildParkedEvent | RunStoppedEvent | ActionTakenEvent | UsageCallEvent | UsageChildEvent | AgentCreatedEvent | AgentRevisedEvent | AgentDeletedEvent;
 
 /** One fragment of the answer. */
 export type TextDeltaEvent = EventBase & { kind: "delta.text"; payload?: string };
@@ -1230,6 +1362,9 @@ export type RunStartedEvent = EventBase & { kind: "lifecycle.started"; payload?:
 
 /** The run is waiting on something. */
 export type RunParkedEvent = EventBase & { kind: "lifecycle.parked"; payload?: string };
+
+/** A run this one is waiting on is waiting on a person. Answer it on that run. */
+export type ChildParkedEvent = EventBase & { kind: "lifecycle.child.parked"; payload?: string };
 
 /** A parked run carried on. */
 export type RunResumedEvent = EventBase & { kind: "lifecycle.resumed"; payload?: string };
@@ -1265,7 +1400,7 @@ export type AgentDeletedEvent = EventBase & { kind: "control.deleted"; payload?:
 same union as `RunEvent`, without the envelope fields the manifest's
 run already states. `body` is absent when the event carried none.
  */
-export type ManifestEvent = ManifestTextDeltaEvent | ManifestThinkingDeltaEvent | ManifestToolCallEvent | ManifestToolDoneEvent | ManifestCitationEvent | ManifestRunAcceptedEvent | ManifestRunStartedEvent | ManifestRunParkedEvent | ManifestRunResumedEvent | ManifestRunCompletedEvent | ManifestRunFailedEvent | ManifestRunStoppedEvent | ManifestActionTakenEvent | ManifestUsageCallEvent | ManifestUsageChildEvent | ManifestAgentCreatedEvent | ManifestAgentRevisedEvent | ManifestAgentDeletedEvent;
+export type ManifestEvent = ManifestTextDeltaEvent | ManifestThinkingDeltaEvent | ManifestToolCallEvent | ManifestToolDoneEvent | ManifestCitationEvent | ManifestRunAcceptedEvent | ManifestRunStartedEvent | ManifestRunParkedEvent | ManifestRunResumedEvent | ManifestRunCompletedEvent | ManifestRunFailedEvent | ManifestChildParkedEvent | ManifestRunStoppedEvent | ManifestActionTakenEvent | ManifestUsageCallEvent | ManifestUsageChildEvent | ManifestAgentCreatedEvent | ManifestAgentRevisedEvent | ManifestAgentDeletedEvent;
 
 export type ManifestTextDeltaEvent = ManifestEventBase & { kind: "delta.text"; body?: TextPayload };
 
@@ -1282,6 +1417,8 @@ export type ManifestRunAcceptedEvent = ManifestEventBase & { kind: "lifecycle.ac
 export type ManifestRunStartedEvent = ManifestEventBase & { kind: "lifecycle.started"; body?: LifecyclePayload };
 
 export type ManifestRunParkedEvent = ManifestEventBase & { kind: "lifecycle.parked"; body?: LifecyclePayload };
+
+export type ManifestChildParkedEvent = ManifestEventBase & { kind: "lifecycle.child.parked"; body?: ChildQuestion };
 
 export type ManifestRunResumedEvent = ManifestEventBase & { kind: "lifecycle.resumed"; body?: LifecyclePayload };
 

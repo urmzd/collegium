@@ -1,3 +1,4 @@
+import { type AnswerRequest, answerPath } from "@collegium/adapter/question";
 import type { BusEvent, Run } from "./adapter.ts";
 
 export class ApiError extends Error {
@@ -49,6 +50,14 @@ export interface AgentSpec {
   tools?: string[];
   sources?: { name: string; uri: string }[];
   access?: { spawn?: string[]; workspace_areas?: string[] };
+  /** Tools whose every call waits for a person to approve it. */
+  approvals?: string[];
+  /** When set, the only people who may approve: subjects, or roles as `role:<name>`. */
+  approvers?: string[];
+  /** Lets the person who asked approve their own call. */
+  self_approval?: boolean;
+  /** When set, the only people who may answer a question the agent asks. */
+  answerers?: string[];
 }
 
 export interface Revision {
@@ -477,6 +486,8 @@ export const api = {
   pendingMemory: () => call<{ proposals: Proposal[] }>("GET", "/api/memory/pending").then((r) => r.proposals),
   /** Stop a run and everything attached to it. Runs it delegated keep going. */
   stopRun: (id: string) => call<Run>("POST", `/api/runs/${encodeURIComponent(id)}/stop`),
+  /** Answer the question a run is waiting on. Returns the question's inbox message, settled. */
+  answer: (r: AnswerRequest) => call<unknown>("POST", answerPath(r), r.body),
   /** A run's events as they were published, for a run that is no longer streaming. */
   runEvents: (id: string) =>
     call<{ events: BusEvent[]; complete: boolean }>("GET", `/api/runs/${encodeURIComponent(id)}/events`),
