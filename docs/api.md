@@ -90,7 +90,8 @@ The layer in `collegium.ts` adds what the generator does not do:
   the run's last event: it throws `StreamEndedError` with `reason` `stopped`
   (the record says stopped and its `lifecycle.stopped` was no longer on the
   stream), `ended` (the record says completed or failed and no ending event
-  was found) or `gave-up` (it could not resume).
+  was found) or `gave-up` (it could not resume). The last read of a run that
+  has ended waits at most `resume.drainMs` (2 s by default) for that event.
 - `failureOf(error)`: the status and the API's error body from any error the
   client throws, and `refusal` when a limit refused a run.
 - `getArtifactContent` and `getPreferencesPhoto` return the file's bytes. The

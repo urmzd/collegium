@@ -99,8 +99,9 @@ type Config struct {
 	// StopGrace is how long a run asked to stop is given to wrap up before
 	// its turn is cancelled. Zero means the runtime's default, ten seconds.
 	StopGrace time.Duration
-	// Stops replaces how a run is asked to stop. Nil means the runtime. It
-	// exists to test a deployment whose runtime cannot interrupt a run.
+	// Stops replaces how a run is asked to stop. Nil means the runtime.
+	// For tests only: it exists to test a deployment whose runtime cannot
+	// interrupt a run, and a server never sets it.
 	Stops func(context.Context, runtime.StopRequest) error
 	// OfflineHooks lets housekeeping run on the offline provider. It exists
 	// for tests: an offline answer is a notice, not a title or a fact.

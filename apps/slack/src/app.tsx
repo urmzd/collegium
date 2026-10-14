@@ -256,8 +256,13 @@ export class App {
   private readonly stopWaitMs: number;
   /** Ends every slow follow on shutdown. */
   private readonly closing = new AbortController();
-  /** Runs whose stop was already confirmed in their thread. */
+  /**
+   * Runs whose end has been posted in their thread, by the slow follow or by
+   * the stop button. Whichever posts first claims it, so an end is posted once.
+   */
   private readonly confirmed = new Recent<true>(10_000);
+  /** Runs followed slowly right now, and how to make each one look again at once. */
+  private readonly slow = new Map<string, () => void>();
 
   constructor(
     private readonly slack: SlackApi,
@@ -587,18 +592,48 @@ export class App {
    */
   private async later(run: Run, following: Follower, presenter: Presenter): Promise<void> {
     let wait = this.pollMs;
-    while (!this.closing.signal.aborted) {
-      await sleep(wait, this.closing.signal);
-      wait = Math.min(wait * 2, this.slowPollMs);
-      if (this.closing.signal.aborted) return;
-      const record = await this.collegium.getRun(run.id).catch(() => null);
-      if (!record || !terminal(record.status)) continue;
-      if (this.confirmed.has(run.id)) return;
-      following.settle(record);
-      await presenter.conclude(following.turn);
-      this.log(`run ${run.id} ended ${following.turn.status}, after it went quiet`);
-      return;
+    try {
+      while (!this.closing.signal.aborted) {
+        const nudged = await this.nap(run.id, wait);
+        // A stop was pressed: the run will end soon, so it is read often again.
+        wait = nudged ? Math.min(this.pollMs, 500) : Math.min(wait * 2, this.slowPollMs);
+        if (this.closing.signal.aborted) return;
+        const record = await this.collegium.getRun(run.id).catch(() => null);
+        if (!record || !terminal(record.status)) continue;
+        if (!this.claim(run.id)) return;
+        following.settle(record);
+        await presenter.conclude(following.turn);
+        this.log(`run ${run.id} ended ${following.turn.status}, after it went quiet`);
+        return;
+      }
+    } finally {
+      this.slow.delete(run.id);
     }
+  }
+
+  /** Wait, until the time is up, the app closes, or the run is nudged. Reports whether it was nudged. */
+  private nap(id: string, ms: number): Promise<boolean> {
+    return new Promise((resolve) => {
+      const ctl = new AbortController();
+      const stopWaiting = () => ctl.abort();
+      this.closing.signal.addEventListener("abort", stopWaiting, { once: true });
+      let nudged = false;
+      this.slow.set(id, () => {
+        nudged = true;
+        ctl.abort();
+      });
+      sleep(ms, ctl.signal).then(() => {
+        this.closing.signal.removeEventListener("abort", stopWaiting);
+        resolve(nudged);
+      });
+    });
+  }
+
+  /** Claim the posting of a run's end. False when it has been posted already. */
+  private claim(id: string): boolean {
+    if (this.confirmed.has(id)) return false;
+    this.confirmed.set(id, true);
+    return true;
   }
 
   /**
@@ -728,55 +763,96 @@ export class App {
       // The turn in flight confirms in its own message and settles the session.
       live.wake({ type: "stopped", run: stopped.find((r) => r.id === following.id) });
     }
-    // Runs this process is not following: confirm each in the thread once
-    // collegium says it stopped, in Slack's order, before the status moves. One
-    // still stopping is read until it ends, for as long as a stop takes.
+    // Runs this process is not following live. One it follows slowly is
+    // looked at again at once, and its slow follow posts its end, stopped or
+    // not. Any other is read until it ends and its end is posted here, in
+    // Slack's order: the end, then the status. One that has not ended by
+    // stopWaitMs is left to a slow follow, and the session stays working
+    // until it has.
     const deadline = Date.now() + this.stopWaitMs;
-    await Promise.all(
+    const ends = await Promise.all(
       stopped
         .filter((run) => run.id !== following?.id)
         .map((run) => {
-          this.confirmed.set(run.id, true);
-          return terminal(run.status)
-            ? this.confirmStop(session, run)
-            : this.confirmWhenEnded(session, run, deadline);
+          const nudge = this.slow.get(run.id);
+          if (nudge) {
+            nudge();
+            return Promise.resolve(false);
+          }
+          return this.endOf(session, run, deadline);
         }),
     );
-    if (!live) {
-      await this.slack
-        .call("agents.sessions.setStatus", {
-          channel_id: session.channel,
-          thread_ts: session.threadTs,
-          status: "active",
-        })
-        .catch((e: Error) => this.log(`session status skipped: ${e.message}`));
-    }
+    if (!live && ends.every(Boolean)) await this.settleSession(session);
   }
 
-  /** Post a stopped run's end in its thread: what it had said, marked stopped. */
-  private async confirmStop(session: Session, run: Run): Promise<void> {
-    if (run.status !== "stopped") {
+  /** Set a session's status to active: nothing is working in it any more. */
+  private async settleSession(session: Session): Promise<void> {
+    await this.slack
+      .call("agents.sessions.setStatus", {
+        channel_id: session.channel,
+        thread_ts: session.threadTs,
+        status: "active",
+      })
+      .catch((e: Error) => this.log(`session status skipped: ${e.message}`));
+  }
+
+  /**
+   * Post a run's end in its thread once: what it had said, marked stopped, or
+   * its answer when it finished before the stop reached it.
+   */
+  private async postEnd(session: Session, run: Run): Promise<void> {
+    if (!this.claim(run.id)) return;
+    if (run.status !== "stopped")
       this.log(`run ${run.id} ended ${run.status} before the stop reached it`);
-      return;
-    }
     const turn = follow(run, { href: this.href }).settle(run);
     await this.postView(session, renderToSlack(<TurnView turn={turn} />)).catch((e: Error) =>
-      this.log(`stop not confirmed in the thread: ${e.message}`),
+      this.log(`the end of run ${run.id} was not posted: ${e.message}`),
     );
   }
 
-  /** Read a run that is stopping, more slowly each time, until it ends or the deadline passes, then confirm it. */
-  private async confirmWhenEnded(session: Session, run: Run, deadline: number): Promise<void> {
+  /**
+   * Read a run that was asked to stop until it ends, and post its end. Reports
+   * whether it ended by the deadline. One that has not is followed on slowly,
+   * and its end is posted, and the session settled, when it comes.
+   */
+  private async endOf(session: Session, run: Run, deadline: number): Promise<boolean> {
     // A stop takes seconds, not minutes, so it is read more often than a quiet run.
     let wait = Math.min(this.pollMs, 500);
-    while (!this.closing.signal.aborted && Date.now() < deadline) {
+    let record: Run | null = run;
+    while (
+      !(record && terminal(record.status)) &&
+      !this.closing.signal.aborted &&
+      Date.now() < deadline
+    ) {
       await sleep(Math.min(wait, Math.max(deadline - Date.now(), 0)), this.closing.signal);
       wait = Math.min(wait * 2, 5_000);
+      record = await this.collegium.getRun(run.id).catch(() => null);
+    }
+    if (record && terminal(record.status)) {
+      await this.postEnd(session, record);
+      return true;
+    }
+    if (this.closing.signal.aborted) return false;
+    this.log(
+      `run ${run.id} was asked to stop and had not ended after ${this.stopWaitMs}ms; following it slowly`,
+    );
+    this.track(this.endLater(session, run));
+    return false;
+  }
+
+  /** Follow a stopping run by its record, less and less often, then post its end and settle the session. */
+  private async endLater(session: Session, run: Run): Promise<void> {
+    let wait = Math.min(this.pollMs, 500);
+    while (!this.closing.signal.aborted) {
+      await sleep(wait, this.closing.signal);
+      wait = Math.min(wait * 2, this.slowPollMs);
       if (this.closing.signal.aborted) return;
       const record = await this.collegium.getRun(run.id).catch(() => null);
-      if (record && terminal(record.status)) return this.confirmStop(session, record);
+      if (!record || !terminal(record.status)) continue;
+      await this.postEnd(session, record);
+      if (!this.threads.get(sessionName(session))?.live) await this.settleSession(session);
+      return;
     }
-    this.log(`run ${run.id} was asked to stop and had not ended after ${this.stopWaitMs}ms`);
   }
 
   // Clicks

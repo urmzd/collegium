@@ -75,9 +75,16 @@ export interface ResumeOptions {
   initialDelayMs?: number;
   /** The longest wait. Default 10 s. */
   maxDelayMs?: number;
+  /**
+   * How long a last read of a run that has ended waits for its ending event.
+   * The server keeps the stream open, so an event it no longer holds would
+   * otherwise be waited for forever. After it, the run's record is the
+   * answer. Default 2 s.
+   */
+  drainMs?: number;
 }
 
-const DEFAULT_RESUME: Required<ResumeOptions> = { maxRetries: 5, initialDelayMs: 500, maxDelayMs: 10_000 };
+const DEFAULT_RESUME: Required<ResumeOptions> = { maxRetries: 5, initialDelayMs: 500, maxDelayMs: 10_000, drainMs: 2_000 };
 
 /**
  * `runEvents` could not follow a run to an event that ends it. `reason` says
@@ -298,8 +305,20 @@ export class Collegium extends ApiClient {
     let cause: unknown;
     let record: Run | undefined;
     for (;;) {
+      // A last read of an ended run is bounded: past drainMs, the record decides.
+      let drained = false;
+      const drain = draining ? new AbortController() : undefined;
+      const timer = drain
+        ? setTimeout(() => {
+            drained = true;
+            drain.abort();
+          }, resume.drainMs)
+        : undefined;
+      const forward = () => drain?.abort();
+      options?.signal?.addEventListener("abort", forward, { once: true });
+      const read = drain ? { ...options, signal: drain.signal } : options;
       try {
-        for await (const item of this.events({ topic: topicFor(run.agent, run.id), from }, options)) {
+        for await (const item of this.events({ topic: topicFor(run.agent, run.id), from }, read)) {
           if (item.type !== "event" || item.event.run_id !== run.id) continue;
           if (from !== undefined && item.event.seq <= from) continue;
           from = item.event.seq;
@@ -309,8 +328,11 @@ export class Collegium extends ApiClient {
         }
         cause = undefined;
       } catch (error) {
-        if (options?.signal?.aborted || !droppedStream(error)) throw error;
-        cause = error;
+        if (!drained && (options?.signal?.aborted || !droppedStream(error))) throw error;
+        cause = drained ? undefined : error;
+      } finally {
+        clearTimeout(timer);
+        options?.signal?.removeEventListener("abort", forward);
       }
       if (draining) {
         // The record said the run was over and a last read found no event
