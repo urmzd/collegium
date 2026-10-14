@@ -31,7 +31,7 @@ platform. vultus supplies the components. The design is in
 
 ## Layout
 
-- `pkg/call`: the call primitive. `pkg/runs`: the run index and statistics. `pkg/auth`: principals, roles, OIDC.
+- `pkg/call`: the call primitive. `pkg/runs`: the run index and statistics. `pkg/auth`: principals, roles, OIDC. `pkg/authz`: the policy language. `pkg/auth/mockidp`: the loopback development provider.
 - `pkg/journal`: the event log, queries and traces. `pkg/alerts`: rules and alerts. `pkg/knowledge`: sources and search.
 - `pkg/memory`: what an agent carries between conversations. `internal/platform/hooks.go`: housekeeping runs.
 - `pkg/clients`: the Slack apps and GitHub installations a workspace answers through. `internal/platform/connectors.go`: one surface per scheme, fanning in and out to them.
@@ -49,6 +49,7 @@ platform. vultus supplies the components. The design is in
 | Format, lint and test | `make check` |
 | Test | `make test` |
 | Preview | `make dev`, then `make web` |
+| Preview with sign-in | `make dev-signin`, then `make web` |
 | Web checks | `cd apps/web && pnpm typecheck && pnpm test` |
 | Adapter checks | `cd packages/adapter && pnpm typecheck && pnpm test` |
 | Slack app checks | `cd apps/slack && pnpm exec biome check && pnpm typecheck && pnpm test` |
