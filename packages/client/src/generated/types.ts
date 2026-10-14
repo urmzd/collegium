@@ -31,6 +31,34 @@ export interface Principal {
   scopes?: Permission[];
 }
 
+/** Why the caller may or may not do one thing. */
+export interface AccessDecision {
+  permission: Permission;
+  allowed: boolean;
+  /** allowed; denied, when a rule denies it, which beats every allow; no match, when no rule in the roles held mentions it and the default is deny; scope, when a machine's token scope decided. */
+  outcome: "allowed" | "denied" | "no match" | "scope";
+  /** The held role the deciding rule reached the caller through. */
+  role?: string;
+  /** From role to the role that declares the rule. */
+  path?: string[];
+  /** The deciding rule, as the policy writes it. */
+  rule?: string;
+  /** The grant that gave the role, when the sign-in kept it. */
+  grant?: string;
+  /** Every role the decision considered. */
+  held: AccessHeldRole[];
+  /** Roles the caller holds that the policy does not declare. They grant nothing. */
+  unknown?: string[];
+}
+
+export interface AccessHeldRole {
+  role: string;
+  /** The grant that gave the role, as the policy writes it, when known. */
+  grant?: string;
+  /** The group the grant names, when it names one. */
+  group?: string;
+}
+
 export interface Me {
   principal: Principal;
   /** Everything the caller may do. Null, not an empty list, for a caller with no permission at all. */
