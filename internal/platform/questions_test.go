@@ -730,3 +730,77 @@ func TestThePersonWhoStartedTheTreeCannotApproveInIt(t *testing.T) {
 	}
 	await(t, p, first.ID, runs.Completed)
 }
+
+// The client that receives a Slack message often maps nobody: the people map
+// sits on the Slack app built on the API, a second client in the same team.
+// The person who sent the message is still known by the name that client maps
+// them to, and does not approve their own call, in the console or through the
+// app. The names are pinned when the run starts, so removing the mapping
+// before the question is raised changes nothing.
+func TestAConnectorRunsRequesterIsKnownThroughAnyClientOfTheTeam(t *testing.T) {
+	f := &fakes{}
+	c := &cast{continues: true,
+		says:  map[string][][]saigetypes.Delta{"deployer": {writing("plan.md", "ship"), say("Written.")}},
+		tools: map[string][]string{"deployer": {platform.ToolFileWrite}},
+		shape: map[string]func(*agentspec.AgentSpec){"deployer": func(s *agentspec.AgentSpec) { s.Approvals = []string{platform.ToolFileWrite} }},
+		gates: map[string]chan struct{}{"deployer": make(chan struct{})},
+	}
+	p := stage(t, c, f.config())
+	create(t, p, tenant, slackClient("conn", "A0CONN", team, "deployer"))
+	app := slackClient("app", "A0APP", team, "deployer")
+	app.Slack.Machine, app.Slack.People = "svc-slack", map[string]string{"U0HUMAN1": "ada", "U0OLU": "olu"}
+	create(t, p, tenant, app)
+
+	if code := signedSlack(p.IngressHandler(), "secret-conn", mentionOf("A0CONN", team, "Ev1", "C01", "1700000000.000100")); code != http.StatusOK {
+		t.Fatalf("mention = %d", code)
+	}
+	var run runs.Run
+	within(t, "the mention started a run", func() bool {
+		r, ok := runOf(p, tenant, "deployer")
+		run = r
+		return ok
+	})
+	if run.Client != "conn" {
+		t.Fatalf("the run's client is %q", run.Client)
+	}
+	// An admin removes ada's mapping while the run works, before it asks.
+	app.Slack.People = map[string]string{"U0OLU": "olu"}
+	if _, err := p.UpdateClient(t.Context(), tenant, "app", "test", app); err != nil {
+		t.Fatal(err)
+	}
+	c.release("deployer")
+	within(t, "the run parked on its approval", func() bool {
+		r, _ := p.Runs.Get(tenant, run.ID)
+		run = r
+		return r.Status == runs.Parked && r.Question != nil
+	})
+	m := questionFor(t, p, run.ID)
+	ada := auth.Principal{Subject: "ada", Tenant: tenant, Kind: auth.User, Roles: []auth.Role{auth.Operator}}
+	if sees(p, ada, m.ID) || !sees(p, olu, m.ID) {
+		t.Fatal("the approval is addressed to the person whose Slack message raised it")
+	}
+	if _, err := p.AnswerQuestion(t.Context(), ada, run.ID, run.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove}); !errors.Is(err, platform.ErrForbidden) {
+		t.Fatalf("ada in the console = %v, want forbidden", err)
+	}
+	// Mapped again, she is refused through the app too.
+	app.Slack.People = map[string]string{"U0HUMAN1": "ada", "U0OLU": "olu"}
+	if _, err := p.UpdateClient(t.Context(), tenant, "app", "test", app); err != nil {
+		t.Fatal(err)
+	}
+	pol, _ := auth.ParsePolicy("test", "role operator { allow * on runs }\ngrant operator to anyone\n")
+	machine := auth.Principal{Subject: "svc-slack", Tenant: tenant, Kind: auth.Machine, Scopes: []auth.Permission{auth.RunsRead, auth.RunsWrite}}.WithPolicy(pol)
+	relay := func(user string) error {
+		_, err := p.AnswerQuestion(t.Context(), machine, run.ID, run.Question.ID, platform.QuestionAnswer{Action: platform.ActApprove, ActAs: &platform.ActAs{Client: "app", User: user}})
+		return err
+	}
+	if err := relay("U0HUMAN1"); !errors.Is(err, platform.ErrForbidden) {
+		t.Fatalf("ada through the Slack app = %v, want forbidden", err)
+	}
+	if got, _ := p.Runs.Get(tenant, run.ID); got.Status != runs.Parked || len(p.Inbox.History(tenant, m.ID)) != 1 {
+		t.Fatal("a refused self-approval changed something")
+	}
+	if err := relay("U0OLU"); err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, run.ID, runs.Completed)
+}

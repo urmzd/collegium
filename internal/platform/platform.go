@@ -391,6 +391,9 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	if err := p.Runs.Record(acc.RunID, tag, acc.Rev); err != nil {
 		return runs.Run{}, err
 	}
+	// Who asked, by every name they go by now: a mapping removed later does
+	// not let them approve their own calls.
+	p.Runs.PinRequesters(acc.RunID, p.resolveRequester(tag.Tenant, tag, client))
 	return p.Runs.Get(tag.Tenant, acc.RunID)
 }
 

@@ -117,18 +117,35 @@ func (p *Platform) rolesOf(ctx context.Context, _ string, principal string) ([]s
 
 // requesterNames is every name the person whose request raised a run goes
 // by: the actor's id and its id qualified by the trigger, as the runtime
-// compares an approver against them, and the principal a client maps that
-// person to. A Slack connector raises a run as the Slack user ("U0ADA"), who
-// is a principal ("ada") only through the client's people map: without it,
-// ada could approve her own call from the console. The runtime knows nothing
-// of the map (mandatum's AnswerRequest has no requester alias), so the
-// platform holds this rule itself, before it asks the runtime.
+// compares an approver against them, and every principal a Slack client maps
+// that person to. A Slack connector raises a run as the Slack user ("U0ADA"),
+// who is a principal ("ada") only through some client's people map, and that
+// map is often not on the client that received the message (a people map
+// needs a machine, so an app built on the API holds it). Without it, ada
+// could approve her own call. So the actor is looked up in every Slack client
+// of the tenant serving the run's Slack team, enabled or not: the team is the
+// one the run was accepted from (its source address, written by the
+// connector whose client verified the request), never anything an answerer
+// says. The names are pinned when the run is accepted, and joined with the
+// current ones, so removing a mapping later reopens nothing.
 //
-// A GitHub connector's actor is a GitHub login, which no client maps to a
-// principal, so a person approving a call their own GitHub event raised
-// cannot be detected.
+// The runtime knows nothing of these maps (mandatum's AnswerRequest has no
+// requester alias), so the platform holds this rule itself, before it asks
+// the runtime. A GitHub connector's actor is a GitHub login, which no client
+// maps to a principal, so a person approving a call their own GitHub event
+// raised cannot be detected.
 func (p *Platform) requesterNames(run runs.Run) []string {
-	tag := run.Tag()
+	out := slices.Clone(run.Requesters())
+	for _, n := range p.resolveRequester(run.Tenant, run.Tag(), run.Client) {
+		if !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// resolveRequester is every name a tag's actor goes by now.
+func (p *Platform) resolveRequester(tenant string, tag envelope.Tag, client string) []string {
 	id := strings.TrimSpace(tag.Actor.ID)
 	if id == "" {
 		return nil
@@ -137,11 +154,27 @@ func (p *Platform) requesterNames(run runs.Run) []string {
 	if tag.Origin != "" {
 		out = append(out, tag.Origin+":"+id)
 	}
-	if run.Client != "" {
-		if c, err := p.Clients.Get(run.Tenant, run.Client); err == nil && c.Surface == clients.Slack && c.Slack != nil {
-			if who := c.Slack.People[id]; who != "" {
-				out = append(out, who)
-			}
+	if tag.Origin != string(clients.Slack) {
+		return out
+	}
+	team := ""
+	if tag.Source.Connector == string(clients.Slack) {
+		team = tag.Source.Workspace
+	}
+	if team == "" && client != "" {
+		if c, err := p.Clients.Get(tenant, client); err == nil {
+			team = c.Identity.Team
+		}
+	}
+	if team == "" {
+		return out
+	}
+	for _, c := range p.Clients.List(tenant) {
+		if c.Surface != clients.Slack || c.Identity.Team != team || c.Slack == nil {
+			continue
+		}
+		if who := c.Slack.People[id]; who != "" && !slices.Contains(out, who) {
+			out = append(out, who)
 		}
 	}
 	return out

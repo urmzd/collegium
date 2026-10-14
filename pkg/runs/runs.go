@@ -213,6 +213,9 @@ type Run struct {
 	// tag is what the run was accepted with. A call from this run is built
 	// from it.
 	tag envelope.Tag
+	// requesters are every name the person who asked for the run went by
+	// when it was accepted, pinned so a mapping removed later still counts.
+	requesters []string
 	// tally sums the usage reported while the run works. final is set once
 	// the runtime's own figure has replaced it.
 	tally *payload.Tally
@@ -221,6 +224,19 @@ type Run struct {
 	// Spend changes nothing. settledUp is set once its spend has been
 	// settled into its caller, so a call that ends later climbs past it.
 	closed, settledUp bool
+}
+
+// Requesters returns the names pinned for the person who asked for the run.
+func (r Run) Requesters() []string { return slices.Clone(r.requesters) }
+
+// PinRequesters records every name the person who asked for a run goes by,
+// once, when it is accepted.
+func (x *Index) PinRequesters(runID string, names []string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if r, ok := x.runs[runID]; ok && r.requesters == nil {
+		r.requesters = slices.Clone(names)
+	}
 }
 
 // Tag returns the tag the run was accepted with.
