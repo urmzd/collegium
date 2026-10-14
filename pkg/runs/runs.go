@@ -214,6 +214,10 @@ type Run struct {
 	// the runtime's own figure has replaced it.
 	tally *payload.Tally
 	final bool
+	// closed is set once the run's own spending is settled, after which
+	// Spend changes nothing. settledUp is set once its spend has been
+	// settled into its caller, so a call that ends later climbs past it.
+	closed, settledUp bool
 }
 
 // Tag returns the tag the run was accepted with.
@@ -400,6 +404,8 @@ func (x *Index) ObserveUsage(e envelope.Event) (Run, bool) {
 		return Run{}, false
 	}
 	if r.final {
+		// The runtime's record stands. The call is still the ledger's to
+		// judge, so the run is returned.
 		return *r, true
 	}
 	if r.tally == nil {
@@ -424,24 +430,40 @@ func (x *Index) ObserveUsage(e envelope.Event) (Run, bool) {
 	return *r, true
 }
 
-// SetUsage records the runtime's own figure for a run that has ended. It
-// replaces what was tallied from its events, and nothing replaces it.
-func (x *Index) SetUsage(runID string, u payload.RunUsage) {
+// SetUsage closes a run's spending once it has ended: the runtime's own
+// figure, when there is one, replaces what was tallied from its events, and
+// the micro-USD its settlement added beyond the calls already spent joins
+// Spent, in one step. Nothing changes a closed run's usage or Spent after
+// that but the calls it made, as they settle with it. A run is closed once.
+func (x *Index) SetUsage(runID string, u *payload.RunUsage, micros int64) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if r, ok := x.runs[runID]; ok && !r.final {
-		r.Usage, r.final, r.tally = &u, true, nil
+	r, ok := x.runs[runID]
+	if !ok || r.closed {
+		return
 	}
+	if u != nil && !r.final {
+		v := *u
+		r.Usage, r.final = &v, true
+	}
+	r.tally, r.closed = nil, true
+	r.Spent += micros
 }
 
 // Spend adds what a run's own model call cost, in micro-USD, to what it has
-// spent, and returns the run as it now stands.
+// spent, and returns the run as it now stands. A run whose spending is closed
+// has settled, and perhaps settled into its caller, so a call reported after
+// that changes nothing here and Spend reports false: the usage ledger still
+// counts whatever the call adds beyond the run's settled total.
 func (x *Index) Spend(runID string, micros int64) (Run, bool) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	r, ok := x.runs[runID]
 	if !ok {
 		return Run{}, false
+	}
+	if r.closed {
+		return *r, false
 	}
 	r.Spent += micros
 	return *r, true
@@ -451,15 +473,35 @@ func (x *Index) Spend(runID string, micros int64) (Run, bool) {
 // budget it was leased is no longer held for it, and what it spent, with
 // everything it called in turn, is the caller's spending. It is called once
 // per call, when the call ends.
+//
+// A caller may have ended first, a delegated call's caller most of all, and
+// settled its own spend into its caller already. The spend then climbs on,
+// through every ancestor that has settled, to the nearest one that has not,
+// or to the root, so the tree's figure is whole wherever it is read.
 func (x *Index) SettleCall(child Run) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	c, ok := x.runs[child.ID]
+	if !ok || c.settledUp {
+		return
+	}
 	r, ok := x.runs[child.Parent]
 	if !ok || r.Tenant != child.Tenant {
 		return
 	}
-	r.Granted = max(r.Granted-child.Lease, 0)
-	r.Spent += child.Spent
+	c.settledUp = true
+	r.Granted = max(r.Granted-c.Lease, 0)
+	for {
+		r.Spent += c.Spent
+		if !r.settledUp {
+			return
+		}
+		next, ok := x.runs[r.Parent]
+		if !ok || next.Tenant != r.Tenant {
+			return
+		}
+		r = next
+	}
 }
 
 // causeOf says why a run stopped, from the request the runtime honoured.

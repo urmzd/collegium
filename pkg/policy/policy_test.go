@@ -2,6 +2,7 @@ package policy
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -321,6 +322,33 @@ func TestExceededJudgesSpendAndTokensOnly(t *testing.T) {
 		got := Exceeded(tc.applied)
 		if got.Verdict != tc.want || got.Limit != tc.limit {
 			t.Errorf("%s: %s on %q, want %s on %q (%s)", name, got.Verdict, got.Limit, tc.want, tc.limit, got.Reason)
+		}
+	}
+}
+
+// The warning threshold and the percentage in a reason hold for limits near
+// the largest int64, where multiplying by 100 would wrap.
+func TestThresholdsDoNotOverflow(t *testing.T) {
+	const huge = int64(math.MaxInt64 - 7)
+	if Reaches(huge/2, huge, 80) || !Reaches(huge/10*9, huge, 80) || !Reaches(huge, huge, 100) || Reaches(huge-1, huge, 100) {
+		t.Fatal("Reaches is wrong near the largest int64")
+	}
+	if got := Percent(huge/10*9, huge); got != 89 && got != 90 {
+		t.Fatalf("Percent = %d", got)
+	}
+	d := Exceeded([]Applied{{pol(tenantScope, func(p *Policy) { p.SpendLimit = huge }), Usage{Spend: huge / 10 * 9}}})
+	if d.Verdict != Warn {
+		t.Fatalf("90%% of a huge limit = %s", d.Verdict)
+	}
+	d = Decide([]Applied{{pol(tenantScope, func(p *Policy) { p.SpendLimit = huge }), Usage{Spend: huge}}}, Request{Lease: huge})
+	if d.Verdict != Deny {
+		t.Fatalf("a huge lease past a huge limit = %s", d.Verdict)
+	}
+	for used := range int64(200) {
+		for _, max := range []int64{1, 7, 99, 100, 101, 1000} {
+			if want := used*100 >= max*80; Reaches(used, max, 80) != want {
+				t.Fatalf("Reaches(%d, %d, 80) != %v", used, max, want)
+			}
 		}
 	}
 }

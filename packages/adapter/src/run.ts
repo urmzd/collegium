@@ -22,7 +22,6 @@ export interface BusEvent {
   at: string;
 }
 
-/** A run as the platform's index reports it. */
 /** Money in integer millionths of a currency, from saige's price catalog. */
 export interface Cost {
   micros: number;
@@ -51,6 +50,7 @@ export interface RunUsage {
   context?: { model?: string; window?: number; tokens?: number };
 }
 
+/** A run as the platform's index reports it. */
 export interface Run {
   id: string;
   tenant: string;

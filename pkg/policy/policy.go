@@ -27,6 +27,8 @@ package policy
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"time"
 )
 
@@ -326,15 +328,15 @@ func decideOne(a Applied, req Request) Decision {
 		}
 		d := Decision{Policy: &p, Limit: limit, Remaining: max0(max - used)}
 		switch {
-		case used+ask > max:
+		case sum(used, ask) > max:
 			d.Verdict = Deny
 			if p.Action == Approve {
 				d.Verdict = NeedsApproval
 			}
 			d.Reason = fmt.Sprintf("%s has reached its limit of %s", p.Scope, what)
-		case (used+ask)*100 >= max*int64(p.warnAt()):
+		case Reaches(sum(used, ask), max, p.warnAt()):
 			d.Verdict = Warn
-			d.Reason = fmt.Sprintf("%s is at %d%% of its limit of %s", p.Scope, (used+ask)*100/max, what)
+			d.Reason = fmt.Sprintf("%s is at %d%% of its limit of %s", p.Scope, Percent(sum(used, ask), max), what)
 		default:
 			return
 		}
@@ -388,9 +390,9 @@ func Exceeded(applied []Applied) Decision {
 			case m.used >= m.max:
 				d.Verdict = Deny
 				d.Reason = fmt.Sprintf("%s has reached its limit of %s", p.Scope, m.what)
-			case m.used*100 >= m.max*int64(p.warnAt()):
+			case Reaches(m.used, m.max, p.warnAt()):
 				d.Verdict = Warn
-				d.Reason = fmt.Sprintf("%s is at %d%% of its limit of %s", p.Scope, m.used*100/m.max, m.what)
+				d.Reason = fmt.Sprintf("%s is at %d%% of its limit of %s", p.Scope, Percent(m.used, m.max), m.what)
 			default:
 				continue
 			}
@@ -400,6 +402,33 @@ func Exceeded(applied []Applied) Decision {
 		}
 	}
 	return best
+}
+
+// sum adds two non-negative counts, stopping at the largest int64 rather than
+// wrapping.
+func sum(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
+// Reaches reports whether used is at least pct percent of max, for any
+// non-negative int64 values, without overflowing: the threshold is computed
+// from max divided down, never from used or max multiplied up.
+func Reaches(used, max int64, pct int) bool {
+	p := int64(pct)
+	threshold := max/100*p + (max%100*p+99)/100
+	return used >= threshold
+}
+
+// Percent is used as a whole percentage of max, rounded down, without
+// overflowing.
+func Percent(used, max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	return new(big.Int).Div(new(big.Int).Mul(big.NewInt(used), big.NewInt(100)), big.NewInt(max)).Int64()
 }
 
 // counted writes a number of runs: "1 run", "10 runs".

@@ -175,7 +175,7 @@ func (s *Server) usage(w http.ResponseWriter, _ *http.Request, who auth.Principa
 			switch {
 			case m.Limit > 0 && m.Used >= m.Limit:
 				v.State = "over"
-			case m.Limit > 0 && m.Used*100 >= m.Limit*int64(warn) && v.State == "ok":
+			case m.Limit > 0 && policy.Reaches(m.Used, m.Limit, warn) && v.State == "ok":
 				v.State = "warn"
 			}
 		}

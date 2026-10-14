@@ -884,7 +884,10 @@ record of spend and are not listed as notices.
   agent: string;
   client?: string;
   run_id?: string;
+  /** When the entry was appended, by the server's clock. It decides the period the entry counts in. */
   at: string;
+  /** For a `spent` entry, when the runtime said the call happened. It counts nothing. */
+  event_at?: string;
   scope?: PolicyScope;
   version?: number;
   limit?: PolicyLimit;

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/urmzd/mandatum/pkg/agentrt"
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 	"github.com/urmzd/mandatum/pkg/agentspec"
 	"github.com/urmzd/mandatum/pkg/envelope"
 	"github.com/urmzd/saige/agent/agenttest"
@@ -567,4 +568,195 @@ func TestALeaseIsHeldToRealCostAndSettlesWithTheCaller(t *testing.T) {
 	})
 	close(gate)
 	await(t, p, lead.ID, runs.Completed)
+}
+
+// A usage report for a run that has already settled, carrying a call the run
+// never reported before, is counted in the ledger only beyond the settled
+// total, and moves neither the run's Spent nor its caller's.
+func TestACallReportedAfterItsRunSettledDoesNotInflateSpent(t *testing.T) {
+	p := metered(t, platform.Config{Limits: call.Limits{MaxDepth: 2, MaxFanOut: 4}}, map[string]agentModel{
+		"lead": {spawn: []string{"helper"}, model: func(int) saigetypes.Provider {
+			return script(tagging("helper", "Count"), say("Done."))
+		}},
+		"helper": {model: func(int) saigetypes.Provider { return script(spends(say("Three."), 1000, 100)) }},
+	})
+	ctx := t.Context()
+	r, err := p.Invoke(ctx, tag("evt-1", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, r.ID, runs.Completed)
+	helper := called(t, p, r.ID, "helper", runs.Completed)
+	within(t, "both runs are settled", func() bool { return settled(p, r.ID) == 1 && settled(p, helper.ID) == 1 })
+	lead, _ := p.Runs.Get(tenant, r.ID)
+	helper, _ = p.Runs.Get(tenant, helper.ID)
+	if lead.Spent != cost(1000, 100) || helper.Spent != cost(1000, 100) {
+		t.Fatalf("lead spent %d, helper %d", lead.Spent, helper.Spent)
+	}
+	before := spendOf(p, tenant)
+
+	// The helper's call again, under a key never seen: the shape of a call
+	// whose event was missed and arrives after settlement.
+	var late envelope.Event
+	for _, e := range p.Journal.Events(tenant, []string{helper.ID}) {
+		if e.Kind == envelope.KindUsageCall {
+			late = e
+		}
+	}
+	c, err := payload.Decode[payload.UsageCall](late)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.AccountingID += "-late"
+	if late.Payload, err = payload.Encode(c); err != nil {
+		t.Fatal(err)
+	}
+	p.Redeliver(ctx, late)
+
+	if l, _ := p.Runs.Get(tenant, r.ID); l.Spent != lead.Spent {
+		t.Fatalf("the caller's spent moved from %d to %d", lead.Spent, l.Spent)
+	}
+	if h, _ := p.Runs.Get(tenant, helper.ID); h.Spent != helper.Spent {
+		t.Fatalf("the settled run's spent moved from %d to %d", helper.Spent, h.Spent)
+	}
+	// The ledger counts what goes beyond the settled total, once.
+	after := spendOf(p, tenant)
+	if after.Spend != before.Spend+cost(1000, 100) || after.ModelCalls != before.ModelCalls+1 {
+		t.Fatalf("the ledger went from %+v to %+v", before, after)
+	}
+	p.Redeliver(ctx, late)
+	if again := spendOf(p, tenant); again.Spend != after.Spend {
+		t.Fatal("the late call was counted twice")
+	}
+}
+
+// A lease covers the run and everything it calls: what it has handed to a
+// call still working counts against it, and a call is granted half of what is
+// left, so a caller whose own spend was not counted yet still leaves room.
+func TestALeaseCountsWhatIsHandedToCallsStillWorking(t *testing.T) {
+	gate := make(chan struct{})
+	t.Cleanup(func() { close(gate) })
+	p := metered(t, platform.Config{Limits: call.Limits{MaxDepth: 3, MaxFanOut: 4}}, map[string]agentModel{
+		"lead": {spawn: []string{"helper"}, model: func(int) saigetypes.Provider {
+			return &gated{ScriptedProvider: &agenttest.ScriptedProvider{Responses: [][]saigetypes.Delta{say("Done.")}}, gate: gate}
+		}},
+		"helper": {spawn: []string{"worker"}, tools: append([]string{platform.ToolDelegate}, probes...), model: func(int) saigetypes.Provider {
+			return priced{Provider: &heldAfter{ScriptedProvider: &agenttest.ScriptedProvider{Responses: [][]saigetypes.Delta{
+				spends(agenttest.ToolCallResponse("d1", platform.ToolDelegate, map[string]any{"agent": "worker", "text": "Go"}), 1000, 100), // 4,500
+				spends(probe("p1"), 500, 100), // 3,000: 7,500 spent, below the lease on its own
+			}}, n: 2}, pricing: card}
+		}},
+		// The worker holds what it was granted and never finishes.
+		"worker": {model: func(int) saigetypes.Provider {
+			return &gated{ScriptedProvider: &agenttest.ScriptedProvider{Responses: [][]saigetypes.Delta{say("Done.")}}, gate: gate}
+		}},
+	})
+	ctx := t.Context()
+	lead, err := p.Invoke(ctx, tag("evt-1", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	helper, err := p.Call(ctx, tenant, lead.ID, call.Request{Key: "k1", Agent: "helper", Text: "Go", Mode: call.Delegate, Lease: 10_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := called(t, p, lead.ID, "worker", runs.Running)
+	if worker.Lease <= 0 || worker.Lease > 5_000 {
+		t.Fatalf("the worker was granted %d of a 10,000 lease, want at most half", worker.Lease)
+	}
+	stopped := await(t, p, helper.ID, runs.Stopped)
+	if !strings.Contains(stopped.Cause, "handed to calls still working") {
+		t.Fatalf("the helper was stopped for %q", stopped.Cause)
+	}
+	if stopped.Spent+stopped.Granted < 10_000 {
+		t.Fatalf("the helper was stopped at %d spent and %d granted, under its lease", stopped.Spent, stopped.Granted)
+	}
+}
+
+// A delegated call that ends after the run that made it has settled climbs on
+// to the root, so the root's spend is the whole tree's, as the ledger has it.
+func TestACallEndingAfterItsCallerReachesTheRoot(t *testing.T) {
+	gate, rootGate := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(rootGate) })
+	p := metered(t, platform.Config{Limits: call.Limits{MaxDepth: 3, MaxFanOut: 4}}, map[string]agentModel{
+		"lead": {spawn: []string{"mid"}, model: func(int) saigetypes.Provider {
+			return &gated{ScriptedProvider: &agenttest.ScriptedProvider{Responses: [][]saigetypes.Delta{say("Done.")}}, gate: rootGate}
+		}},
+		"mid": {spawn: []string{"worker"}, tools: []string{platform.ToolDelegate}, model: func(int) saigetypes.Provider {
+			return script(
+				spends(agenttest.ToolCallResponse("d1", platform.ToolDelegate, map[string]any{"agent": "worker", "text": "Go"}), 1000, 100),
+				spends(say("Handed over."), 100, 10),
+			)
+		}},
+		"worker": {model: func(int) saigetypes.Provider {
+			return priced{Provider: &gated{ScriptedProvider: &agenttest.ScriptedProvider{Responses: [][]saigetypes.Delta{
+				spends(say("Done late."), 2000, 200),
+			}}, gate: gate}, pricing: card}
+		}},
+	})
+	ctx := t.Context()
+	lead, err := p.Invoke(ctx, tag("evt-1", "lead"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	mid, err := p.Call(ctx, tenant, lead.ID, call.Request{Key: "k1", Agent: "mid", Text: "Go", Mode: call.Delegate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, mid.ID, runs.Completed)
+	within(t, "mid settled into the root", func() bool { return settled(p, mid.ID) == 1 })
+	close(gate)
+	worker := called(t, p, lead.ID, "worker", runs.Completed)
+	within(t, "the worker settled", func() bool { return settled(p, worker.ID) == 1 })
+	tree := spendOf(p, tenant).Spend
+	if want := cost(1000, 100) + cost(100, 10) + cost(2000, 200); tree != want {
+		t.Fatalf("the ledger counted %d, want %d", tree, want)
+	}
+	within(t, "the root's spend is the tree's", func() bool { r, _ := p.Runs.Get(tenant, lead.ID); return r.Spent == tree })
+}
+
+// Housekeeping is never stopped at a limit, though what it spends counts.
+func TestHousekeepingIsExemptFromTheSpendStop(t *testing.T) {
+	p := metered(t, platform.Config{OfflineHooks: true}, map[string]agentModel{
+		"lead": {model: func(int) saigetypes.Provider { return script(spends(say("Done."), 1000, 100)) }},
+		"scribe": {tools: probes, model: func(int) saigetypes.Provider {
+			return script(spends(probe("p1"), 1000, 100), spends(probe("p2"), 1000, 100), spends(say("A title"), 1000, 100))
+		}},
+	})
+	ctx := t.Context()
+	if err := p.SetSettings(ctx, tenant, platform.Settings{TitleAgent: "scribe"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Policies.Put(tenant, policy.Policy{
+		Scope: policy.Scope{Kind: policy.Tenant}, Period: policy.Day, SpendLimit: 1000, Action: policy.Block,
+	}, "ada", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	first, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-1", Agent: "lead", Text: "Name this"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	within(t, "the turn ended", func() bool { r, _ := p.Runs.Get(tenant, first.ID); return r.Status.Terminal() })
+	var hook runs.Run
+	within(t, "the title run ended", func() bool {
+		for _, r := range p.Runs.List(tenant, 20) {
+			if r.Origin == runs.OriginSystem && r.Status.Terminal() {
+				hook = r
+				return true
+			}
+		}
+		return false
+	})
+	if hook.Status != runs.Completed {
+		t.Fatalf("the housekeeping run ended %s: %s", hook.Status, hook.Cause)
+	}
+	within(t, "its spend is counted", func() bool { return settled(p, hook.ID) == 1 })
+	for _, n := range p.Usage.Notices(tenant, 0) {
+		if n.Kind == usage.Halted && n.RunID == hook.ID {
+			t.Fatal("the housekeeping run was halted")
+		}
+	}
+	if got := p.Usage.RunSpend(tenant, hook.ID); got.Micros != 3*cost(1000, 100) {
+		t.Fatalf("the housekeeping run's spend = %+v", got)
+	}
 }

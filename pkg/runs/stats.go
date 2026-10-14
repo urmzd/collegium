@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
+
+	"github.com/urmzd/collegium/pkg/usage"
 )
 
 // Bucket is the runs that started in one interval, by how they ended.
@@ -53,24 +55,15 @@ func (g *GroupUsage) add(u *payload.RunUsage) {
 	if u == nil {
 		return
 	}
-	own := u.Own
-	g.ModelCalls += own.ModelCalls
-	g.Tokens += int64(own.PromptTokens + own.CompletionTokens)
-	g.UnpricedCalls += own.UnpricedCalls
-	other := len(own.OtherCosts) > 0
-	switch {
-	case own.Cost != nil && own.Cost.Currency == USD:
-		g.Spend += own.Cost.Micros
-	case own.Cost != nil:
-		other = true
-	}
-	if other {
+	s := usage.Of(u.Own)
+	g.ModelCalls += s.ModelCalls
+	g.Tokens += s.Tokens
+	g.UnpricedCalls += s.Unpriced
+	g.Spend += s.Micros
+	if len(s.Other) > 0 {
 		g.OtherCurrency++
 	}
 }
-
-// USD is the currency spend is counted in.
-const USD = "USD"
 
 // Summary is what happened in a window.
 type Summary struct {

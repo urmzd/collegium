@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
@@ -98,7 +99,10 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 		p.waiting.Add(-1)
 		return "", fmt.Errorf("%w, so %s cannot be asked right now", ErrBusy, target)
 	}
-	defer p.waiting.Add(-1)
+	// The place is given back once the run has ended, before its usage is
+	// rolled up: waiting on the ledger is not waiting on a run.
+	var release sync.Once
+	defer release.Do(func() { p.waiting.Add(-1) })
 
 	child, err := p.call(ctx, parent.Tenant, parent.RunID, call.Request{
 		Key: callKey("attach", target, text), Agent: target, Text: text, Mode: call.Subagent,
@@ -116,6 +120,7 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 			return "", err
 		}
 		if run.Status.Terminal() {
+			release.Do(func() { p.waiting.Add(-1) })
 			// What it spent is the caller's spending too, however it ended.
 			p.rollUp(ctx, child.ID)
 		}

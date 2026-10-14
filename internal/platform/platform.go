@@ -103,6 +103,10 @@ type Config struct {
 	// For tests only: it exists to test a deployment whose runtime cannot
 	// interrupt a run, and a server never sets it.
 	Stops func(context.Context, runtime.StopRequest) error
+	// Backoff replaces how long a failed attempt waits before it is tried
+	// again. Nil means duraturo's, which doubles from a quarter second. For
+	// tests only: it lets a test fail a run through all its attempts quickly.
+	Backoff func(attempt int) time.Duration
 	// OfflineHooks lets housekeeping run on the offline provider. It exists
 	// for tests: an offline answer is a notice, not a title or a fact.
 	OfflineHooks bool
@@ -386,11 +390,14 @@ func (p *Platform) Call(ctx context.Context, tenant, runID string, req call.Requ
 }
 
 // call is Call. With grant, a call from a run that holds a lease and asked for
-// none is granted one here, under the call lock, from what the caller has
-// left: all of it to a call the caller waits on, half of it to one it hands
-// over and does not wait for, so it can still spend or hand on the rest.
-// That is how an agent's own calls (tagging, delegate_task) lease budget,
-// since a model never names an amount. A caller with nothing left is refused.
+// none is granted one here, under the call lock: half of what the caller has
+// left, whether it waits on the call or not. Half, because what the caller
+// has left is read from the calls already counted, and the model call that
+// asked for this one may not be counted yet: the other half holds room for
+// it, and for anything else still in flight. Everything is trued up when the
+// call settles. That is how an agent's own calls (tagging, delegate_task)
+// lease budget, since a model never names an amount. A caller with nothing
+// left is refused.
 func (p *Platform) call(ctx context.Context, tenant, runID string, req call.Request, grant bool) (runs.Run, error) {
 	p.calls.Lock()
 	defer p.calls.Unlock()
@@ -408,10 +415,7 @@ func (p *Platform) call(ctx context.Context, tenant, runID string, req call.Requ
 	}
 
 	if grant && req.Lease == 0 && parent.Lease > 0 {
-		left := parent.Left()
-		if req.Mode == call.Delegate {
-			left /= 2
-		}
+		left := parent.Left() / 2
 		if left <= 0 {
 			return runs.Run{}, fmt.Errorf("%w: %q has spent or handed on all of its budget of %s", call.ErrBudget, parent.Agent, money(parent.Lease))
 		}
@@ -625,11 +629,15 @@ func (p *Platform) Run(ctx context.Context) error {
 		}
 	})
 	loop("worker", func() error {
-		return worker.New(p.ledger, p.queue,
+		opts := []worker.Option{
 			worker.WithRegistry(p.rt.Registry()),
 			worker.WithConcurrency(p.slots()),
 			worker.WithLogger(p.log),
-		).Run(ctx)
+		}
+		if p.cfg.Backoff != nil {
+			opts = append(opts, worker.WithBackoff(p.cfg.Backoff))
+		}
+		return worker.New(p.ledger, p.queue, opts...).Run(ctx)
 	})
 	loop("observer", func() error {
 		defer func() { _ = observed.Close() }()

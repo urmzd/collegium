@@ -109,7 +109,7 @@ func TestRebuildMatchesTheLiveLedger(t *testing.T) {
 func TestOldAdmissionsAreDropped(t *testing.T) {
 	l := NewLedger()
 	admit(l, "acme", "", "lead", "old", t0)
-	admit(l, "acme", "", "lead", "new", t0.Add(keepAdmissions+time.Hour))
+	admit(l, "acme", "", "lead", "new", t0.Add(keepAdmissions+25*time.Hour)) // days are kept whole
 	if got := l.Usage("acme", all, time.Time{}); got.Runs != 1 {
 		t.Fatalf("%d runs kept, want only the recent one", got.Runs)
 	}
@@ -205,5 +205,70 @@ func TestUnpricedAndOtherCurrencyCallsAreNotDollars(t *testing.T) {
 	if got.Spend != 500 || got.Tokens != 100 || got.ModelCalls != 4 || got.UnpricedCalls != 1 || !got.Unmetered() ||
 		!reflect.DeepEqual(got.OtherCosts, []policy.Cost{{Micros: 1000, Currency: "EUR"}}) {
 		t.Fatalf("usage = %+v", got)
+	}
+}
+
+// A call whose event arrives after its run settled is already in the settled
+// total, so it adds nothing; one that goes beyond the total adds only the
+// excess. The same holds in the other order.
+func TestALateCallAfterSettlementIsNotCountedTwice(t *testing.T) {
+	settle := func(l *Ledger, sp Spend) Spend {
+		added, _ := l.Record(Entry{Kind: Settled, Tenant: "acme", Agent: "lead", RunID: "r1", Key: "run:r1", Spend: &sp, At: t0})
+		return added
+	}
+	one := Spend{Micros: 4500, ModelCalls: 1, Tokens: 1100}
+
+	settledFirst := NewLedger()
+	settle(settledFirst, one)
+	call(settledFirst, "acme", "r1", "r1/a1/1", t0, one)
+	if got := settledFirst.Usage("acme", all, t0); got.Spend != 4500 || got.ModelCalls != 1 {
+		t.Fatalf("settled then called: %+v, want the one call", got)
+	}
+	// A second late call is beyond the settled total, and counts.
+	call(settledFirst, "acme", "r1", "r1/a1/2", t0, one)
+	if got := settledFirst.Usage("acme", all, t0); got.Spend != 9000 || got.ModelCalls != 2 {
+		t.Fatalf("a call beyond the settled total: %+v", got)
+	}
+
+	calledFirst := NewLedger()
+	call(calledFirst, "acme", "r1", "r1/a1/1", t0, one)
+	if added := settle(calledFirst, one); !added.IsZero() {
+		t.Fatalf("settling a run whose call was counted added %+v", added)
+	}
+	if got := calledFirst.Usage("acme", all, t0); got.Spend != 4500 || got.ModelCalls != 1 {
+		t.Fatalf("called then settled: %+v", got)
+	}
+	for _, l := range []*Ledger{settledFirst, calledFirst} {
+		if !reflect.DeepEqual(Rebuild(l.Entries()).Usage("acme", all, t0), l.Usage("acme", all, t0)) {
+			t.Fatal("the rebuilt ledger disagrees")
+		}
+	}
+}
+
+// Where an entry counts is its own time, not the order it was appended in: an
+// entry stamped before the one before it, or before the period, hides nothing
+// that is in the period.
+func TestEntriesOutOfOrderAndAcrossAPeriodBoundaryAreCountedInTheirOwnPeriod(t *testing.T) {
+	l := NewLedger()
+	today := t0.Add(10 * time.Hour)
+	call(l, "acme", "r1", "a", today, Spend{Micros: 9000, ModelCalls: 1})
+	call(l, "acme", "r2", "b", t0.Add(-time.Second), Spend{Micros: 100, ModelCalls: 1}) // yesterday, appended after
+	call(l, "acme", "r3", "c", t0.Add(time.Hour), Spend{Micros: 1, ModelCalls: 1})      // earlier today, appended after
+	admit(l, "acme", "", "lead", "r4", t0.Add(2*time.Hour))
+	admit(l, "acme", "", "lead", "r5", t0.Add(-2*time.Hour))
+	got := l.Usage("acme", all, policy.PeriodStart(policy.Day, today))
+	if got.Spend != 9001 || got.Runs != 1 {
+		t.Fatalf("today = %+v, want 9001 and one run", got)
+	}
+	month := l.Usage("acme", all, policy.PeriodStart(policy.Month, today))
+	if month.Spend != 9101 || month.Runs != 2 {
+		t.Fatalf("this month = %+v", month)
+	}
+	// A period that starts inside a day reads that day's entries.
+	if mid := l.Usage("acme", all, t0.Add(5*time.Hour)); mid.Spend != 9000 || mid.Runs != 0 {
+		t.Fatalf("since mid-morning = %+v", mid)
+	}
+	if !reflect.DeepEqual(Rebuild(l.Entries()).Usage("acme", all, t0), got) {
+		t.Fatal("the rebuilt ledger disagrees")
 	}
 }

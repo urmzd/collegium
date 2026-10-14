@@ -44,37 +44,6 @@ import (
 // bound, and its tokens count against MaxTokens, which is the limit that
 // holds whatever the price.
 
-// spendOf is what one model call used, in the ledger's terms.
-func spendOf(c payload.UsageCall) usage.Spend {
-	s := usage.Spend{ModelCalls: 1, Tokens: int64(c.PromptTokens + c.CompletionTokens)}
-	switch {
-	case c.Cost != nil && c.Cost.Currency == usage.USD:
-		s.Micros = c.Cost.Micros
-	case c.Cost != nil:
-		s.Other = []policy.Cost{{Micros: c.Cost.Micros, Currency: c.Cost.Currency}}
-	case !c.ResponseCacheHit:
-		s.Unpriced = 1
-	}
-	return s
-}
-
-// totalOf is what a sum of calls used, in the ledger's terms.
-func totalOf(u payload.Usage) usage.Spend {
-	s := usage.Spend{ModelCalls: u.ModelCalls, Tokens: int64(u.PromptTokens + u.CompletionTokens), Unpriced: u.UnpricedCalls}
-	costs := u.OtherCosts
-	if u.Cost != nil {
-		costs = append([]payload.Cost{*u.Cost}, costs...)
-	}
-	for _, c := range costs {
-		if c.Currency == usage.USD {
-			s.Micros += c.Micros
-			continue
-		}
-		s.Other = append(s.Other, policy.Cost{Micros: c.Micros, Currency: c.Currency})
-	}
-	return s
-}
-
 // money writes micro-USD as dollars and cents, without a float.
 func money(micros int64) string {
 	return fmt.Sprintf("$%d.%02d", micros/1_000_000, micros%1_000_000/10_000)
@@ -97,9 +66,11 @@ func (p *Platform) observeUsage(ctx context.Context, e envelope.Event) {
 		// published, which a redelivery repeats.
 		key = fmt.Sprintf("%s#%d", e.RunID, e.Seq)
 	}
+	// Stamped with the platform's clock, so entries are appended in time
+	// order whatever the runtime's clock said; the call's own time is kept.
 	added, counted := p.Usage.Record(usage.Entry{
 		Kind: usage.Spent, Key: key, Tenant: run.Tenant, Project: run.Project, Agent: run.Agent, Client: run.Client,
-		RunID: run.ID, At: e.At, Spend: new(spendOf(c)),
+		RunID: run.ID, At: p.now(), EventAt: e.At, Spend: new(usage.OfCall(c)),
 	})
 	if !counted {
 		return
@@ -129,8 +100,11 @@ func (p *Platform) enforce(ctx context.Context, run runs.Run, call usage.Spend) 
 	if run.Stopping {
 		return
 	}
-	if run.Lease > 0 && run.Spent >= run.Lease {
-		p.halt(ctx, run, fmt.Sprintf("Stopped at its budget: it was given %s and has spent %s", money(run.Lease), money(run.Spent)))
+	// A lease covers the run and everything it calls, so what it has handed
+	// to calls still working counts against it as if spent.
+	if run.Lease > 0 && run.Spent+run.Granted >= run.Lease {
+		p.halt(ctx, run, fmt.Sprintf("Stopped at its budget: it was given %s and has spent %s, with %s handed to calls still working",
+			money(run.Lease), money(run.Spent), money(run.Granted)))
 		return
 	}
 	d := policy.Exceeded(applied)
@@ -154,9 +128,11 @@ func (p *Platform) enforce(ctx context.Context, run runs.Run, call usage.Spend) 
 	}
 }
 
-// halt stops a run at a limit, through the runtime, once. It does not wait:
-// a stop reads and writes the run ledger, and the observer that called it
-// must keep reading events, the run's own ending among them.
+// halt stops a run at a limit, through the runtime, once while the request
+// stands. It does not wait: a stop reads and writes the run ledger, and the
+// observer that called it must keep reading events, the run's own ending
+// among them. A request that could not be made is forgotten, so the run's
+// next counted call asks again.
 func (p *Platform) halt(ctx context.Context, run runs.Run, reason string) {
 	if _, already := p.halting.LoadOrStore(run.ID, true); already {
 		return
@@ -164,7 +140,8 @@ func (p *Platform) halt(ctx context.Context, run runs.Run, reason string) {
 	p.log.Warn("platform: run stopped at a limit", "tenant", run.Tenant, "run", run.ID, "agent", run.Agent, "reason", reason)
 	go func() {
 		if err := p.requestStop(ctx, run.Tenant, run.ID, reason, StoppedByLimit); err != nil {
-			p.log.Error("platform: a run at its limit could not be stopped", "tenant", run.Tenant, "run", run.ID, "error", err)
+			p.halting.Delete(run.ID)
+			p.log.Error("platform: a run at its limit could not be stopped; its next call asks again", "tenant", run.Tenant, "run", run.ID, "error", err)
 		}
 	}()
 }
@@ -196,18 +173,21 @@ func (p *Platform) unmeteredAlert(tenant string, a policy.Applied) {
 // settled with the run that called it. It is called once per run, from ended,
 // and is safe to call again: the ledger settles a run once.
 func (p *Platform) settleUsage(ctx context.Context, run runs.Run) {
+	var micros int64
+	var recorded *payload.RunUsage
 	if u, ok := p.recordedUsage(ctx, run); ok {
-		p.Runs.SetUsage(run.ID, u)
+		recorded = &u
 		// Only the run's own calls: the runs it called settle their own,
 		// so each call in a tree is counted once.
 		added, _ := p.Usage.Record(usage.Entry{
 			Kind: usage.Settled, Key: "run:" + run.ID, Tenant: run.Tenant, Project: run.Project, Agent: run.Agent,
-			Client: run.Client, RunID: run.ID, At: p.now(), Spend: new(totalOf(u.Own)),
+			Client: run.Client, RunID: run.ID, At: p.now(), Spend: new(usage.Of(u.Own)),
 		})
-		if added.Micros > 0 {
-			p.Runs.Spend(run.ID, added.Micros)
-		}
+		micros = added.Micros
 	}
+	// From here a call reported late changes the ledger, by what goes beyond
+	// this total, and not the run's Spent, which settles into its caller now.
+	p.Runs.SetUsage(run.ID, recorded, micros)
 	p.halting.Delete(run.ID)
 	if run.Parent != "" {
 		if now, err := p.Runs.Get(run.Tenant, run.ID); err == nil {

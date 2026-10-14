@@ -30,7 +30,14 @@ const tenant = "acme"
 // helper may call no one.
 func start(t *testing.T, lim call.Limits) *platform.Platform {
 	t.Helper()
-	p, err := platform.New(platform.Config{Workspace: t.TempDir(), Limits: lim})
+	return startWith(t, platform.Config{Limits: lim})
+}
+
+// startWith is start with more of the configuration given.
+func startWith(t *testing.T, cfg platform.Config) *platform.Platform {
+	t.Helper()
+	cfg.Workspace = t.TempDir()
+	p, err := platform.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

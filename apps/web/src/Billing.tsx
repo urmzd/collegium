@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { ApiError, api, type Policy, type PolicyChange, type PolicyScope, type ScopeUsage } from "./api.ts";
 import { ago, button, card, dollars, field, FlashNote, Label, LimitField, Menu, PolicyBadge, primary, Problem, SkeletonRows, UsageMeter, useFlash } from "./ui.tsx";
+import { money } from "./usage.ts";
 
 const kindWord: Record<PolicyScope["kind"], string> = {
   tenant: "Workspace",
@@ -137,7 +138,7 @@ export function lowerBound(spend: ScopeUsage["spend"]): string | null {
   const parts = [
     spend.unpriced_calls > 0 ? `${plain(spend.unpriced_calls)} ${spend.unpriced_calls === 1 ? "call" : "calls"} had no price` : "",
     ...(spend.other_costs ?? []).map(
-      (c) => `${new Intl.NumberFormat(undefined, { style: "currency", currency: c.currency }).format(c.micros / 1_000_000)} was not in US dollars`,
+      (c) => `${money(c)} was not in US dollars`,
     ),
   ].filter(Boolean);
   return parts.length > 0 ? `At least this much: ${parts.join(", ")}. A token limit bounds every call.` : null;

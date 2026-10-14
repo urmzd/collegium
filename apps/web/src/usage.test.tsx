@@ -56,6 +56,8 @@ test("usage words: cost in its own currency, never converted, and calls with no 
   assert.equal(costWords({ unpriced_calls: 2 }), "No price: 2 calls with no price");
   assert.match(costWords({ cost: { micros: 4_500, currency: "USD" }, unpriced_calls: 1 }), /^At least \$0\.0045: 1 call with no price$/);
   assert.match(costWords({ cost: { micros: 4_500, currency: "USD" }, other_costs: [{ micros: 1_000_000, currency: "EUR" }] }), /\$0\.0045 and €1\.00/);
+  assert.match(money({ micros: 2_500_000, currency: "not a code" }), /^2\.50 not a code$/);
+  assert.match(lowerBound({ used: 0, limit: 1, metered: true, unpriced_calls: 0, other_costs: [{ micros: 1_000_000, currency: "XX1" }] }) ?? "", /1\.00 XX1 was not in US dollars/);
   assert.equal(tokenWords(usage.total), "48,500 in (30,000 cached), 950 out");
   assert.equal(tokenWords(undefined), "None reported");
 });

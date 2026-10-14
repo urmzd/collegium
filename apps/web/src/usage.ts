@@ -8,16 +8,20 @@
 import type { Cost, RunUsage, Usage } from "./adapter.ts";
 import type { Fill } from "./SessionGauge.tsx";
 
-/** Micro-units of a currency, written in it. Small amounts keep enough digits to be seen. */
+/**
+ * Micro-units of a currency, written in it. Small amounts keep enough digits
+ * to be seen. A code Intl does not know, which a deployment's own rate card
+ * could carry, is written after the amount rather than thrown on.
+ */
 export function money(c: Cost): string {
   const value = c.micros / 1_000_000;
   const small = Math.abs(value) > 0 && Math.abs(value) < 1;
-  return new Intl.NumberFormat(undefined, {
-    style: "currency",
-    currency: c.currency || "USD",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: small ? 4 : 2,
-  }).format(value);
+  const digits = { minimumFractionDigits: 2, maximumFractionDigits: small ? 4 : 2 };
+  try {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: c.currency || "USD", ...digits }).format(value);
+  } catch {
+    return `${new Intl.NumberFormat(undefined, digits).format(value)} ${c.currency}`;
+  }
 }
 
 /** 1234567 as "1,234,567". */

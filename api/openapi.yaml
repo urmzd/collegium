@@ -3696,7 +3696,14 @@ components:
         agent: {type: string}
         client: {type: string}
         run_id: {type: string}
-        at: {type: string, format: date-time}
+        at:
+          description: When the entry was appended, by the server's clock. It decides the period the entry counts in.
+          type: string
+          format: date-time
+        event_at:
+          description: For a `spent` entry, when the runtime said the call happened. It counts nothing.
+          type: string
+          format: date-time
         scope: {$ref: "#/components/schemas/PolicyScope"}
         version: {type: integer}
         limit: {$ref: "#/components/schemas/PolicyLimit"}
