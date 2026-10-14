@@ -8,16 +8,24 @@ route `internal/httpapi` serves. The TypeScript client in
 
 ## How the contract stays true
 
-The spec is written by hand, from the code. Four tests in
+The spec is written by hand, from the code. The tests in
 [`internal/httpapi/openapi_test.go`](../internal/httpapi/openapi_test.go) run
 with `go test ./...` and fail when the two disagree:
 
 | Test | Fails when |
 |------|------------|
-| `TestSpecListsExactlyTheRegisteredRoutes` | A route is registered and not in the spec, or the reverse. An operation has no `operationId` or tag, or its `x-permission` is not the permission `Server.Handler` names for the route. |
+| `TestSpecListsExactlyTheRegisteredRoutes` | A route is registered and not in the spec, or the reverse. An operation has no `operationId` or tag, or its `x-permission` is not the permission `Server.Handler` names for the route. Routes are read with `go/types`, so any call of `(*http.ServeMux).Handle` or `HandleFunc` counts, whatever its receiver is called, and one the reader cannot resolve to a constant pattern and permission fails the test. |
 | `TestSpecPermissionsAreTheOnesTheServerEnforces` | The running server enforces a different permission than `x-permission` says. |
-| `TestSpecSchemasHaveTheFieldsTheGoTypesMarshal` | A Go type marshals a field the schema lacks, or the schema has one the type lacks, or `required` disagrees with `omitempty`. The event kinds differ from mandatum's. |
+| `TestSpecSchemasHaveTheFieldsTheGoTypesMarshal` | For the named Go types it lists (about 75), the type marshals a field the schema lacks, or the schema has one the type lacks, or `required` disagrees with `omitempty`. The event kinds differ from mandatum's. |
 | `TestResponsesMatchTheSpec`, `TestEventStreamMatchesTheSpec` | A real response, including 4xx and the event stream, does not validate against its schema, or answers with a status the spec does not list. Every JSON operation must be exercised. |
+| `TestResponsesMatchTheSpec` | A documented status code is never produced by a test, unless it is in `unexercised` with the reason. `401`, `403`, `413` and `500` are covered once for every route. |
+
+Validation in these tests is stricter than the published spec: every object
+schema refuses properties it does not name. So a key added to a response built
+from a map or an inline struct (`getMe`, `getStorage`, a refusal, a manifest)
+fails as soon as a test sees it. What is not guaranteed: a property that is
+optional in the spec and that no test makes the server send can drift without
+notice, and so can a field of a response shape no test reaches.
 
 So a change to a route, a handler's answer or a type's JSON fields is a change
 to `api/openapi.yaml` in the same commit, followed by `make client`.
@@ -36,14 +44,13 @@ which was already in the module graph.
 | Lint the spec with Redocly | `make spec-lint` |
 | Check the spec against the server | `go test ./internal/httpapi` |
 
-`make client` needs oag at the version pinned in the `Makefile`:
+`make client` needs oag at the version pinned in the `Makefile`.
+`make oag-install` downloads that release for this machine into
+`~/.local/bin` (or `OAG_DIR`) and refuses it unless its sha256 matches the one
+pinned beside the version, because oag publishes no checksums of its own.
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/urmzd/oag/v0.20.6/install.sh | OAG_VERSION=v0.20.6 sh
-```
-
-CI regenerates the client with that version and fails if the result differs
-from what is committed.
+CI installs oag the same way, regenerates the client and fails if the result
+differs from what is committed.
 
 ## The generated client
 
@@ -74,8 +81,15 @@ The layer in `collegium.ts` adds what the generator does not do:
 - `createClient({ baseUrl, token, credentials })`: `token` is a string or a
   function that returns one, sent as a bearer. `credentials: "include"` uses a
   browser's session cookie instead. Retries are off unless asked for.
-- `events({ topic, from })` and `runEvents(run)`: the event stream as typed
-  items, with each event's base64 payload decoded into a typed `body`.
+- `events({ topic, from })`: the event stream as typed items, with each
+  event's base64 payload decoded into a typed `body`. Leaving the loop by
+  `break`, `return` or a throw, or the stream ending, closes the connection.
+- `runEvents(run)`: one run's events, to the one that completes it or fails it
+  for good. If the stream drops first, it reads the run's record and resumes
+  after the last `seq`, with backoff. It never ends quietly before the run's
+  last event: it throws `StreamEndedError` with `reason` `stopped` (a stopped
+  run publishes no ending event), `ended` (the record says it is over and no
+  ending event was found) or `gave-up` (it could not resume).
 - `failureOf(error)`: the status and the API's error body from any error the
   client throws, and `refusal` when a limit refused a run.
 - `getArtifactContent` and `getPreferencesPhoto` return the file's bytes. The
@@ -101,25 +115,26 @@ Start a run under the caller's own idempotency key, stream its answer, and
 stop it if it takes longer than a minute:
 
 ```ts
-import { createClient, failureOf } from "@collegium/client";
+import { createClient, failureOf, StreamEndedError } from "@collegium/client";
 
 const client = createClient({ baseUrl: "http://127.0.0.1:8080", token: process.env.COLLEGIUM_TOKEN });
 const run = await client.createRun({ agent: "helper", text: "Say hello" }, "slack-event-Ev01");
-const giveUp = new AbortController();
-const timer = setTimeout(() => giveUp.abort(), 60_000);
+const giveUp = AbortSignal.timeout(60_000);
 try {
-  for await (const event of client.runEvents(run, {}, { signal: giveUp.signal })) {
+  for await (const event of client.runEvents(run, {}, { signal: giveUp })) {
     if (event.kind === "delta.text") process.stdout.write(event.body?.text ?? "");
     if (event.kind === "action.taken") console.log(`\n${event.body?.summary}`);
   }
 } catch (error) {
-  if (!giveUp.signal.aborted) throw new Error(failureOf(error)?.message ?? String(error));
-  await client.stopRun(run.id);
-} finally { clearTimeout(timer); }
+  if (giveUp.aborted) await client.stopRun(run.id);
+  else if (error instanceof StreamEndedError) console.log(`\nended: ${error.reason}`);
+  else throw new Error(failureOf(error)?.message ?? String(error));
+}
 ```
 
-`runEvents` ends after the event that completes the run, or fails it for good.
-A stopped run publishes no such event, which is why the stream is aborted
-before the run is stopped. `getRun` is the authority on whether a run is over.
-A refusal by a limit throws from `createRun`: `failureOf(error).refusal` names
-the limit, the policy and when the count resets.
+`runEvents` returns after the event that completes the run, or fails it for
+good, and closes its connection however the loop is left. A dropped stream is
+resumed. A run stopped elsewhere ends it with `StreamEndedError` and `reason`
+`stopped`. `getRun` is the authority on whether a run is over. A refusal by a
+limit throws from `createRun`: `failureOf(error).refusal` names the limit, the
+policy and when the count resets.
