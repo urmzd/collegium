@@ -178,7 +178,7 @@ export function echoed(text: string): string {
     e === "&lt;" ? "<" : e === "&gt;" ? ">" : "&",
   );
   const kept = /<@[UW][A-Z0-9]+(?:\|[^<>]*)?>|<#C[A-Z0-9]+(?:\|[^<>]*)?>/g;
-  const escape = (s: string) =>
+  const encode = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   let out = "";
   let at = 0;
