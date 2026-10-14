@@ -61,6 +61,12 @@ no permission, grants nothing.
   another tenant's run. A stop request is honoured only by a run of the tenant
   it was made under, and the platform only makes one for a run the caller's
   tenant holds.
+- **A run's trigger id is visible to its workspace.** `tag_id` on a run is the
+  id it was accepted with: a Slack or GitHub event or delivery id, a schedule
+  occurrence, or for the API `api-<length of subject>-<subject>-<key>`, which
+  includes the subject of whoever started it and the `Idempotency-Key` they
+  sent. Anyone with `runs:read` in the workspace can read it. Do not put
+  secrets in an idempotency key.
 - **An ID token is not an API credential.** Bearer tokens must be issued for
   the API audience. A token issued to the web client is refused.
 - **Sessions are server-side.** The cookie is a random 256-bit id, `HttpOnly`,

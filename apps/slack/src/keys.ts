@@ -37,9 +37,14 @@ export function eventKey(s: Session, ts: string, extra?: string): string {
   return extra ? `${key}-${safe(extra)}` : key;
 }
 
-/** The trigger id the platform gives a run this caller starts with a key: the run's `tag_id`. */
+/**
+ * The trigger id the platform gives a run this caller starts with a key: the
+ * run's `tag_id`, `api-<length of subject in bytes>-<subject>-<key>`. The
+ * length makes it unambiguous: subject "a" with key "b-c" is not subject "a-b"
+ * with key "c".
+ */
 export function tagId(subject: string, key: string): string {
-  return `api-${subject}-${key}`;
+  return `api-${Buffer.byteLength(subject, "utf8")}-${subject}-${key}`;
 }
 
 /**
@@ -73,7 +78,7 @@ function uvarint(n: number): Buffer {
  * back into a thread, so this reads the trigger id the run carries.
  */
 export function sessionOf(subject: string, firstTagId: string): Session | null {
-  const prefix = `api-${subject}-slack-`;
+  const prefix = `${tagId(subject, "")}slack-`;
   if (!firstTagId.startsWith(prefix)) return null;
   const m = /^([A-Za-z0-9]+)-([A-Za-z0-9]+)-(\d+)-(\d+)$/.exec(firstTagId.slice(prefix.length));
   if (!m) return null;

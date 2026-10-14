@@ -846,7 +846,7 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	first := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"Say hello"}`, http.StatusAccepted, "Idempotency-Key", "slack-evt-1")
 	again := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"Say hello"}`, http.StatusAccepted, "Idempotency-Key", "slack-evt-1")
 	id := first.str("id")
-	if id != again.str("id") || id != runtime.RunID("acme", "api-svc-acme-slack-evt-1") {
+	if id != again.str("id") || id != runtime.RunID("acme", "api-8-svc-acme-slack-evt-1") {
 		t.Errorf("the same key gave runs %q and %q", id, again.str("id"))
 	}
 	if actor := obj(first.field("actor")); actor["bot"] != true {
@@ -1221,8 +1221,8 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 // send that is hard to provoke in a test, never a guess.
 var unexercised = map[string]string{
 	// The runtime here always has a bus to subscribe to and a ledger to
-	// record in, so it can always carry a stop. internal/platform tests a
-	// runtime that cannot (TestAStopTheRuntimeCannotCarryFailsClosed).
+	// record in, so it can always carry a stop. TestAStopTheRuntimeCannotCarryIsA503
+	// answers 503 from a server whose runtime cannot.
 	"POST /api/runs/{id}/stop 503": "stop unavailable",
 	// A client the server's configuration owns cannot be changed through the
 	// API. Making one needs COLLEGIUM_SLACK_* in the environment, which

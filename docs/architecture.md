@@ -79,14 +79,14 @@ before it cancels it, and the run still ends stopped. A run in the queue stops
 before its first model call when a worker picks it up.
 
 After asking, the platform reads the ledger (`runtime.StopRequested`). A run
-the ledger holds no request for had already ended there, so it is not shown as
-`stopping`: its own terminal event is on its way. When the runtime cancels a
+the ledger holds no request for had already ended there, so it is settled from
+the ledger at once and the route answers 200 with how it ended. When the runtime cancels a
 delegation because the caller was stopped (`runtime.ErrStopped` as the
 context's cause), the run collegium started for it is asked to stop too.
 
 A run that has answered and is only held open by what it attached has no turn
-left to interrupt. It ends stopped at once, keeping its answer, and what is
-attached to it is stopped through the runtime.
+left to interrupt, and was not cut short. What is attached to it is stopped
+through the runtime, and once they have ended it completes with its answer.
 
 If the runtime cannot carry a stop (`runtime.ErrStopUnavailable`, a bus that
 cannot be subscribed to), the request fails closed: the run is still marked

@@ -244,7 +244,17 @@ test("a stopped run is stopped in both, with nothing after the stop", () => {
   bothSay(<TurnView turn={turn} />, defaultCopy.resume);
   bothShow(turn);
 
-  // The model call was not interrupted, so the record may still gain an answer. A stopped turn does not.
+  // A stopped run that settled from its record shows the partial answer it carries, in both.
+  const fromRecord = live(
+    [ev("lifecycle.accepted")],
+    run({ status: "stopped", answer: "Half an answer" }),
+  );
+  assert.equal(fromRecord.status, "stopped");
+  assert.equal(fromRecord.text, "Half an answer");
+  bothSay(<TurnView turn={fromRecord} />, "Half an answer");
+  bothShow(fromRecord);
+
+  // Once stopped, a turn does not move again, whatever a later record says.
   const f = follow(run());
   for (const e of events) f.apply(e);
   f.settle(run({ status: "stopped" }));

@@ -99,6 +99,9 @@ type Config struct {
 	// StopGrace is how long a run asked to stop is given to wrap up before
 	// its turn is cancelled. Zero means the runtime's default, ten seconds.
 	StopGrace time.Duration
+	// Stops replaces how a run is asked to stop. Nil means the runtime. It
+	// exists to test a deployment whose runtime cannot interrupt a run.
+	Stops func(context.Context, runtime.StopRequest) error
 	// OfflineHooks lets housekeeping run on the offline provider. It exists
 	// for tests: an offline answer is a notice, not a title or a fact.
 	OfflineHooks bool
@@ -272,6 +275,9 @@ func New(cfg Config) (*Platform, error) {
 	}
 	p.rt, p.stops = rt, rt
 	p.asked = rt.StopRequested
+	if cfg.Stops != nil {
+		p.stops = stopFunc(cfg.Stops)
+	}
 	return p, nil
 }
 
@@ -436,39 +442,52 @@ const reconcileEvery = 2 * time.Second
 // the ledger with nothing further published.
 func (p *Platform) reconcile(ctx context.Context) {
 	for _, id := range p.Runs.Active() {
-		rec, err := p.ledger.GetRun(ctx, id)
-		if err != nil {
-			continue
-		}
-		status := runs.Status("")
-		switch rec.Status {
-		case drun.StatusSucceeded:
-			status = runs.Completed
-		case drun.StatusFailed:
-			status = runs.Failed
-		default:
-			continue
-		}
-		at := p.now()
-		if !rec.CompletedAt.IsZero() {
-			at = rec.CompletedAt
-		}
-		// A stopped run succeeds in the ledger: it ended and did not fail.
-		// Its output says it was stopped, and what it had said.
-		if status == runs.Completed {
-			if out, err := p.rt.Result(ctx, id); err == nil && out.Stopped != nil {
+		p.settleFromLedger(ctx, id)
+	}
+}
+
+// settleFromLedger ends a run the ledger says is over, with the outcome the
+// runtime recorded, and reports whether the ledger says it is over. A run
+// whose final event has not been observed yet ends here, and the event, when
+// it arrives, changes nothing: it says the same thing.
+func (p *Platform) settleFromLedger(ctx context.Context, id string) bool {
+	rec, err := p.ledger.GetRun(ctx, id)
+	if err != nil {
+		return false
+	}
+	status := runs.Status("")
+	switch rec.Status {
+	case drun.StatusSucceeded:
+		status = runs.Completed
+	case drun.StatusFailed:
+		status = runs.Failed
+	default:
+		return false
+	}
+	at := p.now()
+	if !rec.CompletedAt.IsZero() {
+		at = rec.CompletedAt
+	}
+	answer := ""
+	if status == runs.Completed {
+		if out, err := p.rt.Result(ctx, id); err == nil {
+			answer = out.Text
+			// A stopped run succeeds in the ledger: it ended and did not
+			// fail. Its output says it was stopped, and what it had said.
+			if out.Stopped != nil {
 				if run, ended := p.Runs.Stop(id, out.Text, out.Stopped.Reason, at); ended {
-					p.log.Info("platform: run ended stopped in the ledger without a final event", "run", id)
+					p.log.Info("platform: run ended stopped in the ledger before its final event was seen", "run", id)
 					p.ended(ctx, run)
 				}
-				continue
+				return true
 			}
 		}
-		if run, ended := p.Runs.End(id, status, "", rec.Error, at); ended {
-			p.log.Info("platform: run ended in the ledger without a final event", "run", id, "status", status)
-			p.ended(ctx, run)
-		}
 	}
+	if run, ended := p.Runs.End(id, status, answer, rec.Error, at); ended {
+		p.log.Info("platform: run ended in the ledger before its final event was seen", "run", id, "status", status)
+		p.ended(ctx, run)
+	}
+	return true
 }
 
 // raise checks a run that has just ended against its tenant's alert rules.

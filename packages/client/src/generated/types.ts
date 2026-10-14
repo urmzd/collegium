@@ -159,8 +159,11 @@ export interface Run {
   /** The run's id, `r` and 32 hex digits, derived from the workspace and the trigger's id. */
   id: string;
   /** The trigger's id the run was accepted with: an event id, or for a
-run started through the API, `api-<subject>-<Idempotency-Key>`.
-The run's `id` is derived from it and cannot be turned back into it.
+run started through the API with an `Idempotency-Key`,
+`api-<length of subject in bytes>-<subject>-<key>`, which is
+unambiguous. A run started without a key has `api-r-<random>`.
+The run's `id` is derived from it and the workspace, and cannot be
+turned back into it.
  */
   tag_id: string;
   tenant: string;

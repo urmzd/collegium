@@ -449,19 +449,8 @@ func (x *Index) AskStop(runID string, at time.Time) (Run, bool) {
 	return *r, true
 }
 
-// Unask clears a request the runtime did not take: the run had already ended
-// in the ledger, and its own terminal event says how.
-func (x *Index) Unask(runID string) {
-	x.mu.Lock()
-	defer x.mu.Unlock()
-	if r, ok := x.runs[runID]; ok && !r.Status.Terminal() && r.Stopping {
-		r.Stopping, r.StopRequestedAt = false, time.Time{}
-	}
-}
-
-// Stop ends a run as stopped from a source other than its own events: a run
-// whose turn is already over and that only this platform holds open, or one
-// the ledger says ended stopped with no final event. answer, when given, is
+// Stop ends a run as stopped from a source other than its own events: one the
+// ledger says ended stopped before its final event was observed. answer, when given, is
 // what the run had said, and cause is why it stopped. It returns the run and
 // whether this call is what ended it.
 func (x *Index) Stop(runID, answer, cause string, at time.Time) (Run, bool) {

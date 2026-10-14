@@ -341,9 +341,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 		return
 	}
 	// A caller that retries sends the same key and joins the run it started.
-	id := "api-" + token()[:22]
+	id := "api-r-" + token()[:22]
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
-		id = "api-" + who.Subject + "-" + key
+		id = APITagID(who.Subject, key)
 	}
 	run, err := s.P.Converse(r.Context(), who.Tenant, platform.Turn{
 		ID: id, Agent: body.Agent, Text: body.Text, After: body.After, Project: body.Project,
@@ -481,7 +481,7 @@ func (s *Server) stopRun(w http.ResponseWriter, r *http.Request, who auth.Princi
 		s.problem(w, err)
 		return
 	}
-	if !run.Status.Terminal() {
+	if run.Stopping && !run.Status.Terminal() {
 		ok(w, http.StatusAccepted, run)
 		return
 	}
@@ -699,4 +699,14 @@ func spa(dir string) http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// APITagID is the trigger id of a run a caller started with an idempotency
+// key: api-<length of subject>-<subject>-<key>. The subject's length in bytes
+// makes it unambiguous within a tenant, so subject "a" with key "b-c" and
+// subject "a-b" with key "c" name different runs. A run started without a key
+// is api-r-<random>, which no keyed id can be. The run's id is the runtime's,
+// derived from this and the tenant.
+func APITagID(subject, key string) string {
+	return "api-" + strconv.Itoa(len(subject)) + "-" + subject + "-" + key
 }

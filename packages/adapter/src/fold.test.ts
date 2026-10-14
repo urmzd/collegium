@@ -69,6 +69,15 @@ test("a turn that already ended is not moved by its record", () => {
   assert.equal(f.settle(run({ status: "completed", answer: "Something else" })).text, "Done.");
 });
 
+test("a stopped record the stream did not reach shows its partial answer", () => {
+  const f = follow(run());
+  const turn = f.settle(run({ status: "stopped", answer: "Half an answer" }));
+  assert.equal(turn.status, "stopped");
+  assert.equal(turn.text, "Half an answer");
+  const part = streamed("Half an");
+  assert.equal(part.settle(run({ status: "stopped", answer: "Half an answer" })).text, "Half an answer");
+});
+
 test("a stopped record stops the turn, confirmed, and keeps what was said", () => {
   const f = streamed("Part one.");
   const turn = f.settle(run({ status: "stopped" }));

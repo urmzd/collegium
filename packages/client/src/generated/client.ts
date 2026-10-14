@@ -736,10 +736,12 @@ edited from: if someone else revised the agent since, the answer is 409.
 The run is accepted, not finished: follow it on the event stream at
 topic `agent:<agent>:<id>`, or poll `getRun`.
 
-Send `Idempotency-Key` to make a retry safe. The run's id is then
-`api-<subject>-<key>`, and a second request with the same key from the
-same caller joins the run the first one started instead of starting
-another. Without it the id is random.
+Send `Idempotency-Key` to make a retry safe. The run's `tag_id` is
+then `api-<length of subject in bytes>-<subject>-<key>`, its `id` is
+derived from that and the workspace (`r` and 32 hex digits, as
+mandatum's `runtime.RunID`), and a second request with the same key
+from the same caller joins the run the first one started instead of
+starting another. Without it the ids are random.
 
 The body takes no metadata: an unknown field answers 400.
  */

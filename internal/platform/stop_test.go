@@ -415,8 +415,10 @@ func TestAStopTheRuntimeCannotCarryFailsClosed(t *testing.T) {
 		spawn: map[string][]string{"lead": {"helper"}},
 		gates: map[string]chan struct{}{"lead": make(chan struct{})},
 	}
-	p := stage(t, c, platform.Config{Limits: call.Limits{MaxDepth: 2, MaxFanOut: 4}})
-	p.StopWith(func(context.Context, runtime.StopRequest) error { return runtime.ErrStopUnavailable })
+	p := stage(t, c, platform.Config{
+		Limits: call.Limits{MaxDepth: 2, MaxFanOut: 4},
+		Stops:  func(context.Context, runtime.StopRequest) error { return runtime.ErrStopUnavailable },
+	})
 	ctx := t.Context()
 	first, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-1", Agent: "lead", Text: "Start"})
 	if err != nil {
@@ -433,5 +435,52 @@ func TestAStopTheRuntimeCannotCarryFailsClosed(t *testing.T) {
 	c.release("lead")
 	if end := await(t, p, first.ID, runs.Completed); end.Stopping || end.Answer != "Finished anyway." {
 		t.Fatalf("run = %+v", end)
+	}
+}
+
+// A run that has answered and is only held open by a run attached to it was
+// not cut short. Asking it to stop stops what is attached, and it then
+// completes with the answer it gave, never reported stopped first.
+func TestStoppingARunThatHasAnsweredCompletesIt(t *testing.T) {
+	c := &cast{
+		says: map[string][][]saigetypes.Delta{
+			"lead":   {say("My part is done.")},
+			"helper": {say("unreachable")},
+		},
+		spawn: map[string][]string{"lead": {"helper"}},
+		talks: map[string]talk{"helper": {after: 0, text: "Helping"}},
+		gates: map[string]chan struct{}{"lead": make(chan struct{})},
+	}
+	p := stage(t, c, platform.Config{Limits: call.Limits{MaxDepth: 2, MaxFanOut: 4}})
+	ctx := t.Context()
+	first, err := p.Converse(ctx, tenant, platform.Turn{ID: "api-1", Agent: "lead", Text: "Start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	await(t, p, first.ID, runs.Running)
+	child, err := p.Call(ctx, tenant, first.ID, call.Request{Key: "k1", Agent: "helper", Text: "Your part", Mode: call.Subagent})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.release("lead")
+	within(t, "the lead has answered and is held open", func() bool {
+		r, _ := p.Runs.Get(tenant, first.ID)
+		return r.Finishing
+	})
+	within(t, "the helper is talking", func() bool { return streamed(p, child.ID, "Helping") })
+
+	got, err := p.StopRun(ctx, admin, first.ID)
+	if err != nil || got.Status == runs.Stopped {
+		t.Fatalf("stop = %+v, %v", got, err)
+	}
+	if h := await(t, p, child.ID, runs.Stopped); h.Answer != "Helping" {
+		t.Fatalf("helper = %+v", h)
+	}
+	lead := await(t, p, first.ID, runs.Completed)
+	if lead.Answer != "My part is done." || lead.Cause != "" || lead.Stopping {
+		t.Fatalf("lead = %+v", lead)
+	}
+	if events, freed := endings(p, first.ID); events != 1 || freed != 1 {
+		t.Fatalf("%d terminal events, %d places freed", events, freed)
 	}
 }

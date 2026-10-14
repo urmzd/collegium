@@ -84,12 +84,13 @@ The layer in `collegium.ts` adds what the generator does not do:
 - `events({ topic, from })`: the event stream as typed items, with each
   event's base64 payload decoded into a typed `body`. Leaving the loop by
   `break`, `return` or a throw, or the stream ending, closes the connection.
-- `runEvents(run)`: one run's events, to the one that completes it or fails it
-  for good. If the stream drops first, it reads the run's record and resumes
-  after the last `seq`, with backoff. It never ends quietly before the run's
-  last event: it throws `StreamEndedError` with `reason` `stopped` (a stopped
-  run publishes no ending event), `ended` (the record says it is over and no
-  ending event was found) or `gave-up` (it could not resume).
+- `runEvents(run)`: one run's events, to the one that completes it, stops it
+  or fails it for good. If the stream drops first, it reads the run's record
+  and resumes after the last `seq`, with backoff. It never ends quietly before
+  the run's last event: it throws `StreamEndedError` with `reason` `stopped`
+  (the record says stopped and its `lifecycle.stopped` was no longer on the
+  stream), `ended` (the record says completed or failed and no ending event
+  was found) or `gave-up` (it could not resume).
 - `failureOf(error)`: the status and the API's error body from any error the
   client throws, and `refusal` when a limit refused a run.
 - `getArtifactContent` and `getPreferencesPhoto` return the file's bytes. The

@@ -107,6 +107,8 @@ class Feed<T> {
   }
 }
 
+const terminalStatus = (s: Run["status"]) => s === "completed" || s === "failed" || s === "stopped";
+
 const b64 = (v: unknown) => Buffer.from(JSON.stringify(v)).toString("base64");
 
 /** A collegium that keeps runs, conversations and an inbox in memory, shaped like the real API. */
@@ -218,16 +220,52 @@ export class FakeCollegium implements Collegium {
     return this.notes.read(options.signal ?? new AbortController().signal);
   }
 
+  /**
+   * As the real route does: a run that has ended is returned as it is (200),
+   * and one still going is marked stopping and returned at once (202). The
+   * runtime then ends it a moment later with lifecycle.stopped, carrying what
+   * it had said, unless `stopsFinishFirst` makes it complete instead.
+   */
   async stopRun(id: string): Promise<Run> {
     this.stops.push(id);
     if (this.stopFails) throw new CollegiumError(500, "something went wrong on our side");
     const run = this.runs.get(id);
     if (!run) throw new CollegiumError(404, "not found");
-    if (run.status !== "completed" && run.status !== "failed") {
-      this.set(id, { status: "stopped", cause: `Stopped by ${SUBJECT}` });
+    if (terminalStatus(run.status)) return run;
+    if (!run.stopping) {
+      this.set(id, { stopping: true, stop_requested_at: this.at() });
+      setTimeout(() => this.confirmStop(id), this.stopDelayMs);
     }
     return this.runs.get(id) as Run;
   }
+
+  /** How long the runtime takes to confirm a stop. */
+  stopDelayMs = 30;
+  /** Set to make a run asked to stop complete instead, as one whose turn finished first does. */
+  stopsFinishFirst = false;
+
+  private confirmStop(id: string) {
+    const run = this.runs.get(id);
+    if (!run || terminalStatus(run.status)) return;
+    const said = this.said.get(id) ?? "";
+    if (this.stopsFinishFirst) {
+      this.emit(id, "lifecycle.completed", { text: said });
+      this.set(id, { stopping: undefined, stop_requested_at: undefined });
+      return;
+    }
+    const cause = `Stopped by ${SUBJECT}`;
+    this.emit(id, "lifecycle.stopped", { text: said, reason: cause, by: SUBJECT });
+    this.set(id, {
+      status: "stopped",
+      answer: said,
+      cause,
+      stopping: undefined,
+      stop_requested_at: undefined,
+    });
+  }
+
+  /** What each run has said so far, from its text deltas. */
+  private readonly said = new Map<string, string>();
 
   /** The inbox routes, over the real mapping, so the wire shapes are the ones exercised. */
   private http: Http = async <T>(method: string, path: string, json?: unknown): Promise<T> => {
@@ -286,6 +324,9 @@ export class FakeCollegium implements Collegium {
       at: this.at(),
     };
     if (kind === "lifecycle.started") this.set(id, { status: "running" });
+    if (kind === "delta.text") {
+      this.said.set(id, (this.said.get(id) ?? "") + ((payload as { text?: string })?.text ?? ""));
+    }
     if (kind === "lifecycle.completed") {
       this.set(id, { status: "completed", answer: (payload as { text?: string })?.text });
     }

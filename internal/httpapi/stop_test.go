@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/urmzd/mandatum/pkg/agentrt"
+	"github.com/urmzd/mandatum/pkg/runtime"
 	saigetypes "github.com/urmzd/saige/agent/types"
 
 	"github.com/urmzd/collegium/internal/platform"
@@ -87,5 +88,52 @@ func TestStoppingARunIsAcceptedThenConfirmed(t *testing.T) {
 	}
 	if res, again := f.do(t, nil, "POST", "/api/runs/"+id+"/stop", acme, ""); res.StatusCode != http.StatusOK || again["status"] != "stopped" {
 		t.Fatalf("second stop = %d %v", res.StatusCode, again)
+	}
+}
+
+// A runtime that cannot interrupt a run fails closed: 503 with an error body,
+// and the run is left stopping, so it starts nothing more.
+func TestAStopTheRuntimeCannotCarryIsA503(t *testing.T) {
+	f := newFixtureWith(t, platform.Config{
+		AgentOptions: []agentrt.Option{
+			agentrt.WithProvider(agentrt.ProviderOffline, func(agentrt.Spec) (saigetypes.Provider, error) { return holding{}, nil }),
+		},
+		Stops: func(context.Context, runtime.StopRequest) error { return runtime.ErrStopUnavailable },
+	})
+	all := []string{"collegium:agents:write", "collegium:runs:read", "collegium:runs:write"}
+	acme := f.machine(t, "acme", all...)
+	if res, _ := f.do(t, nil, "POST", "/api/agents", acme, helperSpec); res.StatusCode != http.StatusCreated {
+		t.Fatalf("create agent = %d", res.StatusCode)
+	}
+	_, run := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"hi"}`)
+	id := run["id"].(string)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, out := f.do(t, nil, "GET", "/api/runs/"+id, acme, "")
+		if out["status"] == "running" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("run never started: %v", out)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	res, out := f.do(t, nil, "POST", "/api/runs/"+id+"/stop", acme, "")
+	if res.StatusCode != http.StatusServiceUnavailable || out["error"] == nil {
+		t.Fatalf("stop = %d %v, want 503 with an error", res.StatusCode, out)
+	}
+	if _, now := f.do(t, nil, "GET", "/api/runs/"+id, acme, ""); now["stopping"] != true || now["status"] != "running" {
+		t.Fatalf("after a refused stop the run is %v", now)
+	}
+}
+
+// A keyed run's trigger id cannot be read two ways: the subject's length says
+// where it ends, and a run started without a key is a shape no keyed id has.
+func TestAnAPITagIDIsUnambiguous(t *testing.T) {
+	if APITagID("a", "b-c") == APITagID("a-b", "c") {
+		t.Fatal("two callers and keys gave one trigger id")
+	}
+	if got := APITagID("svc-acme", "slack-evt-1"); got != "api-8-svc-acme-slack-evt-1" {
+		t.Fatalf("APITagID = %q", got)
 	}
 }

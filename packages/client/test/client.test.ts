@@ -68,16 +68,16 @@ function last(): Seen {
 }
 
 const run: Run = {
-  id: "r276d0211d1ec94e517e1991dde77aa82",
-  tag_id: "api-svc-slack-evt-1",
+  id: "r31d24839ddee5733b221391dfb156ce0",
+  tag_id: "api-8-svc-acme-slack-evt-1",
   tenant: "acme",
   agent: "helper",
   rev: 1,
   origin: "api",
   text: "Say hello",
-  root: "r276d0211d1ec94e517e1991dde77aa82",
+  root: "r31d24839ddee5733b221391dfb156ce0",
   depth: 0,
-  thread: "r276d0211d1ec94e517e1991dde77aa82",
+  thread: "r31d24839ddee5733b221391dfb156ce0",
   lease: 0,
   granted: 0,
   calls: 0,
@@ -286,6 +286,23 @@ test("a run's events end at the event that completes it", async () => {
 
   assert.deepEqual(kinds, ["lifecycle.failed", "lifecycle.completed"]);
   assert.equal(last().url, "/api/events?topic=agent%3Ahelper%3Ar1");
+});
+
+test("a run's events end at the event that stops it, with its partial answer", async () => {
+  serve((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write(`data: ${JSON.stringify(wire(1, "delta.text", { text: "Half" }))}\n\n`);
+    res.write(`data: ${JSON.stringify(wire(2, "lifecycle.stopped", { text: "Half", reason: "Stopped by ada", by: "ada" }))}\n\n`);
+    // The server keeps the stream open, with heartbeats. The reader leaves.
+  });
+  const client = createClient({ baseUrl: base });
+
+  const seen: DecodedRunEvent[] = [];
+  for await (const event of client.runEvents({ agent: "helper", id: "r1" })) seen.push(event);
+
+  assert.deepEqual(seen.map((e) => e.kind), ["delta.text", "lifecycle.stopped"]);
+  const stopped = seen[1];
+  assert.equal(stopped?.kind === "lifecycle.stopped" && stopped.body?.text, "Half");
 });
 
 test("a stream is cancelled by its signal, and a refused stream throws with the body", async () => {

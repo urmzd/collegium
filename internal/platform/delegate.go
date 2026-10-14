@@ -236,62 +236,75 @@ type stopper interface {
 	Stop(ctx context.Context, req runtime.StopRequest) error
 }
 
+type stopFunc func(context.Context, runtime.StopRequest) error
+
+func (f stopFunc) Stop(ctx context.Context, req runtime.StopRequest) error { return f(ctx, req) }
+
 // requestStop asks a run, and everything attached to it, to stop.
 //
 // Each run is first marked stopping in the index, which is what refuses its
 // further calls, and then asked through the runtime, which is what interrupts
-// it. A run whose turn is already over and that only this platform holds open
-// (it has answered and waits for what it attached) has nothing to interrupt,
-// so it ends stopped here, keeping its answer.
+// it. Marking is done under the call lock, so a call either lands before the
+// request and is stopped with the rest, or after it and is refused. Asking the
+// runtime reads and writes the ledger, so it is done after the lock is
+// released.
+//
+// A run that has answered and is only held open by what it attached has no
+// turn left to interrupt. It is not stopped: its attached runs are, and once
+// they have ended it completes with the answer it gave.
 //
 // Asking is idempotent: a run already asked is asked again, which the runtime
 // ignores, so a request whose publication failed can be retried. The error is
 // the first request that could not be published. Every other run is still
 // asked.
 func (p *Platform) requestStop(ctx context.Context, tenant, runID, cause, by string) error {
-	type ask struct{ id, cause string }
-	var ended []runs.Run
-	var failed error
-	// Serialized with Call, so a call either lands before the request and is
-	// stopped with the rest, or after it and is refused.
+	type ask struct {
+		run   runs.Run
+		cause string
+	}
+	var asks []ask
 	p.calls.Lock()
-	for queue := []ask{{runID, cause}}; len(queue) > 0; queue = queue[1:] {
+	for queue := []ask{{runs.Run{ID: runID}, cause}}; len(queue) > 0; queue = queue[1:] {
 		next := queue[0]
-		run, ok := p.Runs.AskStop(next.id, p.now())
-		if !ok || run.Tenant != tenant {
+		// The tenant is checked before anything is marked.
+		if _, err := p.Runs.Get(tenant, next.run.ID); err != nil {
+			continue
+		}
+		run, ok := p.Runs.AskStop(next.run.ID, p.now())
+		if !ok {
 			continue
 		}
 		p.log.Info("platform: run asked to stop", "tenant", run.Tenant, "run", run.ID, "agent", run.Agent, "cause", next.cause, "by", by,
-			"root", run.Root, "parent", run.Parent, "lifecycle", run.Lifecycle)
-		if run.Finishing {
-			if stopped, did := p.Runs.Stop(run.ID, "", next.cause, p.now()); did {
-				// Its ending stops what is attached to it.
-				ended = append(ended, stopped)
-			}
-			continue
-		}
-		err := p.stops.Stop(ctx, runtime.StopRequest{Tenant: run.Tenant, RunID: run.ID, Reason: next.cause, By: by})
-		if errors.Is(err, runtime.ErrStopUnavailable) {
-			err = fmt.Errorf("%w: %w", ErrStopUnavailable, err)
-		}
-		if err != nil && failed == nil {
-			failed = err
-		}
-		// Stop says nothing about the run, by design. The ledger does: a
-		// run it holds no request for has already ended there, and its own
-		// terminal event is on its way. It is not reported as stopping.
-		if err == nil && p.asked != nil {
-			if _, held, aerr := p.asked(ctx, run.Tenant, run.ID); aerr == nil && !held {
-				p.Runs.Unask(run.ID)
-			}
+			"root", run.Root, "parent", run.Parent, "lifecycle", run.Lifecycle, "finishing", run.Finishing)
+		if !run.Finishing {
+			asks = append(asks, ask{run, next.cause})
 		}
 		for _, child := range p.Runs.AttachedTo(run.ID) {
-			queue = append(queue, ask{child.ID, attachedCause("stopped", run)})
+			queue = append(queue, ask{child, attachedCause("stopped", run)})
 		}
 	}
 	p.calls.Unlock()
-	for _, run := range ended {
-		p.ended(ctx, run)
+
+	var failed error
+	for _, a := range asks {
+		err := p.stops.Stop(ctx, runtime.StopRequest{Tenant: a.run.Tenant, RunID: a.run.ID, Reason: a.cause, By: by})
+		if errors.Is(err, runtime.ErrStopUnavailable) {
+			err = fmt.Errorf("%w: %w", ErrStopUnavailable, err)
+		}
+		if err != nil {
+			if failed == nil {
+				failed = err
+			}
+			continue
+		}
+		// Stop says nothing about the run, by design. The ledger does: a run
+		// it holds no request for has already ended there. It is settled from
+		// the ledger now rather than reported as stopping.
+		if p.asked != nil {
+			if _, held, aerr := p.asked(ctx, a.run.Tenant, a.run.ID); aerr == nil && !held {
+				p.settleFromLedger(ctx, a.run.ID)
+			}
+		}
 	}
 	return failed
 }

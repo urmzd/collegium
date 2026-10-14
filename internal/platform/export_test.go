@@ -44,13 +44,3 @@ func (p *Platform) Age(tenant, thread string, at time.Time) error {
 func (p *Platform) ConnectorTools(req runtime.Request) (agentrt.Tools, error) {
 	return p.connectorTools(req, func(payload.Action) error { return nil })
 }
-
-// StopWith replaces how runs are asked to stop, for a test of a runtime that
-// cannot interrupt one.
-func (p *Platform) StopWith(fn func(context.Context, runtime.StopRequest) error) {
-	p.stops = stopFunc(fn)
-}
-
-type stopFunc func(context.Context, runtime.StopRequest) error
-
-func (f stopFunc) Stop(ctx context.Context, req runtime.StopRequest) error { return f(ctx, req) }
