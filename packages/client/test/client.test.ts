@@ -12,6 +12,7 @@ import {
   failureOf,
   isRunCompletedEvent,
   SSEError,
+  StreamEndedError,
   type DecodedRunEvent,
   type Run,
   type RunEvent,
@@ -216,6 +217,10 @@ test("a request is cancelled by its signal", async () => {
   await assert.rejects(pending, { name: "AbortError" });
 
   await assert.rejects(client.getRun("r1", { timeout: 20 }), { name: "TimeoutError" });
+
+  // A download honours the client's own timeout too.
+  const patient = createClient({ baseUrl: base, timeout: 20 });
+  await assert.rejects(patient.getArtifactContent("a1"), { name: "TimeoutError" });
 });
 
 test("the event stream yields decoded run events and inbox notices", async () => {
@@ -321,4 +326,133 @@ test("a download is the file's own bytes", async () => {
 
   serve((_req, res) => json(res, 404, { error: "not found" }));
   assert.equal(failureOf(await client.getPreferencesPhoto().catch((e: unknown) => e))?.status, 404);
+});
+
+// Opens a stream that sends the given frames and then stays open, and
+// resolves once the server sees the client close it.
+function holdOpen(frames: string): Promise<void> {
+  return new Promise((closed) => {
+    serve((_req, res) => {
+      res.writeHead(200, { "Content-Type": "text/event-stream" });
+      res.write(frames);
+      res.on("close", () => closed());
+    });
+  });
+}
+
+function within(ms: number, p: Promise<void>, what: string): Promise<void> {
+  return Promise.race([p, new Promise<void>((_, reject) => setTimeout(() => reject(new Error(`${what}: still open after ${ms} ms`)), ms))]);
+}
+
+test("leaving the loop closes the connection, however it is left", async () => {
+  const client = createClient({ baseUrl: base });
+  const frames = `data: ${JSON.stringify(wire(1, "lifecycle.accepted"))}\n\ndata: ${JSON.stringify(wire(2, "lifecycle.completed", { text: "done" }))}\n\n`;
+
+  let closed = holdOpen(frames);
+  for await (const _ of client.events()) break;
+  await within(500, closed, "break");
+
+  closed = holdOpen(frames);
+  const kinds: string[] = [];
+  for await (const event of client.runEvents({ agent: "helper", id: "r1" })) kinds.push(event.kind);
+  assert.deepEqual(kinds, ["lifecycle.accepted", "lifecycle.completed"]);
+  await within(500, closed, "return after the ending event");
+
+  closed = holdOpen(frames);
+  await assert.rejects(async () => {
+    for await (const _ of client.events()) throw new Error("the reader failed");
+  }, /the reader failed/);
+  await within(500, closed, "throw");
+
+  // The server ends it, the normal way.
+  serve((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(frames);
+  });
+  const items: StreamItem[] = [];
+  for await (const item of client.events()) items.push(item);
+  assert.equal(items.length, 2);
+});
+
+// A fake that serves a run's stream in pieces, one per connection, and its
+// record from a list of statuses, one per read.
+function flaky(streams: string[], statuses: Run["status"][]): { urls: string[] } {
+  const urls: string[] = [];
+  serve((req, res) => {
+    if (req.url.startsWith("/api/runs/r1")) {
+      json(res, 200, { ...run, id: "r1", status: statuses.shift() ?? "running" });
+      return;
+    }
+    urls.push(req.url);
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.end(streams.shift() ?? "");
+  });
+  return { urls };
+}
+
+const frame = (e: RunEvent) => `data: ${JSON.stringify(e)}\n\n`;
+const fast = { maxRetries: 2, initialDelayMs: 1, maxDelayMs: 5 };
+
+test("a stream that drops mid-run is resumed after the last event", async () => {
+  const fake = flaky(
+    [frame(wire(1, "lifecycle.accepted")) + frame(wire(2, "delta.text", { text: "Hel" })), frame(wire(2, "delta.text", { text: "Hel" })) + frame(wire(3, "delta.text", { text: "lo" })) + frame(wire(4, "lifecycle.completed", { text: "Hello" }))],
+    ["running"],
+  );
+  const client = createClient({ baseUrl: base });
+  const seqs: number[] = [];
+  for await (const event of client.runEvents({ agent: "helper", id: "r1" }, { resume: fast })) seqs.push(event.seq);
+  assert.deepEqual(seqs, [1, 2, 3, 4], "an event was lost or repeated");
+  assert.deepEqual(fake.urls, ["/api/events?topic=agent%3Ahelper%3Ar1", "/api/events?topic=agent%3Ahelper%3Ar1&from=2"]);
+});
+
+test("a run that ended while the stream was down is read to its end", async () => {
+  flaky([frame(wire(1, "lifecycle.accepted")), frame(wire(1, "lifecycle.accepted")) + frame(wire(2, "lifecycle.completed", { text: "done" }))], ["completed"]);
+  const client = createClient({ baseUrl: base });
+  const kinds: string[] = [];
+  for await (const event of client.runEvents({ agent: "helper", id: "r1" }, { resume: fast })) kinds.push(event.kind);
+  assert.deepEqual(kinds, ["lifecycle.accepted", "lifecycle.completed"]);
+});
+
+test("a stream that cannot be resumed throws rather than ending quietly", async () => {
+  const client = createClient({ baseUrl: base });
+  const follow = async (resume = fast) => {
+    const kinds: string[] = [];
+    const error = await (async () => {
+      for await (const event of client.runEvents({ agent: "helper", id: "r1" }, { resume })) kinds.push(event.kind);
+    })().then(
+      () => assert.fail(`returned without an ending event after ${kinds.join(", ")}`),
+      (e: unknown) => e,
+    );
+    assert.ok(error instanceof StreamEndedError, String(error));
+    return { error, kinds };
+  };
+
+  flaky([frame(wire(1, "delta.text", { text: "Hel" }))], ["running", "running", "running"]);
+  const gaveUp = await follow();
+  assert.equal(gaveUp.error.reason, "gave-up");
+  assert.deepEqual(gaveUp.kinds, ["delta.text"]);
+  assert.equal(seen.filter((r) => r.url.startsWith("/api/events")).length, 3, "it did not try exactly twice more");
+
+  flaky([frame(wire(1, "delta.text", { text: "Hel" }))], ["stopped"]);
+  const stopped = await follow();
+  assert.equal(stopped.error.reason, "stopped");
+  assert.equal(stopped.error.run?.status, "stopped");
+
+  flaky([frame(wire(1, "delta.text"))], ["completed"]);
+  assert.equal((await follow()).error.reason, "ended");
+
+  // A refusal is the server's answer, not a dropped stream.
+  serve((_req, res) => json(res, 404, { error: "not found" }));
+  await assert.rejects(async () => {
+    for await (const _ of client.runEvents({ agent: "helper", id: "r1" }, { resume: fast })) assert.fail("yielded");
+  }, (e: unknown) => failureOf(e)?.status === 404);
+  assert.equal(seen.length, 1);
+
+  // Aborting while waiting to reconnect ends it with the abort.
+  flaky([], ["running", "running", "running"]);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), 30);
+  await assert.rejects(async () => {
+    for await (const _ of client.runEvents({ agent: "helper", id: "r1" }, { resume: { initialDelayMs: 1000 } }, { signal: controller.signal })) assert.fail("yielded");
+  }, { name: "AbortError" });
 });
