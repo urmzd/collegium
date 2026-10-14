@@ -27,7 +27,7 @@
 - Search knowledge, manage project memory and inspect alerts and analytics in the web console.
 - Connect GitHub and Slack through signed webhook ingress and tenant-bound connector capabilities.
 
-**Early development:** platform records are in memory. Spend limits are recorded but not enforced. General run approvals, local accounts and per-project access are unfinished. GitHub and Slack integrations have simulated-API coverage; see the [integration trial guide](docs/integrations.md) and [status table](docs/architecture.md#status) for validation boundaries. Formerly `open-agent-platform`.
+**Early development:** platform records are in memory. Spend limits are recorded but not enforced. General run approvals, local accounts and per-project access are unfinished. GitHub and Slack integrations have simulated-API coverage; see the [integration trial guide](docs/integrations.md) and [status table](docs/architecture.md#status) for validation boundaries.
 
 ## Installation
 
