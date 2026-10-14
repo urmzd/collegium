@@ -35,7 +35,14 @@ type fixture struct {
 // in-process issuer. Two tenants exist, selected by the "org" claim.
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
-	p, err := platform.New(platform.Config{Workspace: t.TempDir(), Limits: call.Limits{MaxDepth: 2, MaxFanOut: 4}})
+	return newFixtureWith(t, platform.Config{})
+}
+
+// newFixtureWith is newFixture over a platform a test has configured further.
+func newFixtureWith(t *testing.T, cfg platform.Config) *fixture {
+	t.Helper()
+	cfg.Workspace, cfg.Limits = t.TempDir(), call.Limits{MaxDepth: 2, MaxFanOut: 4}
+	p, err := platform.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

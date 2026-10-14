@@ -35,6 +35,9 @@ func (s *Server) exists(r *http.Request, who auth.Principal, scope policy.Scope)
 	case policy.Agent:
 		_, err := s.P.Agents.Get(r.Context(), who.Tenant, scope.Name, 0)
 		return err
+	case policy.Client:
+		_, err := s.P.Clients.Get(who.Tenant, scope.Name)
+		return err
 	}
 	return nil
 }
@@ -48,6 +51,8 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, who auth.Prin
 		SpendLimit    int64         `json:"spend_limit"`
 		MaxLease      int64         `json:"max_lease"`
 		MaxStorage    int64         `json:"max_storage"`
+		MaxClients    int           `json:"max_clients"`
+		MaxPerSurface int           `json:"max_clients_per_surface"`
 		WarnAt        int           `json:"warn_at"`
 		Action        policy.Action `json:"action"`
 	}
@@ -63,7 +68,8 @@ func (s *Server) putPolicy(w http.ResponseWriter, r *http.Request, who auth.Prin
 	}
 	saved, err := s.P.Policies.Put(who.Tenant, policy.Policy{
 		Scope: body.Scope, Period: body.Period, MaxRuns: body.MaxRuns, MaxConcurrent: body.MaxConcurrent,
-		SpendLimit: body.SpendLimit, MaxLease: body.MaxLease, MaxStorage: body.MaxStorage, WarnAt: body.WarnAt, Action: body.Action,
+		SpendLimit: body.SpendLimit, MaxLease: body.MaxLease, MaxStorage: body.MaxStorage,
+		MaxClients: body.MaxClients, MaxClientsPerSurface: body.MaxPerSurface, WarnAt: body.WarnAt, Action: body.Action,
 	}, who.Subject, time.Now())
 	if err != nil {
 		s.problem(w, err)
