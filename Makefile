@@ -1,4 +1,4 @@
-.PHONY: all init build test lint fmt check dev web client client-check spec-lint oag-install
+.PHONY: all init build test lint fmt check dev dev-signin web client client-check spec-lint oag-install
 
 BIN := collegium
 
@@ -40,6 +40,12 @@ check: fmt lint test
 # Local preview: no sign-in, loopback only, two example agents.
 dev: build
 	./bin/$(BIN) serve -auth=dev -seed
+
+# Local preview with sign-in: a development identity provider on loopback
+# (127.0.0.1:8081) and personas to pick from, no passwords. Use with `make web`
+# and open http://127.0.0.1:5173/auth/login.
+dev-signin: build
+	./bin/$(BIN) serve -auth=mock -seed -public-url http://127.0.0.1:5173
 
 # The web console, proxying /api and /auth to the server from `make dev`.
 web:
