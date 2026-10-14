@@ -25,6 +25,21 @@ export interface Me {
   first_admin?: boolean;
 }
 
+/** Why the caller may or may not do one thing. Only ever about the caller. */
+export interface AccessDecision {
+  permission: string;
+  allowed: boolean;
+  /** "scope" when a machine's token decided rather than the policy. */
+  outcome: "allowed" | "denied" | "no match" | "scope";
+  role?: string;
+  path?: string[];
+  rule?: string;
+  /** The grant that gave `role`, when the sign-in kept it. */
+  grant?: string;
+  held: { role: string; grant?: string; group?: string }[];
+  unknown?: string[];
+}
+
 export interface AgentSpec {
   name: string;
   description?: string;
@@ -413,6 +428,8 @@ async function call<T>(method: string, path: string, json?: unknown): Promise<T>
 
 export const api = {
   me: () => call<Me>("GET", "/api/me"),
+  explain: (permission: string) =>
+    call<AccessDecision>("GET", `/api/access/explain?${new URLSearchParams({ permission })}`),
   agents: () => call<{ agents: Revision[] }>("GET", "/api/agents").then((r) => r.agents),
   /** Every agent, and the names of those the platform provides, which cannot be edited. */
   agentList: () => call<{ agents: Revision[]; builtin?: string[] }>("GET", "/api/agents"),
