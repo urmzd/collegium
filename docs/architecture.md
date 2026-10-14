@@ -227,7 +227,7 @@ does not change who may answer a question a run already asked:
 
 | Question | Who may answer |
 |---|---|
-| Approval | `approvers` when the spec names them, else anyone in the workspace. Never the person whose request raised the run, nor the person who started the tree it is in, by any name they go by (a Slack user is also the principal the run's client maps them to), unless the spec sets `self_approval`. mandatum's `AnswerRequest` takes no requester alias, so collegium checks this before it asks the runtime. A GitHub actor is mapped to no principal, so self-approval there is not detected |
+| Approval | `approvers` when the spec names them, else anyone in the workspace. Never the person whose request raised the run, nor the person who started the tree it is in, by any name they go by (a Slack user is also every principal a Slack client of the run's team maps them to, pinned when the run starts), unless the spec sets `self_approval`. mandatum's `AnswerRequest` takes no requester alias, so collegium checks this before it asks the runtime. A GitHub actor is mapped to no principal, so self-approval there is not detected |
 | Choice, reply | `answerers` when the spec names them, else anyone in the workspace |
 
 `approvers` and `answerers` name principals by subject and this workspace's

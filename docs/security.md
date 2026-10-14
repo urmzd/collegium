@@ -91,7 +91,9 @@ no permission, grants nothing.
   Slack client names as `machine` can answer every question as any person the
   client maps, within what each may answer, and raise runs as them. The Slack
   app is trusted to say truthfully which Slack user clicked; the platform
-  cannot check it. Keep that credential as you would those people's sign-ins,
+  cannot check it. A mapped person's roles are what the policy grants their
+  subject: a click carries no groups, so a role held only through a group
+  does not count, and such a person cannot answer from Slack. Keep that credential as you would those people's sign-ins,
   map only people who use that Slack workspace, and remove a mapping when
   someone leaves.
 - **Lineage cannot be forged.** Only the platform's call path mints a tag with
@@ -222,8 +224,10 @@ in a question what everyone who can read runs may not see.
 
 Who may not approve: the person whose request raised the run, and the person
 who started the tree it is in, by every name they go by: their subject, the
-trigger's actor id, and for a run a Slack connector raised, the principal the
-run's client maps that Slack user to. The platform checks this itself before
+trigger's actor id, and for a run a Slack connector raised, every principal
+any Slack client of the run's team maps that Slack user to. The team is the one
+the run was accepted from, and the names are pinned when it starts, so a
+mapping removed later still counts. The platform checks this itself before
 it asks the runtime, because mandatum's `AnswerRequest` takes no requester
 alias. A GitHub connector's actor is a login no client maps, so a person
 approving a call their own GitHub event raised is not detected. The right is checked before saying whether a part is still open. A

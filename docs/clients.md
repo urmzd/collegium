@@ -52,13 +52,18 @@ when the client:
 | `slack.people` | Slack user ids in the client's team, each mapped to the principal it is in this workspace, by subject. At most 500. |
 
 Anyone the map does not name is refused with 403, and the app does not ask on
-their behalf. To answer, the person's own grant must include `runs:write`. A disabled client maps nobody. The mapped principal's roles, for
+their behalf. To answer, the person's own grant must include `runs:write`. A Slack click
+carries no groups, so someone who holds a role only through a group (`grant
+operator to group "..."`) holds nothing here and cannot answer from Slack:
+grant them by `subject` too, or they answer in the console. A disabled client maps nobody. The mapped principal's roles, for
 `role:<name>` approvers, are what the workspace's authorization policy grants
 their subject (`grant ... to subject "..."` or `anyone`), since a Slack click
 carries no sign-in. Who may answer is then the run's spec's to say, as for
 anyone. A run asked for this way is the person's, so they do not approve its
-calls. The same map names whoever a Slack connector run was raised by, so they
-do not approve its calls either.
+calls. The same maps name whoever a Slack connector run was raised by, so they
+do not approve its calls either: the Slack user is looked up in every Slack
+client of the run's team, not only the one that received the message, and
+the names are pinned when the run starts.
 
 The trust model: the credential named as `machine` holds the vote of every
 person mapped here and can raise runs as them. The platform cannot check which
