@@ -143,8 +143,8 @@ export function HomePage({
           ref={picker}
           type="file"
           multiple
-          className="sr-only"
-          tabIndex={-1}
+          // Opened by the page's own "Attach a File", so it is kept out of the tab order and the tree.
+          hidden
           aria-label="Attach files to your question"
           onChange={(e) => {
             const picked = e.target.files;
