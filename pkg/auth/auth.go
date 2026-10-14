@@ -2,17 +2,15 @@
 //
 // # Two kinds of caller, one check
 //
-// A person signs in through the identity provider and gets roles from the
-// policy's grants, which match their verified claims. A machine presents a client-credentials token and gets exactly the
+// A person signs in through the identity provider and gets roles from their
+// groups. A machine presents a client-credentials token and gets exactly the
 // scopes it was issued. Both become a Principal, and every handler asks the
 // Principal one question: Can(permission).
 //
 // # Default deny
 //
 // The zero Principal can do nothing. An unknown role grants nothing, and an
-// unknown scope grants nothing. What a role allows is decided by a Policy,
-// written in the language of package authz. The built-in one is
-// DefaultPolicy. Tenant never comes from the request: it comes
+// unknown scope grants nothing. Tenant never comes from the request: it comes
 // from the deployment or from a verified claim.
 package auth
 
@@ -90,10 +88,21 @@ const (
 	Admin Role = "admin"
 )
 
-// ParseRole reports whether s names a role in the built-in policy.
+var rolePermissions = map[Role][]Permission{
+	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead, BillingRead, ArtifactsRead, ClientsRead},
+	Operator: {
+		AgentsRead, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
+		AlertsRead, AlertsWrite, KnowledgeRead, EvalsRead, EvalsWrite,
+		BillingRead, ArtifactsRead, ArtifactsWrite, ClientsRead,
+	},
+	Admin: Permissions(),
+}
+
+// ParseRole reports whether s names a role.
 func ParseRole(s string) (Role, bool) {
 	r := Role(s)
-	return r, defaultPolicy.HasRole(r)
+	_, ok := rolePermissions[r]
+	return r, ok
 }
 
 // Principal is an authenticated caller.
@@ -109,30 +118,9 @@ type Principal struct {
 	Roles []Role `json:"roles,omitempty"`
 	// Scopes apply to machines. A machine has no roles.
 	Scopes []Permission `json:"scopes,omitempty"`
-
-	// policy decides what Roles allow. Nil means DefaultPolicy. It is set
-	// by whoever authenticated the caller, and is never serialized.
-	policy *Policy
 }
 
-// WithPolicy returns the caller decided by pol instead of the built-in policy.
-// Nil restores the built-in one.
-func (p Principal) WithPolicy(pol *Policy) Principal {
-	p.policy = pol
-	return p
-}
-
-// Policy is what decides the caller's roles.
-func (p Principal) Policy() *Policy {
-	if p.policy == nil {
-		return defaultPolicy
-	}
-	return p.policy
-}
-
-// Can reports whether the caller holds a permission: a machine through a
-// scope on its token, a person through what the policy says their roles
-// allow.
+// Can reports whether the caller holds a permission.
 func (p Principal) Can(perm Permission) bool {
 	if p.Subject == "" || p.Tenant == "" {
 		return false
@@ -140,7 +128,12 @@ func (p Principal) Can(perm Permission) bool {
 	if slices.Contains(p.Scopes, perm) {
 		return true
 	}
-	return p.Policy().allows(p.Roles, perm)
+	for _, r := range p.Roles {
+		if slices.Contains(rolePermissions[r], perm) {
+			return true
+		}
+	}
+	return false
 }
 
 // Granted lists what the caller may do, for the UI to hide what it cannot.

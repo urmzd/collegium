@@ -7,17 +7,14 @@ Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
 
 | Caller | How it authenticates | What it gets |
 |--------|----------------------|--------------|
-| A person in a browser | OpenID Connect authorization code flow with PKCE, run by the server. The browser holds an opaque session cookie and never a token. | Roles, from the policy's grants |
-| A person in a CLI | An access token as `Authorization: Bearer` | Roles, from the policy's grants |
+| A person in a browser | OpenID Connect authorization code flow with PKCE, run by the server. The browser holds an opaque session cookie and never a token. | Roles, from identity provider groups |
+| A person in a CLI | An access token as `Authorization: Bearer` | Roles, from the token's groups claim |
 | A machine | A client-credentials access token as `Authorization: Bearer` | Exactly the scopes on the token |
 
 Every caller becomes a `Principal`, and every route asks it one question:
 `Can(permission)`.
 
 ## Roles and scopes
-
-Roles and who holds them are set by an [authorization policy](authorization.md).
-The built-in one declares these three, and the group flags grant them:
 
 | Role | Permissions |
 |------|-------------|
@@ -47,10 +44,7 @@ no permission, grants nothing.
 ## Rules the code holds
 
 - **Default deny.** The zero `Principal` can do nothing. An unmapped group, an
-  unknown role and an unknown scope each grant nothing. A deny in the policy
-  beats every allow.
-- **A bad policy stops the server.** One that does not parse or compile is an
-  error at start, never at decision time.
+  unknown role and an unknown scope each grant nothing.
 - **Tenant is never taken from a request.** It comes from the deployment or a
   verified token claim. A body that carries a `tenant` field is rejected.
 - **Another tenant's objects do not exist.** Reads, deletes and calls across
@@ -117,14 +111,6 @@ no permission, grants nothing.
 `-auth=dev` makes every request an admin so the console can be previewed
 without an identity provider. The server refuses to start in this mode on any
 address that is not loopback. Never put it behind a proxy.
-
-`-auth=mock` runs a development identity provider in process, so sign-in,
-roles and machine tokens can be tried without a real one. Anyone who reaches
-it can sign in as any persona, so it is loopback only: the server and the
-provider must both listen on loopback, every redirect must be loopback, and
-its issuer is a loopback `http` URL, which the verifier accepts for nothing
-else. It logs a warning at start and its page says what it is. See
-[authorization](authorization.md#sign-in-locally).
 
 ## Configure sign-in (Okta)
 
@@ -203,8 +189,8 @@ that kind.
 - No token revocation check beyond expiry, and no refresh. A session lasts 8
   hours.
 - No rate limiting.
-- No local accounts. Without an identity provider the only modes are dev auth
-  and the mock provider, both on loopback.
+- No local accounts. Without an identity provider the only mode is dev auth on
+  loopback, where everyone is an admin.
 - The audit trail is the server log, not a store.
 - A call cannot yet narrow the callee's access to the caller's grant.
-- Sign-in has been tested against in-process issuers, not a live Okta org.
+- Sign-in has been tested against an in-process issuer, not a live Okta org.

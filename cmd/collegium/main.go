@@ -24,6 +24,7 @@ import (
 	"github.com/urmzd/collegium/internal/httpapi"
 	"github.com/urmzd/collegium/internal/platform"
 	"github.com/urmzd/collegium/pkg/alerts"
+	"github.com/urmzd/collegium/pkg/auth"
 	"github.com/urmzd/collegium/pkg/call"
 )
 
@@ -47,22 +48,19 @@ func run(args []string) error {
 			fmt.Printf("%s (%s, %s)\n", version, commit, date)
 			return nil
 		}
-		if len(args) > 0 && args[0] == "authz" {
-			return runAuthz(args[1:], os.Stdout, os.Getenv)
-		}
-		return errors.New("usage: collegium serve [flags] | authz check FILE | authz explain [flags] PERMISSION | version")
+		return errors.New("usage: collegium serve [flags] | version")
 	}
 
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8080", "listen address")
 	webhookAddr := fs.String("webhook-addr", "", "optional separate listener exposing only signed connector webhooks")
-	authMode := fs.String("auth", "oidc", `who may call: "oidc"; "mock" for sign-in against a built-in development identity provider on loopback; or "dev" for a loopback-only preview with no sign-in`)
+	authMode := fs.String("auth", "oidc", `who may call: "oidc", or "dev" for a loopback-only preview with no sign-in`)
 	tenant := fs.String("tenant", "default", "tenant every caller is confined to, unless -tenant-claim is set")
 	tenantClaim := fs.String("tenant-claim", "", "token claim that carries the caller's tenant")
 	groupsClaim := fs.String("groups-claim", "groups", "token claim that lists a person's groups")
-	groups := addGroupFlags(fs)
-	mockAddr := fs.String("mock-idp-addr", "127.0.0.1:8081", "with -auth=mock, the loopback address the development identity provider listens on")
-	mockPersonas := fs.String("mock-personas", "", `with -auth=mock, a JSON file of {"people": [...], "machines": [...]} to sign in as. Empty means the built-in set`)
+	adminGroup := fs.String("admin-group", "collegium-admins", "identity provider group granted the admin role")
+	operatorGroup := fs.String("operator-group", "collegium-operators", "identity provider group granted the operator role")
+	viewerGroup := fs.String("viewer-group", "collegium-viewers", "identity provider group granted the viewer role")
 	publicURL := fs.String("public-url", "http://localhost:8080", "where browsers reach this server")
 	webDir := fs.String("web", "", "directory of a built web console to serve")
 	maxDepth := fs.Int("max-depth", 4, "deepest an agent-to-agent call may land")
@@ -82,21 +80,39 @@ func run(args []string) error {
 
 	// Credentials come from the environment, never from flags: a flag ends up
 	// in shell history and in ps output.
-	pol, groupRoles, err := loadPolicy(fs, groups, os.Getenv)
-	if err != nil {
-		return err
+	var authn *httpapi.Authn
+	switch *authMode {
+	case "dev":
+		if !loopback(*addr) {
+			return fmt.Errorf("-auth=dev grants everyone admin, so it only listens on loopback, not %q", *addr)
+		}
+		log.Warn("dev auth: every request is an admin. Do not expose this server.")
+		authn = &httpapi.Authn{Dev: &auth.Principal{
+			Subject: "dev", Tenant: *tenant, Kind: auth.User, Name: "Developer", Roles: []auth.Role{auth.Admin},
+		}}
+	case "oidc":
+		v, err := auth.NewVerifier(ctx, auth.OIDCConfig{
+			Issuer:      os.Getenv("COLLEGIUM_OIDC_ISSUER"),
+			ClientID:    os.Getenv("COLLEGIUM_OIDC_CLIENT_ID"),
+			Audience:    os.Getenv("COLLEGIUM_OIDC_AUDIENCE"),
+			Tenant:      *tenant,
+			TenantClaim: *tenantClaim,
+			GroupsClaim: *groupsClaim,
+			GroupRoles: map[string]auth.Role{
+				*adminGroup: auth.Admin, *operatorGroup: auth.Operator, *viewerGroup: auth.Viewer,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("%w (set COLLEGIUM_OIDC_ISSUER, COLLEGIUM_OIDC_CLIENT_ID, COLLEGIUM_OIDC_CLIENT_SECRET and COLLEGIUM_OIDC_AUDIENCE, or use -auth=dev locally)", err)
+		}
+		authn, err = httpapi.NewAuthn(v, os.Getenv("COLLEGIUM_OIDC_CLIENT_ID"), os.Getenv("COLLEGIUM_OIDC_CLIENT_SECRET"), *publicURL,
+			[]string{"openid", "profile", "email", *groupsClaim})
+		if err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("-auth must be oidc or dev, not %q", *authMode)
 	}
-	authn, stopAuthn, err := newAuthn(ctx, authConfig{
-		mode: *authMode, addr: *addr, publicURL: *publicURL,
-		tenant: *tenant, tenantClaim: *tenantClaim, groups: *groupsClaim,
-		policy: pol, groupRoles: groupRoles,
-		mockAddr: *mockAddr, mockPersonas: *mockPersonas,
-		getenv: os.Getenv, log: log,
-	})
-	if err != nil {
-		return err
-	}
-	defer stopAuthn()
 
 	refs, err := secretRefs(*secretRefsFlag, *tenant, os.Getenv)
 	if err != nil {
