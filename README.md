@@ -1,63 +1,102 @@
 <p align="center">
   <h1 align="center">collegium</h1>
   <p align="center">
-    Spec-defined agents in sandboxes that call each other over one bus, with governance, human approvals, evals and telemetry built in.
+    A shared runtime and console for agents, conversations, governed calls and integrations.
+    <br /><br />
+    <a href="#installation">Install</a> &middot;
+    <a href="https://github.com/urmzd/collegium/issues">Report Bug</a> &middot;
+    <a href="docs/architecture.md">Architecture</a>
   </p>
 </p>
 
-> Formerly `open-agent-platform`.
-
-> ## Status
->
-> **Early.** One process runs agents through mandatum, with sign-in,
-> conversations that branch across agents, an agent editor with revisions,
-> evals, schedules, alerts, analytics, traces, knowledge search and a web
-> console. Every store is in memory. Connections (MCP, OAuth), approvals, local
-> accounts and the remaining connectors are not built. See the
-> [status table](docs/architecture.md#status).
-
-## What it is
-
-The composition of [mandatum](https://github.com/urmzd/mandatum) (bus and
-connectors), [saige](https://github.com/urmzd/saige) (agent runtime and evals),
-[legatus](https://github.com/urmzd/legatus) (sandboxes) and
-[duraturo](https://github.com/urmzd/duraturo) (durability), with vultus as
-the component library for web and Slack.
-
-The idea that holds it together: **an agent calls another agent by raising a
-tag at it.** A subagent, a handoff and a delegation are the same call with a
-different mode. Each call is its own run in its own sandbox, so branches are
-detached, compact alone, and can spread across nodes. Budgets, access and depth
-limits are checked on the edge between the two runs.
-
-Read [docs/architecture.md](docs/architecture.md) for the full design.
-
-## Preview
-
 <p align="center">
-  <img src="showcase/runs.png" alt="The Runs page: a tape of recent runs above a searchable, filterable list" width="49%">
-  <img src="showcase/agents.png" alt="The Agents page: one lane per agent with its recent runs and the last day's figures" width="49%">
-</p>
-<p align="center">
-  <img src="showcase/onboarding.png" alt="The first-run page that asks the first admin for their name and the workspace's" width="49%">
-  <img src="showcase/analytics.png" alt="The Analytics page: runs, success rate and duration for a time window" width="49%">
+  <a href="https://github.com/urmzd/collegium/actions/workflows/ci.yml"><img src="https://github.com/urmzd/collegium/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/urmzd/collegium" alt="License"></a>
 </p>
 
-The screenshots are captured with [teasr](https://github.com/urmzd/teasr) from `teasr.toml`.
+<p align="center">
+  <img src="showcase/agents.png" alt="Collegium agent console with the two seeded offline example agents" width="80%">
+</p>
+<p align="center"><em>Local development preview with seeded example data, captured with teasr. No model calls.</em></p>
+
+## Features
+
+- Branch conversations across agents, with a shared call primitive for subagents, handoffs and delegations.
+- Edit agents and revisions, run deterministic evals, schedule work and inspect run traces.
+- Apply tenant permissions, depth and fan-out limits, run admission policies and usage accounting.
+- Search knowledge, manage project memory and inspect alerts and analytics in the web console.
+- Connect GitHub and Slack through signed webhook ingress and tenant-bound connector capabilities.
+
+**Early development:** platform records are in memory. Spend limits are recorded but not enforced. General run approvals, local accounts and per-project access are unfinished. GitHub and Slack integrations have simulated-API coverage; see the [integration trial guide](docs/integrations.md) and [status table](docs/architecture.md#status) for validation boundaries.
+
+## Installation
+
+### Prerequisites
+
+| Requirement | Purpose |
+|-------------|---------|
+| Go version from [`go.mod`](go.mod) | Build the server |
+| Node.js 22.12+ or 24+, pnpm | Build the Vite console |
+| Sibling `vultus` checkout | The console links its web packages, which are not published to npm |
+| Chrome/Chromium and [teasr](https://github.com/urmzd/teasr) | Optional screenshot capture |
+
+The Go modules are published and need no sibling checkout. The console does: keep `vultus` beside `collegium`.
 
 ```sh
-make dev   # server on 127.0.0.1:8080, no sign-in, two example agents
-make web   # console on http://127.0.0.1:5173
+git clone https://github.com/urmzd/vultus.git
+git clone https://github.com/urmzd/collegium.git
+cd collegium
+go mod download
+cd apps/web
+pnpm install
+cd ../..
 ```
 
-`make dev` uses dev auth, which only listens on loopback. The example agents
-use mandatum's offline provider and call no model. Set an agent's provider to
-`anthropic` with `ANTHROPIC_API_KEY` in the environment for real answers.
+A workspace answers through one or more [clients](docs/clients.md): a Slack app
+or a GitHub installation, each with its own identity, secrets, agents and limits.
+See the [integration trial guide](docs/integrations.md).
 
-The console links vultus from a sibling checkout at `../vultus`.
+## Quick Start
 
-For real sign-in, roles and machine tokens, see
-[docs/security.md](docs/security.md).
+
+Run the backend in one terminal:
+
+```sh
+make dev
+```
+
+Run the console in another terminal, from the repository root:
+
+```sh
+make web
+```
+
+Open <http://127.0.0.1:5173>, complete the first-run workspace form and select an example agent. The backend listens on `127.0.0.1:8080`. Seeded agents use mandatum's offline provider, so the preview requires no model key.
+
+Development auth grants admin access on loopback. For real sign-in, roles and machine tokens, follow [the security guide](docs/security.md). To use Anthropic, set `ANTHROPIC_API_KEY` before starting the server and configure an agent with provider `anthropic`.
+
+### Capture the console
+
+With a fresh `make dev` process and `make web` running:
+
+```sh
+teasr run
+```
+
+[`teasr.toml`](teasr.toml) captures onboarding, completes the setup form, then captures the console pages. After onboarding has already completed:
+
+```sh
+teasr run --scenes home,runs,agents,analytics,primitives
+```
+
+Images are written to [`showcase/`](showcase/). Restart the development backend to capture onboarding again.
+
+<p align="center">
+  <img src="showcase/runs.png" alt="Seeded offline run history" width="30%"> &nbsp;
+  <img src="showcase/onboarding.png" alt="First-run workspace setup" width="30%"> &nbsp;
+  <img src="showcase/analytics.png" alt="Analytics for the seeded offline runs" width="30%">
+</p>
+<p align="center"><em>Runs &middot; Workspace setup &middot; Analytics</em></p>
 
 ## Conversations
 
@@ -88,14 +127,20 @@ For real sign-in, roles and machine tokens, see
 | `GET /api/alerts`, `POST /api/alerts/{id}/ack`, `GET`, `POST`, `DELETE /api/alert-rules` | `alerts:read`, `alerts:write` |
 | `GET`, `POST /api/knowledge`, `.../{name}/documents`, `GET /api/knowledge/search?q=` | `knowledge:read`, `knowledge:write` |
 
-## Develop
+## Development
 
 | Task | Command |
 |------|---------|
 | Set up hooks and modules | `make init` |
 | Format, lint and test | `make check` |
-| Test only | `make test` |
+| Test with race detection | `make test` |
 | Web typecheck and tests | `cd apps/web && pnpm typecheck && pnpm test` |
+
+## Architecture
+
+Collegium composes [mandatum](https://github.com/urmzd/mandatum) for the bus and connectors, [saige](https://github.com/urmzd/saige) for agent execution and evals, [legatus](https://github.com/urmzd/legatus) for workspace isolation and [duraturo](https://github.com/urmzd/duraturo) for durability primitives. [vultus](https://github.com/urmzd/vultus) supplies web and Slack presentation.
+
+An agent-to-agent call creates a run through `pkg/call`; its edge determines access, budget, depth and delegation mode. The platform owns identity, storage and orchestration; vultus owns rendering. Read the [architecture and implementation status](docs/architecture.md) before relying on planned persistence or governance features.
 
 ## License
 

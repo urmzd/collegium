@@ -336,7 +336,7 @@ func (p *Platform) Publish(ctx context.Context, pub Publication) (artifacts.Arti
 // storageAllows checks a publish against every storage limit that applies, and
 // says so in the inbox when one refuses it.
 func (p *Platform) storageAllows(tenant, project, agent string, size int64) error {
-	for _, pol := range p.Policies.For(tenant, project, agent) {
+	for _, pol := range p.Policies.For(tenant, project, agent, "") {
 		if pol.MaxStorage <= 0 {
 			continue
 		}

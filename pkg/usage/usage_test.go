@@ -99,3 +99,33 @@ func TestOldAdmissionsAreDropped(t *testing.T) {
 		t.Fatalf("%d entries kept", len(l.Entries()))
 	}
 }
+
+// A client's usage is the runs it raised: in flight and in the period, and
+// nobody else's.
+func TestUsageByClient(t *testing.T) {
+	l := NewLedger()
+	raise := func(client, id string) {
+		l.Append(Entry{Kind: Admitted, Tenant: "acme", Agent: "lead", Client: client, RunID: id, At: t0})
+	}
+	raise("docs-app", "r1")
+	raise("docs-app", "r2")
+	raise("ops-app", "r3")
+	raise("", "r4") // from the console
+	l.Append(Entry{Kind: Admitted, Tenant: "globex", Agent: "lead", Client: "docs-app", RunID: "r9", At: t0})
+	l.Append(Entry{Kind: Ended, Tenant: "acme", RunID: "r1", At: t0.Add(time.Minute)})
+
+	docs := policy.Scope{Kind: policy.Client, Name: "docs-app"}
+	if got := l.Usage("acme", docs, t0); got.Runs != 2 || got.Concurrent != 1 {
+		t.Fatalf("docs-app: %+v, want 2 runs and 1 in flight", got)
+	}
+	if got := l.Usage("acme", policy.Scope{Kind: policy.Client, Name: "nobody"}, t0); got.Runs != 0 || got.Concurrent != 0 {
+		t.Fatalf("a client that raised nothing: %+v", got)
+	}
+	if got := l.Usage("acme", all, t0); got.Runs != 4 {
+		t.Fatalf("the tenant: %+v", got)
+	}
+	// Rebuilding from the entries gives the same answer.
+	if got := Rebuild(l.Entries()).Usage("acme", docs, t0); got.Runs != 2 || got.Concurrent != 1 {
+		t.Fatalf("rebuilt docs-app: %+v", got)
+	}
+}

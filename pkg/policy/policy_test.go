@@ -176,14 +176,14 @@ func TestStoreKeepsNarrowerPoliciesWithinTheTenants(t *testing.T) {
 	if _, err := s.Put("acme", pol(lead, func(p *Policy) { p.MaxLease = 5000 }), "ada", t0); err != nil {
 		t.Fatal(err)
 	}
-	got := s.For("acme", "Launch", "lead")
+	got := s.For("acme", "Launch", "lead", "")
 	if len(got) != 3 || got[0].Scope != lead || got[1].Scope != launch || got[2].Scope != tenantScope {
 		t.Fatalf("most specific first: %+v", got)
 	}
-	if len(s.For("acme", "", "helper")) != 1 {
+	if len(s.For("acme", "", "helper", "")) != 1 {
 		t.Fatal("a run in no project, by an agent with no policy, should fall under the tenant's alone")
 	}
-	if len(s.For("globex", "Launch", "lead")) != 0 || len(s.List("globex")) != 0 {
+	if len(s.For("globex", "Launch", "lead", "")) != 0 || len(s.List("globex")) != 0 {
 		t.Fatal("another tenant falls under these policies")
 	}
 }
@@ -227,5 +227,60 @@ func TestStoreVersionsAndRemembers(t *testing.T) {
 	}
 	if _, ok := s.At("acme", launch, t0.Add(-time.Hour)); ok {
 		t.Error("a policy was reported before it existed")
+	}
+}
+
+// A client is a scope like a project or an agent: its policy applies to the
+// runs it raised, comes after the agent's, and can only tighten the tenant's.
+func TestAClientIsAScopeThatCanOnlyTighten(t *testing.T) {
+	s := NewStore()
+	docs := Scope{Kind: Client, Name: "docs-app"}
+	if _, err := s.Put("acme", pol(tenantScope, func(p *Policy) { p.MaxConcurrent = 5 }), "ada", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put("acme", pol(docs, func(p *Policy) { p.MaxConcurrent = 9 }), "ada", time.Now()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("a client's policy loosened the tenant's: %v", err)
+	}
+	if _, err := s.Put("acme", pol(docs, func(p *Policy) { p.MaxConcurrent = 2 }), "ada", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Put("acme", pol(tenantScope, func(p *Policy) { p.MaxConcurrent = 1 }), "ada", time.Now()); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("the tenant was lowered below a client: %v", err)
+	}
+	if _, err := s.Put("acme", pol(lead, func(p *Policy) { p.MaxConcurrent = 1 }), "ada", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	got := s.For("acme", "", "lead", "docs-app")
+	if len(got) != 3 || got[0].Scope != lead || got[1].Scope != docs || got[2].Scope != tenantScope {
+		t.Fatalf("most specific first: %+v", got)
+	}
+	// A run no client raised falls under no client's policy.
+	if got := s.For("acme", "", "helper", ""); len(got) != 1 || got[0].Scope != tenantScope {
+		t.Fatalf("a run with no client: %+v", got)
+	}
+	if got := s.For("acme", "", "helper", "ops-app"); len(got) != 1 {
+		t.Fatalf("another client's run fell under docs-app's policy: %+v", got)
+	}
+	if list := s.List("acme"); list[len(list)-1].Scope != docs {
+		t.Fatalf("clients sort last: %+v", list)
+	}
+}
+
+// How many clients there may be is the tenant's to say and nobody else's.
+func TestOnlyTheTenantLimitsHowManyClients(t *testing.T) {
+	for name, p := range map[string]Policy{
+		"a client":         pol(Scope{Kind: Client, Name: "docs"}, func(p *Policy) { p.MaxClients = 1 }),
+		"an agent":         pol(lead, func(p *Policy) { p.MaxClientsPerSurface = 1 }),
+		"past the ceiling": pol(tenantScope, func(p *Policy) { p.MaxClients = MaxClientsCeiling + 1 }),
+		"negative":         pol(tenantScope, func(p *Policy) { p.MaxClients = -1 }),
+		"client storage":   pol(Scope{Kind: Client, Name: "docs"}, func(p *Policy) { p.MaxStorage = 1 }),
+		"client no name":   pol(Scope{Kind: Client}, func(p *Policy) { p.MaxRuns = 1 }),
+	} {
+		if err := p.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	if err := pol(tenantScope, func(p *Policy) { p.MaxClients = 3 }).Validate(); err != nil {
+		t.Fatalf("a tenant policy that only caps clients: %v", err)
 	}
 }

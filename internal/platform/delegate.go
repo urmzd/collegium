@@ -220,3 +220,25 @@ func (p *Platform) StopRun(ctx context.Context, who auth.Principal, runID string
 	}
 	return p.Runs.Get(who.Tenant, runID)
 }
+
+// stopFromSurface stops a run for a person who pressed stop where the run is
+// answering, such as a Slack session. The tenant and the client are those of
+// the client whose secret verified the request, never the request's, and a run
+// outside either does not exist to this caller. Anyone who can see the
+// surface's stop control may use it: the surface, not a console role, is the
+// authority here.
+func (p *Platform) stopFromSurface(ctx context.Context, tenant, client, surface, runID, who string) error {
+	run, err := p.Runs.Get(tenant, runID)
+	if errors.Is(err, runs.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if run.Client != client || run.Status.Terminal() {
+		return nil
+	}
+	by := surface + ":" + who
+	p.stop(ctx, runID, "Stopped by "+by, by)
+	return nil
+}

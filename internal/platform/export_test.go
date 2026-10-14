@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/urmzd/mandatum/pkg/agentrt"
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 	"github.com/urmzd/mandatum/pkg/runtime"
 )
@@ -37,4 +38,9 @@ func (p *Platform) SweepSandboxes() { p.sweepSandboxes() }
 // Age makes a conversation's files look untouched since a time.
 func (p *Platform) Age(tenant, thread string, at time.Time) error {
 	return os.Chtimes(p.sandboxDir(tenant, thread), at, at)
+}
+
+// ConnectorTools is the client actions a turn would be given.
+func (p *Platform) ConnectorTools(req runtime.Request) (agentrt.Tools, error) {
+	return p.connectorTools(req, func(payload.Action) error { return nil })
 }

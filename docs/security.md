@@ -18,12 +18,24 @@ Every caller becomes a `Principal`, and every route asks it one question:
 
 | Role | Permissions |
 |------|-------------|
-| `viewer` | `agents:read`, `runs:read`, `schedules:read`, `alerts:read`, `knowledge:read`, `evals:read`, `billing:read`, `artifacts:read` |
+| `viewer` | `agents:read`, `runs:read`, `schedules:read`, `alerts:read`, `knowledge:read`, `evals:read`, `billing:read`, `artifacts:read`, `clients:read` |
 | `operator` | viewer, plus `runs:write`, `schedules:write`, `alerts:write`, `evals:write`, `artifacts:write` |
-| `admin` | operator, plus `agents:write`, `knowledge:write`, `billing:write` |
+| `admin` | operator, plus `agents:write`, `knowledge:write`, `billing:write`, `clients:write` |
 
 Writing knowledge is an admin permission because a document an agent is grounded
-in changes what that agent says.
+in changes what that agent says. Writing clients is one because a client hands
+the workspace's agents a credential to act with outside it.
+
+A webhook from Slack or GitHub is not a `Principal`. It is authorized by the
+signing secret of the [client](clients.md) it is for, and takes its tenant from
+that client. No client secret is returned by the API or written to a log.
+
+A client may reference a secret in the server's environment instead of writing
+its value. The environment is shared by every tenant, so a reference is read
+for a tenant only if the operator listed that variable for that tenant with
+`-secret-refs`. A tenant not listed may reference nothing. The check is made
+where the secret is read, and a refusal is the same whatever the reason. See
+[clients](clients.md#which-variables-a-workspace-may-reference).
 
 A machine has no role. It is issued scopes named `collegium:<permission>`, for
 example `collegium:runs:write`. A scope without the `collegium:` prefix, or one that names

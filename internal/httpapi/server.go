@@ -31,6 +31,7 @@ import (
 	"github.com/urmzd/collegium/pkg/artifacts"
 	"github.com/urmzd/collegium/pkg/auth"
 	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/clients"
 	"github.com/urmzd/collegium/pkg/evals"
 	"github.com/urmzd/collegium/pkg/inbox"
 	"github.com/urmzd/collegium/pkg/knowledge"
@@ -60,6 +61,12 @@ type Server struct {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok\n")) })
+	// A client's own secret authorizes these routes, not a browser role. The
+	// request goes to the client whose secret verifies it, and takes its
+	// tenant from that client.
+	mux.Handle("POST /connectors/github", s.P.Webhook("github"))
+	mux.Handle("POST /connectors/slack", s.P.Webhook("slack"))
+	mux.Handle("POST /connectors/slack/commands", s.P.Webhook("slack"))
 
 	mux.HandleFunc("GET /auth/login", s.Authn.handleLogin)
 	mux.HandleFunc("GET /auth/callback", s.Authn.handleCallback)
@@ -99,6 +106,7 @@ func (s *Server) Handler() http.Handler {
 	s.preferenceRoutes(mux)
 	s.projectRoutes(mux)
 	s.billingRoutes(mux)
+	s.clientRoutes(mux)
 	mux.HandleFunc("/api/", func(w http.ResponseWriter, _ *http.Request) { fail(w, http.StatusNotFound, "no such route") })
 
 	if s.WebDir != "" {
@@ -585,11 +593,20 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 		errors.Is(err, platform.ErrProjectNotFound),
 		errors.Is(err, alerts.ErrNotFound), errors.Is(err, knowledge.ErrNotFound), errors.Is(err, evals.ErrNotFound),
 		errors.Is(err, memory.ErrNotFound), errors.Is(err, policy.ErrNotFound), errors.Is(err, inbox.ErrNotFound),
-		errors.Is(err, artifacts.ErrNotFound):
+		errors.Is(err, artifacts.ErrNotFound), errors.Is(err, clients.ErrNotFound):
 		fail(w, http.StatusNotFound, "not found")
 	case errors.Is(err, registry.ErrExists), errors.Is(err, platform.ErrScheduleExists), errors.Is(err, platform.ErrProjectExists),
 		errors.Is(err, alerts.ErrExists), errors.Is(err, knowledge.ErrExists), errors.Is(err, evals.ErrExists):
 		fail(w, http.StatusConflict, "already exists")
+	case errors.Is(err, clients.ErrExists):
+		// The message names only a client of the caller's own workspace.
+		fail(w, http.StatusConflict, err.Error())
+	case errors.Is(err, clients.ErrLimit):
+		fail(w, http.StatusTooManyRequests, err.Error())
+	case errors.Is(err, clients.ErrManaged):
+		fail(w, http.StatusConflict, "that client is configured by the server and cannot be changed here")
+	case errors.Is(err, clients.ErrInvalid):
+		fail(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, pick.ErrNoAgent):
 		fail(w, http.StatusBadRequest, "no agent matched this message and no baseline agent is set, so choose an agent")
 	case errors.Is(err, platform.ErrSettings):

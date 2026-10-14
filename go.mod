@@ -7,7 +7,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/urmzd/duraturo v0.1.1
 	github.com/urmzd/legatus v0.2.0
-	github.com/urmzd/mandatum v0.4.0
+	github.com/urmzd/mandatum v0.6.0
 	github.com/urmzd/saige v0.34.0
 	golang.org/x/oauth2 v0.37.0
 )
@@ -34,3 +34,5 @@ require (
 	golang.org/x/sync v0.24.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+require github.com/urmzd/vultus/go v0.1.0

@@ -44,8 +44,11 @@ import (
 	"github.com/urmzd/collegium/pkg/artifacts"
 	"github.com/urmzd/collegium/pkg/blob"
 	"github.com/urmzd/collegium/pkg/call"
+	"github.com/urmzd/collegium/pkg/clients"
 	"github.com/urmzd/collegium/pkg/evals"
 	"github.com/urmzd/collegium/pkg/inbox"
+	"github.com/urmzd/collegium/pkg/integrations/github"
+	"github.com/urmzd/collegium/pkg/integrations/slack"
 	"github.com/urmzd/collegium/pkg/journal"
 	"github.com/urmzd/collegium/pkg/knowledge"
 	"github.com/urmzd/collegium/pkg/memory"
@@ -61,6 +64,31 @@ var ErrForbidden = errors.New("platform: forbidden")
 // Config is what a running platform needs. Nothing here reads the environment,
 // so a test can build a second platform in the same process.
 type Config struct {
+	// Connections seats connectors the embedding program built itself, after
+	// the registry exists. Clients created through CreateClient need none.
+	Connections func(registry.Store) ([]Connection, error)
+	// Clients keeps client records, and Secrets the secret values written for
+	// them. Nil means in memory. Enabled clients already in the store are
+	// started by New.
+	Clients clients.Store
+	Secrets clients.Secrets
+	// Env reads the process's environment for an "env:NAME" secret reference.
+	// Nil resolves none.
+	Env func(name string) (string, bool)
+	// SecretRefs is which environment variables each tenant's clients may
+	// reference, by tenant. The environment belongs to the whole process, so
+	// this is the tenant boundary on it: a name is read for a tenant only if
+	// it is listed here for that tenant. It is the server's configuration and
+	// nothing in the API can change it. A tenant with no entry may reference
+	// nothing, and can still write its secrets as values.
+	SecretRefs map[string][]string
+	// SlackAPI and GitHubAPI build the API a client writes through from its
+	// token. Nil means the real one over HTTP.
+	SlackAPI  func(token string) slack.API
+	GitHubAPI func(token string) github.API
+	// ClientInterval coalesces a client's edits to its surface. Zero means
+	// the connector's default.
+	ClientInterval time.Duration
 	// Workspace is the directory agents write artifacts under. Empty takes a
 	// directory under the user's cache.
 	Workspace string
@@ -102,6 +130,8 @@ type Platform struct {
 	Usage     *usage.Ledger
 	Inbox     *inbox.Store
 	Artifacts *artifacts.Index
+	// Clients is the external clients each tenant answers through.
+	Clients clients.Store
 	// Blobs holds the bytes of published files.
 	Blobs blob.Store
 
@@ -120,6 +150,15 @@ type Platform struct {
 	queue   *dqueue.Memory
 
 	settings settings
+
+	// surfaces is one per client surface, by address scheme. The map is
+	// filled by New and never changes; what is seated on each does.
+	surfaces map[string]*surface
+	secrets  clients.Secrets
+	// clientsMu serializes creating, updating and deleting clients.
+	clientsMu sync.Mutex
+	// admitting holds runs between admission and their record, by run id.
+	admitting sync.Map
 
 	// admission serializes letting a run in. It is taken inside calls, never
 	// the other way round.
@@ -171,6 +210,36 @@ func New(cfg Config) (*Platform, error) {
 	if err := p.sinks.Register(clock); err != nil {
 		return nil, fmt.Errorf("platform: register cron: %w", err)
 	}
+	// One surface per scheme, whether or not it has clients yet: clients are
+	// created while the platform runs, and the router and the trigger loop
+	// are given their connectors once.
+	p.Clients, p.secrets = cfg.Clients, cfg.Secrets
+	if p.Clients == nil {
+		p.Clients = clients.NewMemory()
+	}
+	if p.secrets == nil {
+		p.secrets = clients.NewMemorySecrets()
+	}
+	p.surfaces = make(map[string]*surface)
+	for _, name := range clients.Surfaces() {
+		s := &surface{name: string(name), p: p}
+		if err := p.sinks.Register(s); err != nil {
+			return nil, fmt.Errorf("platform: register %s: %w", name, err)
+		}
+		p.surfaces[s.name] = s
+	}
+	if cfg.Connections != nil {
+		connections, err := cfg.Connections(p.Agents)
+		if err != nil {
+			return nil, fmt.Errorf("platform: connections: %w", err)
+		}
+		for _, connection := range connections {
+			if err := p.static(connection); err != nil {
+				return nil, err
+			}
+		}
+	}
+	p.restore()
 
 	p.deliver = router.New(p.broker, p.sinks, router.WithLogger(log))
 
@@ -218,7 +287,7 @@ func (p *Platform) executor() (runtime.Executor, error) {
 	tools := tool.NewRegistry()
 	plane := controlplane.NewMemory(inproc.NewFactory(tools, ws), metrics.Nop())
 	exec, err := runtime.NewSandbox(plane, tools, registry.NewSpecs(p.Agents),
-		runtime.WithCatalog(p.fileTools(runtime.Connectors(p.sinks))),
+		runtime.WithCatalog(p.fileTools(p.connectorTools)),
 		runtime.WithDelegator(p.attach),
 		// A run waiting on an attached run of the same agent holds one of
 		// that agent's nodes, so there are as many as there are places.
@@ -255,9 +324,20 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	if existing, err := p.Runs.Get(tag.Tenant, runID); err == nil {
 		return existing, nil
 	}
-	if err := p.admit(tag, edge); err != nil {
+	// A run id belongs to the tenant that first used it. Triggers take their
+	// ids from the outside, so another tenant offering the same one is
+	// refused rather than joined to a run that is not its own.
+	if owner, taken := p.Runs.Owner(runID); taken && owner != tag.Tenant {
+		return runs.Run{}, fmt.Errorf("%w: tag id %q cannot be used", envelope.ErrInvalid, tag.ID)
+	}
+	project, client := p.placeOf(tag, edge)
+	if err := p.admit(tag, edge, project, client); err != nil {
 		return runs.Run{}, err
 	}
+	// Accepting publishes the run's first event before the run is recorded,
+	// and delivering that event needs to know which client raised it.
+	p.admitting.Store(runID, admitted{tenant: tag.Tenant, client: client})
+	defer p.admitting.Delete(runID)
 	if err := p.deliver.Register(runID, tag.Routes()); err != nil {
 		p.Usage.Append(usage.Entry{Kind: usage.Ended, Tenant: tag.Tenant, RunID: runID, At: p.now()})
 		return runs.Run{}, fmt.Errorf("platform: register routes: %w", err)
@@ -440,6 +520,7 @@ func (p *Platform) Run(ctx context.Context) error {
 	}
 
 	loop("router", func() error { return p.deliver.Run(ctx) })
+	loop("connector flush", func() error { return p.flushConnections(ctx) })
 	loop("sandbox sweep", func() error {
 		tick := time.NewTicker(time.Hour)
 		defer tick.Stop()

@@ -56,6 +56,12 @@ const (
 	// ArtifactsWrite is deleting published files. Publishing is something an
 	// agent does in a run, which runs:write already covers.
 	ArtifactsWrite Permission = "artifacts:write"
+	// ClientsRead is seeing the workspace's external clients: which Slack
+	// apps and GitHub installations it answers through, never their secrets.
+	ClientsRead Permission = "clients:read"
+	// ClientsWrite is creating, changing and removing them, which is giving
+	// the workspace's agents a credential to act with.
+	ClientsWrite Permission = "clients:write"
 )
 
 // Permissions lists every permission, for validating configured scopes.
@@ -64,6 +70,7 @@ func Permissions() []Permission {
 		AgentsRead, AgentsWrite, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
 		AlertsRead, AlertsWrite, KnowledgeRead, KnowledgeWrite, EvalsRead, EvalsWrite,
 		BillingRead, BillingWrite, ArtifactsRead, ArtifactsWrite,
+		ClientsRead, ClientsWrite,
 	}
 }
 
@@ -82,11 +89,11 @@ const (
 )
 
 var rolePermissions = map[Role][]Permission{
-	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead, BillingRead, ArtifactsRead},
+	Viewer: {AgentsRead, RunsRead, SchedulesRead, AlertsRead, KnowledgeRead, EvalsRead, BillingRead, ArtifactsRead, ClientsRead},
 	Operator: {
 		AgentsRead, RunsRead, RunsWrite, SchedulesRead, SchedulesWrite,
 		AlertsRead, AlertsWrite, KnowledgeRead, EvalsRead, EvalsWrite,
-		BillingRead, ArtifactsRead, ArtifactsWrite,
+		BillingRead, ArtifactsRead, ArtifactsWrite, ClientsRead,
 	},
 	Admin: Permissions(),
 }

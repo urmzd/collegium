@@ -1,0 +1,26 @@
+{
+  "name": "collegium-trial",
+  "url": "https://github.com/urmzd/collegium",
+  "description": "Evidence-backed PR reviews and issue conversations powered by collegium.",
+  "public": false,
+  "hook_attributes": {
+    "url": "https://YOUR_FORWARDER/connectors/github",
+    "active": true
+  },
+  "redirect_url": "http://127.0.0.1:8399/callback",
+  "default_permissions": {
+    "issues": "write",
+    "pull_requests": "write",
+    "checks": "write",
+    "contents": "read",
+    "metadata": "read",
+    "actions": "read"
+  },
+  "default_events": [
+    "issues",
+    "issue_comment",
+    "pull_request",
+    "pull_request_review",
+    "pull_request_review_comment"
+  ]
+}

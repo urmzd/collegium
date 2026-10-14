@@ -1,6 +1,7 @@
 import { type FormEvent, useRef, useState } from "react";
 import { ApiError, api, type Me, type Preferences, type Revision, type Settings as Workspace } from "./api.ts";
 import { BillingSettings } from "./Billing.tsx";
+import { ClientSettings } from "./Clients.tsx";
 import { agentOptions, button, card, field, Label, Menu, Problem, primary, Segmented, Switch } from "./ui.tsx";
 
 type Section = "profile" | "appearance" | "workspace" | "limits" | "connections" | "access";
@@ -361,24 +362,7 @@ export function Settings({
             />
           )}
 
-          {section === "connections" && (
-            <>
-              <header>
-                <h1 className="text-aui-xl font-semibold text-aui-fg">Connections</h1>
-                <p className="text-aui-sm text-aui-muted">
-                  Where agents will reach outside systems: MCP servers, Slack, Jira, email, and accounts you connect with
-                  OAuth.
-                </p>
-              </header>
-              <section className={`${card} flex flex-col gap-2`}>
-                <p className="text-aui-sm text-aui-fg">Nothing can be connected yet.</p>
-                <p className="text-aui-sm text-aui-muted">
-                  A connection holds a credential, and this server keeps everything in memory. Connections wait for a
-                  store that encrypts credentials and survives a restart.
-                </p>
-              </section>
-            </>
-          )}
+          {section === "connections" && <ClientSettings canWrite={me.permissions.includes("clients:write")} />}
 
           {section === "access" && (
             <>

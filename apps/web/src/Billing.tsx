@@ -6,6 +6,7 @@ const kindWord: Record<PolicyScope["kind"], string> = {
   tenant: "Workspace",
   project: "Project",
   agent: "Agent",
+  client: "Client",
 };
 const same = (a: PolicyScope, b: PolicyScope) => a.kind === b.kind && (a.name ?? "") === (b.name ?? "");
 const keyOf = (s: PolicyScope) => `${s.kind}:${s.name ?? ""}`;

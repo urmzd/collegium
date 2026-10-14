@@ -12,6 +12,7 @@ var everything = []string{
 	"collegium:schedules:read", "collegium:schedules:write", "collegium:alerts:read", "collegium:alerts:write",
 	"collegium:knowledge:read", "collegium:knowledge:write", "collegium:evals:read", "collegium:evals:write",
 	"collegium:billing:read", "collegium:billing:write", "collegium:artifacts:read", "collegium:artifacts:write",
+	"collegium:clients:read", "collegium:clients:write",
 }
 
 func TestObservabilityIsConfinedToATenant(t *testing.T) {
