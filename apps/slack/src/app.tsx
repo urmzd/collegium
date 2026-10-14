@@ -164,6 +164,31 @@ class Recent<V> extends Map<string, V> {
 // vultus: MessagePartView's budget part needs a raise control that takes an amount (not only
 // fixed `raiseTo` buttons) and an Acknowledge button, and render-slack must drop an empty actions
 // block. Until then a limit is read-only here.
+/**
+ * Text a person asked with, made safe to repeat as the app. The app posts it
+ * as itself, so a `<!channel>`, `<!here>`, `<!everyone>` or `<!subteam^…>` it
+ * passed through would notify everyone with the app's rights, and a
+ * `<url|label>` would show a link under a label the person chose. Only a
+ * person (`<@U…>`) or channel (`<#C…>`) reference is kept; everything else is
+ * shown as typed. Slack sends command text entity-encoded and form values raw,
+ * so the text is decoded first and then encoded once.
+ */
+export function echoed(text: string): string {
+  const raw = text.replace(/&lt;|&gt;|&amp;/g, (e) =>
+    e === "&lt;" ? "<" : e === "&gt;" ? ">" : "&",
+  );
+  const kept = /<@[UW][A-Z0-9]+(?:\|[^<>]*)?>|<#C[A-Z0-9]+(?:\|[^<>]*)?>/g;
+  const encode = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  let out = "";
+  let at = 0;
+  for (const m of raw.matchAll(kept)) {
+    out += encode(raw.slice(at, m.index)) + m[0];
+    at = (m.index ?? 0) + m[0].length;
+  }
+  return out + encode(raw.slice(at));
+}
+
 export function forSlack(message: PlatformMessage): PlatformMessage {
   return {
     ...message,
@@ -960,7 +985,7 @@ export class App {
         channel: where.channel,
         // vultus: needs a component for the asking message itself, such as RequestView({by, text}),
         // which the web shows as the user's bubble. Until then it is the person and their words.
-        text: `<@${where.user}>: ${text}`,
+        text: `<@${where.user}>: ${echoed(text)}`,
       });
     } catch (e) {
       const away = e instanceof SlackError && /not_in_channel|channel_not_found/.test(e.code);

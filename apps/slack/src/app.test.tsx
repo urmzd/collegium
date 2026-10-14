@@ -3,7 +3,7 @@ import { test } from "node:test";
 import { fromServer } from "@collegium/adapter";
 import { defaultCopy, MessageView } from "@vultus/components";
 import { renderToSlack } from "@vultus/render-slack";
-import { forSlack } from "./app.tsx";
+import { echoed, forSlack } from "./app.tsx";
 import { CollegiumError } from "./collegium.ts";
 import {
   alertMail,
@@ -1150,3 +1150,47 @@ test(
     assert.deepEqual(failed, []);
   },
 );
+
+test("text the app repeats as itself can mention a person or channel but never notify everyone", () => {
+  for (const ping of [
+    "<!channel>",
+    "<!here>",
+    "<!everyone>",
+    "<!subteam^S0123ABC|@oncall>",
+    "<!date^1^x|y>",
+  ]) {
+    const out = echoed(`hi ${ping} there`);
+    assert.ok(!out.includes("<!"), `${ping} passed through as ${out}`);
+  }
+  // A form value arrives raw, command text entity-encoded: both end up the same.
+  assert.equal(echoed("<!channel> deploy"), "&lt;!channel&gt; deploy");
+  assert.equal(echoed("&lt;!channel&gt; deploy"), "&lt;!channel&gt; deploy");
+  assert.equal(echoed("<https://evil.example|bank>"), "&lt;https://evil.example|bank&gt;");
+  assert.equal(
+    echoed("ask <@U0ABCDEF> in <#C0ABCDEF|ops> & <#C0ABCDEF>"),
+    "ask <@U0ABCDEF> in <#C0ABCDEF|ops> &amp; <#C0ABCDEF>",
+  );
+  assert.equal(echoed("a < b > c"), "a &lt; b &gt; c");
+});
+
+test("asking from the shortcut form cannot make the app notify a whole channel", async () => {
+  const w = world();
+  await deliver(
+    w,
+    interactive({
+      type: "view_submission",
+      view: {
+        callback_id: "aui_form",
+        private_metadata: '{"kind":"ask"}',
+        state: { values: { text: { value: { value: "<!channel> what changed?" } } } },
+      },
+    }),
+  );
+  const root = w.slack.of("chat.postMessage")[0];
+  assert.ok(root, "the question was posted");
+  assert.ok(!String(root?.text).includes("<!channel>"), String(root?.text));
+  // End the run, or the app keeps following it and the test never finishes.
+  await emit(w, "lifecycle.accepted");
+  await emit(w, "lifecycle.completed", { text: "Nothing yet." });
+  await w.app.idle();
+});
