@@ -1,5 +1,43 @@
 # Slack agent delivery
 
+## Two ways to answer in Slack
+
+| | Webhook connector | Slack app |
+|---|---|---|
+| Where | Go, in `collegium serve` (`pkg/integrations/slack`) | TypeScript, `apps/slack`, a separate process |
+| How Slack reaches it | Signed webhooks to a public URL | Socket Mode, no public URL |
+| How it reaches collegium | In process | The HTTP API, as a machine |
+| A run looks like | One plain message per run, edited with `chat.update` | vultus components: native streaming, plans, tool steps, failures with Retry, files |
+| Agent session status and the stop button | Yes | Yes |
+| Code channel slash commands | Yes | No |
+| `/agent`, shortcuts, Home tab | No | Yes, from vultus's sandbox manifest |
+| Inbox items about a run | No | In the run's thread, and on Home |
+| Several apps per workspace, as [clients](clients.md) | Yes: tenant, limits and allow-list come from the client | Reads one client's default agent and allow-list. Its runs are not yet recorded as the client's, see below |
+| Who asked | Recorded on the run | Not recorded yet: the API takes no actor |
+
+Use the connector for code channels, for several apps per workspace, and where
+a public URL is fine. Use the Slack app for the console's experience in Slack,
+or where nothing may listen on a public address. Do not point both at the same
+Slack app: both would answer.
+
+The rest of this page describes the connector. The app is described in its
+[README](../apps/slack/README.md).
+
+## What the API lacks for the Slack app
+
+The app works around each of these and says where in its README.
+
+| Missing | Effect today | Proposal |
+|---------|--------------|----------|
+| `actor` on `POST /api/runs` | Runs are recorded as the app's machine, not the Slack person | Accept `actor: {id, display}` from a machine holding a new `runs:act-for` permission, recorded beside the machine |
+| `client` on `POST /api/runs`, or a machine bound to a client | The client's run limits and allow-list are not applied by the platform | Bind a machine credential to one client (a `client` claim, or a `client_id` on the token mapped in the client record) so the platform places its runs as it places webhook runs |
+| `metadata` on `POST /api/runs` | The Slack team, channel and thread a run answers are not on the run; the app derives them from the run id instead | Accept a bounded `metadata` map (string keys and values, a few hundred bytes) and return it on the run, so a surface can find its own place without encoding it in the idempotency key |
+| A picker that knows a client's allow-list | A client with a list and no default answers nothing | `GET /api/pick?client=` and the same rule in `POST /api/runs` |
+| The run a retry started, in the resolve response | Retry from Slack starts its own run and acknowledges the inbox part | Return `{message, run}` from `POST /api/inbox/{id}/parts/{part}/resolve` |
+| A stream of inbox notices alone | The app subscribes to a topic no agent can have | `GET /api/inbox/events` |
+| A route for feedback | A rating is written to the app's log | `POST /api/runs/{id}/feedback` |
+| Approvals and questions a run waits on | Never raised, so never shown | The parked-run work in [architecture](architecture.md#status) |
+
 The Slack connector accepts signed mentions, direct messages and code channel
 slash commands. Responses use one message per run, edited as events arrive.
 
@@ -151,8 +189,8 @@ are returned, so the router retries them with its bounded backoff.
 - **Unmentioned messages in a code channel.** Only mentions and commands raise
   runs there; `message.session` is not handled.
 - **Session titles and renames** are left to Slack and its users.
-- **Native streaming.** Answers are edited with `chat.update`, not streamed
-  with `chat.startStream`.
+- **Native streaming.** The connector edits answers with `chat.update`. The
+  [Slack app](../apps/slack/README.md) streams them.
 - Command registration, lifecycle replay cursors and the runs a session holds
   are bounded, in memory and per client, like the sink's message handles. A
   restart forgets them, and so does changing the client.

@@ -1,0 +1,3 @@
+# Settings only: this app installs on its own, like apps/web.
+allowBuilds:
+  esbuild: true

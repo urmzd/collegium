@@ -26,6 +26,7 @@
 - Apply tenant permissions, depth and fan-out limits, run admission policies and usage accounting.
 - Search knowledge, manage project memory and inspect alerts and analytics in the web console.
 - Connect GitHub and Slack through signed webhook ingress and tenant-bound connector capabilities.
+- Answer in Slack with the console's own components through a Socket Mode app that streams natively.
 
 **Early development:** platform records are in memory. Spend limits are recorded but not enforced. General run approvals, local accounts and per-project access are unfinished. GitHub and Slack integrations have simulated-API coverage; see the [integration trial guide](docs/integrations.md) and [status table](docs/architecture.md#status) for validation boundaries.
 
@@ -47,9 +48,8 @@ git clone https://github.com/urmzd/vultus.git
 git clone https://github.com/urmzd/collegium.git
 cd collegium
 go mod download
-cd apps/web
-pnpm install
-cd ../..
+(cd packages/adapter && pnpm install)
+(cd apps/web && pnpm install)
 ```
 
 A workspace answers through one or more [clients](docs/clients.md): a Slack app
@@ -140,6 +140,8 @@ generated from it. See [the API guide](docs/api.md).
 | Format, lint and test | `make check` |
 | Test with race detection | `make test` |
 | Web typecheck and tests | `cd apps/web && pnpm typecheck && pnpm test` |
+| Shared adapter typecheck and tests | `cd packages/adapter && pnpm typecheck && pnpm test` |
+| Slack app lint, typecheck and tests | `cd apps/slack && pnpm exec biome check && pnpm typecheck && pnpm test` |
 | Regenerate the TypeScript client from the spec | `make client` |
 | Client typecheck and tests | `make client-check` |
 | Lint the API spec | `make spec-lint` |

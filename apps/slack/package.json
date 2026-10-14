@@ -1,0 +1,33 @@
+{
+  "name": "@collegium/slack",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Socket Mode Slack app: collegium runs rendered with vultus, streamed natively, with a stop button and an inbox.",
+  "scripts": {
+    "start": "tsx src/main.ts",
+    "check": "biome check",
+    "fmt": "biome check --write",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/*.test.ts src/*.test.tsx",
+    "test:server": "COLLEGIUM_SERVER_TEST=1 node --import tsx --test src/collegium.server.test.ts",
+    "validate": "SLACK_VALIDATE=1 node --import tsx --test src/app.test.tsx"
+  },
+  "dependencies": {
+    "@collegium/adapter": "link:../../packages/adapter",
+    "@vultus/components": "link:../../../vultus/packages/components",
+    "@vultus/core": "link:../../../vultus/packages/core",
+    "@vultus/render-slack": "link:../../../vultus/packages/render-slack",
+    "react": "link:../../../vultus/node_modules/react",
+    "tsx": "^4.23.15"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.2.4",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vultus/render-web": "link:../../../vultus/packages/render-web",
+    "react-dom": "link:../../../vultus/node_modules/react-dom",
+    "typescript": "^6.0.0"
+  }
+}

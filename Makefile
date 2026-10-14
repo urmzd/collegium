@@ -49,6 +49,7 @@ dev-signin: build
 
 # The web console, proxying /api and /auth to the server from `make dev`.
 web:
+	cd packages/adapter && pnpm install
 	cd apps/web && pnpm install && pnpm dev
 
 # Regenerate the TypeScript client from the API contract. The output under
