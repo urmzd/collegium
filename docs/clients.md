@@ -73,8 +73,9 @@ Two workspaces may each register the same identity. The request goes to
 whichever holds the secret that verifies it, and if both do, to the older.
 Refusing the second would tell one workspace what another has.
 
-A run id belongs to the workspace that first used it. An event id replayed
-through another workspace's client is refused, not joined to the first run.
+A run id is the runtime's, derived from the workspace and the event id
+together. The same event id through another workspace's client is a run of
+that workspace's own, with its own id, and never joins or touches the first.
 
 ## Secrets
 

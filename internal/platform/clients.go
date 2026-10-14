@@ -295,6 +295,7 @@ func (p *Platform) dial(c clients.Client, secrets resolved) (*seat, error) {
 			// A fix is authorized by a grant signed with the client's own
 			// webhook secret, so one client's grant is worth nothing to another.
 			MutationSecret: []byte(secrets.signing),
+			Tenant:         c.Tenant,
 		}
 		if g := c.GitHub; g != nil {
 			cfg.AutoLabels, cfg.Checks, cfg.Guides, cfg.Mutations, cfg.ReadRepositories = g.AutoLabels, g.Checks, g.Guides, g.Mutations, g.ReadRepositories
