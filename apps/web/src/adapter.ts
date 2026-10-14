@@ -297,6 +297,15 @@ export function adapter(opts: { /** An agent's colour, 0 to 360, so a call to it
         out.push({ type: "turn.completed" });
         return out;
       }
+      case "lifecycle.stopped": {
+        // Asked to stop and wrapped up. Final, and not a failure: what it had
+        // said stays, as the partial answer.
+        const out: TurnEvent[] = [];
+        const text = body<Lifecycle>(e).text;
+        if (!streamed && text) out.push({ type: "text.delta", text });
+        out.push({ type: "turn.stopped" });
+        return out;
+      }
       case "lifecycle.failed": {
         const l = body<Lifecycle>(e);
         // A failed attempt may still be retried by the durable engine. Only a

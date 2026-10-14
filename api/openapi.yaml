@@ -548,18 +548,32 @@ paths:
     post:
       operationId: stopRun
       tags: [runs]
-      summary: Stop a run and everything attached to it
+      summary: Ask a run, and everything attached to it, to stop
       description: |
-        Runs it delegated keep going. Stopping a run that has ended changes
-        nothing and answers 200 with the run as it stands. A model call in
-        flight is not interrupted: the run starts nothing more and its answer
-        is discarded.
+        The request goes to the runtime, which cancels the model call in
+        flight and ends the run with `lifecycle.stopped`. Runs attached to it
+        are asked too. Runs it delegated keep going.
+
+        It does not wait for the run. From the moment it is asked, the run is
+        `stopping` and starts no further calls. It then ends `stopped`, with
+        `answer` holding what it had said and `cause` why, or `completed` or
+        `failed` if its turn finished before the request took effect. A run is
+        never reported stopped and then completed.
+
+        Asking a run that has ended changes nothing and answers 200 with the
+        run as it stands, so asking twice is safe. Another workspace's run
+        answers 404.
       x-permission: runs:write
       parameters:
         - {$ref: "#/components/parameters/RunID"}
       responses:
         "200":
-          description: The run as it now stands.
+          description: The run has ended, and is returned as it stands.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "202":
+          description: The run was asked to stop and has not ended yet. `stopping` is true.
           content:
             application/json:
               schema: {$ref: "#/components/schemas/Run"}
@@ -567,6 +581,14 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {$ref: "#/components/responses/NotFound"}
         "500": {$ref: "#/components/responses/ServerError"}
+        "503":
+          description: |
+            The runtime cannot interrupt a run. The run is still marked
+            `stopping`, so it starts nothing more, and it ends as its own
+            events say.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorBody"}
   /api/runs/{id}/trace:
     get:
       operationId: getRunTrace
@@ -2342,7 +2364,7 @@ components:
       name: id
       in: path
       required: true
-      description: The run's id.
+      description: The run's id, as the platform returned it. It is derived from the workspace and the trigger's id, `r` and 32 hex digits, and is not the trigger's id.
       schema: {type: string}
     ScheduleName:
       name: name
@@ -2703,7 +2725,9 @@ components:
       type: object
       required: [id, tenant, agent, rev, origin, text, root, depth, thread, lease, granted, calls, status, created_at, updated_at]
       properties:
-        id: {type: string}
+        id:
+          description: The run's id, `r` and 32 hex digits, derived from the workspace and the trigger's id.
+          type: string
         tenant: {type: string}
         agent: {type: string}
         rev:
@@ -2753,15 +2777,25 @@ components:
         calls: {type: integer}
         status: {$ref: "#/components/schemas/RunStatus"}
         answer:
-          description: The final text of a completed run.
+          description: |
+            The final text of a completed run. On a stopped run it is the
+            partial answer, what the agent had said when it stopped, which may
+            be empty. It is never the whole answer when `status` is `stopped`.
           type: string
         error: {type: string}
         reason:
           description: What a parked run is waiting for.
           type: string
         cause:
-          description: Why a stopped run was stopped.
+          description: Why a stopped run was stopped, as the runtime reported it, such as `Stopped by ada`.
           type: string
+        stopping:
+          description: The run was asked to stop and has not ended yet. It starts no further calls. Absent once the run has ended, however it ended.
+          type: boolean
+        stop_requested_at:
+          description: When the run was first asked to stop. Absent once the run has ended.
+          type: string
+          format: date-time
         finishing:
           description: The run has its answer and is held open by attached runs still working.
           type: boolean
@@ -3170,22 +3204,26 @@ components:
 
     AnalyticsGroup:
       type: object
-      required: [name, runs, completed, failed, active, p50_ms, p95_ms]
+      required: [name, runs, completed, failed, stopped, active, p50_ms, p95_ms]
       properties:
         name: {type: string}
         runs: {type: integer}
         completed: {type: integer}
         failed: {type: integer}
+        stopped:
+          description: Runs that were stopped. They are neither completed, failed nor active.
+          type: integer
         active: {type: integer}
         p50_ms: {type: integer, format: int64}
         p95_ms: {type: integer, format: int64}
     AnalyticsBucket:
       type: object
-      required: [start, completed, failed, active]
+      required: [start, completed, failed, stopped, active]
       properties:
         start: {type: string, format: date-time}
         completed: {type: integer}
         failed: {type: integer}
+        stopped: {type: integer}
         active: {type: integer}
     Summary:
       description: Run statistics over a window.
@@ -3705,7 +3743,9 @@ components:
         What an event is. Kinds are dotted, so a filter can select a family
         (`delta`) or one member (`delta.citation`). The set is open in the
         runtime: a reader should pass over a kind it does not know. The
-        `control.*` kinds are defined and not published today.
+        `control.*` kinds here are defined and not published today. A request
+        addressed to a run, such as `control.stop`, is the runtime's traffic
+        and never appears on this API.
       type: string
       enum:
         - delta.text
@@ -3719,6 +3759,7 @@ components:
         - lifecycle.resumed
         - lifecycle.completed
         - lifecycle.failed
+        - lifecycle.stopped
         - action.taken
         - control.created
         - control.revised
@@ -3805,6 +3846,24 @@ components:
         text:
           description: The final answer, on `lifecycle.completed`.
           type: string
+    StoppedPayload:
+      description: |
+        The body of `lifecycle.stopped`: the run was asked to stop and wrapped
+        its turn up. It is final. `text` is what the agent had said, which may
+        be empty.
+      type: object
+      properties:
+        attempt: {type: integer}
+        rev: {type: integer}
+        reason:
+          description: Why it was stopped, in the words of whoever asked.
+          type: string
+        by:
+          description: Who asked, such as a subject or `slack:<user id>`.
+          type: string
+        text:
+          description: The partial answer.
+          type: string
     ActionPayload:
       description: |
         A tool acted on something: a comment posted, a file published. When
@@ -3867,6 +3926,7 @@ components:
         - $ref: "#/components/schemas/RunResumedEvent"
         - $ref: "#/components/schemas/RunCompletedEvent"
         - $ref: "#/components/schemas/RunFailedEvent"
+        - $ref: "#/components/schemas/RunStoppedEvent"
         - $ref: "#/components/schemas/ActionTakenEvent"
         - $ref: "#/components/schemas/AgentCreatedEvent"
         - $ref: "#/components/schemas/AgentRevisedEvent"
@@ -3885,6 +3945,7 @@ components:
           lifecycle.resumed: "#/components/schemas/RunResumedEvent"
           lifecycle.completed: "#/components/schemas/RunCompletedEvent"
           lifecycle.failed: "#/components/schemas/RunFailedEvent"
+          lifecycle.stopped: "#/components/schemas/RunStoppedEvent"
           action.taken: "#/components/schemas/ActionTakenEvent"
           control.created: "#/components/schemas/AgentCreatedEvent"
           control.revised: "#/components/schemas/AgentRevisedEvent"
@@ -4032,6 +4093,19 @@ components:
               contentEncoding: base64
               contentMediaType: application/json
               contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    RunStoppedEvent:
+      description: The run was stopped on request, with what it had said. Final.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.stopped}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/StoppedPayload"}
     ActionTakenEvent:
       description: A tool acted on something.
       allOf:
@@ -4095,6 +4169,7 @@ components:
         - $ref: "#/components/schemas/ManifestRunResumedEvent"
         - $ref: "#/components/schemas/ManifestRunCompletedEvent"
         - $ref: "#/components/schemas/ManifestRunFailedEvent"
+        - $ref: "#/components/schemas/ManifestRunStoppedEvent"
         - $ref: "#/components/schemas/ManifestActionTakenEvent"
         - $ref: "#/components/schemas/ManifestAgentCreatedEvent"
         - $ref: "#/components/schemas/ManifestAgentRevisedEvent"
@@ -4113,6 +4188,7 @@ components:
           lifecycle.resumed: "#/components/schemas/ManifestRunResumedEvent"
           lifecycle.completed: "#/components/schemas/ManifestRunCompletedEvent"
           lifecycle.failed: "#/components/schemas/ManifestRunFailedEvent"
+          lifecycle.stopped: "#/components/schemas/ManifestRunStoppedEvent"
           action.taken: "#/components/schemas/ManifestActionTakenEvent"
           control.created: "#/components/schemas/ManifestAgentCreatedEvent"
           control.revised: "#/components/schemas/ManifestAgentRevisedEvent"
@@ -4205,6 +4281,14 @@ components:
           properties:
             kind: {type: string, const: lifecycle.failed}
             body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestRunStoppedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.stopped}
+            body: {$ref: "#/components/schemas/StoppedPayload"}
     ManifestActionTakenEvent:
       allOf:
         - $ref: "#/components/schemas/ManifestEventBase"
@@ -4245,7 +4329,8 @@ components:
         run: {$ref: "#/components/schemas/Run"}
         state:
           type: string
-          enum: [queued, running, waiting, failed, stopped, done]
+          description: Where the run stands. `stopping` is a run asked to stop that has not ended yet.
+          enum: [queued, running, waiting, stopping, failed, stopped, done]
         cause:
           description: Why a failed run failed or a stopped run was stopped, in one line.
           type: string

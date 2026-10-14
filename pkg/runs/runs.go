@@ -191,9 +191,6 @@ type Run struct {
 	// tag is what the run was accepted with. A call from this run is built
 	// from it.
 	tag envelope.Tag
-	// asked is why the run was asked to stop, kept for the cause until the
-	// runtime confirms it.
-	asked string
 }
 
 // Tag returns the tag the run was accepted with.
@@ -334,7 +331,7 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 		// open for what is attached to it: those are stopped with it.
 		stopped, _ := payload.Decode[payload.Stopped](e)
 		r.Answer, r.Status, r.Finishing, r.Reason = stopped.Text, Stopped, false, ""
-		r.Cause = causeOf(stopped.Reason, r.asked, stopped.By)
+		r.Cause = causeOf(stopped.Reason, stopped.By)
 	}
 	if r.Status.Terminal() {
 		r.Stopping = false
@@ -342,15 +339,11 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 	return *r, r.Status.Terminal()
 }
 
-// causeOf says why a run stopped. The reason on the runtime's event is the
-// request the run actually honoured, so it comes first. The request recorded
-// here covers an event that carries none.
-func causeOf(reason, asked, by string) string {
+// causeOf says why a run stopped, from the request the runtime honoured.
+func causeOf(reason, by string) string {
 	switch {
 	case reason != "":
 		return reason
-	case asked != "":
-		return asked
 	case by != "":
 		return "Stopped by " + by
 	}
@@ -433,12 +426,12 @@ func (x *Index) Settle(runID string, at time.Time) (Run, bool) {
 	return *r, true
 }
 
-// AskStop records that a run was asked to stop, and why. From now on the run
+// AskStop records that a run was asked to stop. From now on the run
 // is stopping: it can start no further calls, and the runtime decides how it
 // ends. It returns the run as it stands and false for a run that has ended or
 // that this index does not hold. Asking again keeps the first request, as the
 // runtime does.
-func (x *Index) AskStop(runID, cause string, at time.Time) (Run, bool) {
+func (x *Index) AskStop(runID string, at time.Time) (Run, bool) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	r, ok := x.runs[runID]
@@ -446,16 +439,26 @@ func (x *Index) AskStop(runID, cause string, at time.Time) (Run, bool) {
 		return Run{}, false
 	}
 	if !r.Stopping {
-		r.Stopping, r.StopRequestedAt, r.asked, r.UpdatedAt = true, at, cause, at
+		r.Stopping, r.StopRequestedAt, r.UpdatedAt = true, at, at
 	}
 	return *r, true
+}
+
+// Unask clears a request the runtime did not take: the run had already ended
+// in the ledger, and its own terminal event says how.
+func (x *Index) Unask(runID string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if r, ok := x.runs[runID]; ok && !r.Status.Terminal() && r.Stopping {
+		r.Stopping, r.StopRequestedAt = false, time.Time{}
+	}
 }
 
 // Stop ends a run as stopped from a source other than its own events: a run
 // whose turn is already over and that only this platform holds open, or one
 // the ledger says ended stopped with no final event. answer, when given, is
-// what the run had said. cause, when empty, is the reason it was asked to
-// stop. It returns the run and whether this call is what ended it.
+// what the run had said, and cause is why it stopped. It returns the run and
+// whether this call is what ended it.
 func (x *Index) Stop(runID, answer, cause string, at time.Time) (Run, bool) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
@@ -466,7 +469,7 @@ func (x *Index) Stop(runID, answer, cause string, at time.Time) (Run, bool) {
 	if answer != "" {
 		r.Answer = answer
 	}
-	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = Stopped, causeOf(cause, r.asked, ""), at, false, "", false
+	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = Stopped, causeOf(cause, ""), at, false, "", false
 	return *r, true
 }
 

@@ -130,12 +130,24 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 		select {
 		case <-ctx.Done():
 			// The runtime cancels a delegation when the turn that made it
-			// is stopped, and leaves the run it started to this host. A
-			// caller that was asked to stop takes its attached run along.
-			// One whose worker merely went away does not: its next attempt
-			// makes the same call and joins the same run.
-			if caller, err := p.Runs.Get(parent.Tenant, parent.RunID); err == nil && (caller.Stopping || caller.Status == runs.Stopped) {
-				_ = p.requestStop(context.WithoutCancel(ctx), child.Tenant, child.ID, attachedCause("stopped", caller), "system")
+			// is stopped, says so in the context's cause, and leaves the run
+			// it started to this host. A stopped caller takes its attached
+			// run along, in the same words. One whose worker merely went
+			// away does not: its next attempt makes the same call and joins
+			// the same run.
+			if cause := context.Cause(ctx); errors.Is(cause, runtime.ErrStopped) {
+				by := "system"
+				var stopped *runtime.StoppedError
+				if errors.As(cause, &stopped) && stopped.By != "" {
+					by = stopped.By
+				}
+				caller, _ := p.Runs.Get(parent.Tenant, parent.RunID)
+				if caller.ID == "" {
+					caller = runs.Run{ID: parent.RunID, Agent: parent.Agent()}
+				}
+				if err := p.requestStop(context.WithoutCancel(ctx), child.Tenant, child.ID, attachedCause("stopped", caller), by); err != nil {
+					p.log.Warn("platform: an attached run could not be asked to stop", "tenant", child.Tenant, "run", child.ID, "error", err)
+				}
 			}
 			return "", ctx.Err()
 		case <-tick.C:
@@ -245,7 +257,7 @@ func (p *Platform) requestStop(ctx context.Context, tenant, runID, cause, by str
 	p.calls.Lock()
 	for queue := []ask{{runID, cause}}; len(queue) > 0; queue = queue[1:] {
 		next := queue[0]
-		run, ok := p.Runs.AskStop(next.id, next.cause, p.now())
+		run, ok := p.Runs.AskStop(next.id, p.now())
 		if !ok || run.Tenant != tenant {
 			continue
 		}
@@ -264,6 +276,14 @@ func (p *Platform) requestStop(ctx context.Context, tenant, runID, cause, by str
 		}
 		if err != nil && failed == nil {
 			failed = err
+		}
+		// Stop says nothing about the run, by design. The ledger does: a
+		// run it holds no request for has already ended there, and its own
+		// terminal event is on its way. It is not reported as stopping.
+		if err == nil && p.asked != nil {
+			if _, held, aerr := p.asked(ctx, run.Tenant, run.ID); aerr == nil && !held {
+				p.Runs.Unask(run.ID)
+			}
 		}
 		for _, child := range p.Runs.AttachedTo(run.ID) {
 			queue = append(queue, ask{child.ID, attachedCause("stopped", run)})

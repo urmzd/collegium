@@ -28,6 +28,7 @@ import (
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 	"github.com/urmzd/mandatum/pkg/agentspec"
 	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/runtime"
 	"go.yaml.in/yaml/v4"
 
 	"github.com/urmzd/collegium/internal/platform"
@@ -635,7 +636,7 @@ func TestSpecSchemasHaveTheFieldsTheGoTypesMarshal(t *testing.T) {
 	declared := []string{
 		string(envelope.KindText), string(envelope.KindThinking), string(envelope.KindToolCall), string(envelope.KindToolDone),
 		string(envelope.KindCitation), string(envelope.KindAccepted), string(envelope.KindStarted), string(envelope.KindParked),
-		string(envelope.KindResumed), string(envelope.KindCompleted), string(envelope.KindFailed), string(envelope.KindActionTaken),
+		string(envelope.KindResumed), string(envelope.KindCompleted), string(envelope.KindFailed), string(envelope.KindStopped), string(envelope.KindActionTaken),
 		string(envelope.KindAgentCreated), string(envelope.KindAgentRevised), string(envelope.KindAgentDeleted),
 	}
 	if !slices.Equal(kinds, declared) {
@@ -845,7 +846,7 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	first := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"Say hello"}`, http.StatusAccepted, "Idempotency-Key", "slack-evt-1")
 	again := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"Say hello"}`, http.StatusAccepted, "Idempotency-Key", "slack-evt-1")
 	id := first.str("id")
-	if id != again.str("id") || id != "api-svc-acme-slack-evt-1" {
+	if id != again.str("id") || id != runtime.RunID("acme", "api-svc-acme-slack-evt-1") {
 		t.Errorf("the same key gave runs %q and %q", id, again.str("id"))
 	}
 	if actor := obj(first.field("actor")); actor["bot"] != true {
@@ -874,9 +875,29 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	if stopped.str("status") != "completed" {
 		t.Errorf("stopping a run that had ended changed it: %s", stopped.raw)
 	}
-	live := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"Stop me"}`, http.StatusAccepted)
-	c.call(acme, "POST", "/api/runs/{id}/stop", "/api/runs/"+live.str("id")+"/stop", "", http.StatusOK)
-	c.settled(acme, live.str("id"))
+	// A run still working is asked and answered 202 while it stops. The
+	// offline model can finish first, so a run that has already ended (200)
+	// is tried again with a new one.
+	asked := false
+	for range 20 {
+		live := c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"Stop me"}`, http.StatusAccepted)
+		out, ok := c.attempt(acme, "POST", "/api/runs/{id}/stop", "/api/runs/"+live.str("id")+"/stop", "", http.StatusAccepted, false)
+		end := c.settled(acme, live.str("id"))
+		if !ok {
+			continue
+		}
+		asked = true
+		if out.field("stopping") != true {
+			t.Errorf("a run asked to stop is not stopping: %s", out.raw)
+		}
+		if s := end.str("status"); s != "stopped" && s != "completed" {
+			t.Errorf("a run asked to stop ended %s", end.raw)
+		}
+		break
+	}
+	if !asked {
+		t.Error("no stop found a run still working")
+	}
 	c.call(acme, "POST", "/api/runs/{id}/calls", "/api/runs/"+id+"/calls", `{"key":"k1","agent":"helper","text":"hi","mode":"subagent"}`, http.StatusForbidden)
 	c.call(acme, "POST", "/api/runs/{id}/calls", "/api/runs/"+id+"/calls", `{"mode":7}`, http.StatusBadRequest)
 	c.call(acme, "POST", "/api/agents", "/api/agents", `{"name":"lead","model":"offline","provider":"offline","system_prompt":"Lead.","access":{"spawn":["helper"]}}`, http.StatusCreated)
@@ -1199,6 +1220,10 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 // it is documented anyway. Keep it short: an entry is a code the server can
 // send that is hard to provoke in a test, never a guess.
 var unexercised = map[string]string{
+	// The runtime here always has a bus to subscribe to and a ledger to
+	// record in, so it can always carry a stop. internal/platform tests a
+	// runtime that cannot (TestAStopTheRuntimeCannotCarryFailsClosed).
+	"POST /api/runs/{id}/stop 503": "stop unavailable",
 	// A client the server's configuration owns cannot be changed through the
 	// API. Making one needs COLLEGIUM_SLACK_* in the environment, which
 	// pkg/clients and internal/platform test.

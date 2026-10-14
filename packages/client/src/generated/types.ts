@@ -156,6 +156,7 @@ export type CallMode = "subagent" | "handoff" | "delegate";
 
 /** One run and its place in the call tree and in its conversation. */
 export interface Run {
+  /** The run's id, `r` and 32 hex digits, derived from the workspace and the trigger's id. */
   id: string;
   tenant: string;
   agent: string;
@@ -190,13 +191,20 @@ export interface Run {
   granted: number;
   calls: number;
   status: RunStatus;
-  /** The final text of a completed run. */
+  /** The final text of a completed run. On a stopped run it is the
+partial answer, what the agent had said when it stopped, which may
+be empty. It is never the whole answer when `status` is `stopped`.
+ */
   answer?: string;
   error?: string;
   /** What a parked run is waiting for. */
   reason?: string;
-  /** Why a stopped run was stopped. */
+  /** Why a stopped run was stopped, as the runtime reported it, such as `Stopped by ada`. */
   cause?: string;
+  /** The run was asked to stop and has not ended yet. It starts no further calls. Absent once the run has ended, however it ended. */
+  stopping?: boolean;
+  /** When the run was first asked to stop. Absent once the run has ended. */
+  stop_requested_at?: string;
   /** The run has its answer and is held open by attached runs still working. */
   finishing?: boolean;
   created_at: string;
@@ -512,6 +520,8 @@ export interface AnalyticsGroup {
   runs: number;
   completed: number;
   failed: number;
+  /** Runs that were stopped. They are neither completed, failed nor active. */
+  stopped: number;
   active: number;
   p50_ms: number;
   p95_ms: number;
@@ -521,6 +531,7 @@ export interface AnalyticsBucket {
   start: string;
   completed: number;
   failed: number;
+  stopped: number;
   active: number;
 }
 
@@ -906,9 +917,11 @@ export interface ClientCaps {
 /** What an event is. Kinds are dotted, so a filter can select a family
 (`delta`) or one member (`delta.citation`). The set is open in the
 runtime: a reader should pass over a kind it does not know. The
-`control.*` kinds are defined and not published today.
+`control.*` kinds here are defined and not published today. A request
+addressed to a run, such as `control.stop`, is the runtime's traffic
+and never appears on this API.
  */
-export type EventKind = "delta.text" | "delta.thinking" | "delta.tool.call" | "delta.tool.done" | "delta.citation" | "lifecycle.accepted" | "lifecycle.started" | "lifecycle.parked" | "lifecycle.resumed" | "lifecycle.completed" | "lifecycle.failed" | "action.taken" | "control.created" | "control.revised" | "control.deleted";
+export type EventKind = "delta.text" | "delta.thinking" | "delta.tool.call" | "delta.tool.done" | "delta.citation" | "lifecycle.accepted" | "lifecycle.started" | "lifecycle.parked" | "lifecycle.resumed" | "lifecycle.completed" | "lifecycle.failed" | "lifecycle.stopped" | "action.taken" | "control.created" | "control.revised" | "control.deleted";
 
 /** One fragment of the agent's answer, in order. Concatenate fragments. */
 export interface TextPayload {
@@ -976,6 +989,21 @@ export interface LifecyclePayload {
   text?: string;
 }
 
+/** The body of `lifecycle.stopped`: the run was asked to stop and wrapped
+its turn up. It is final. `text` is what the agent had said, which may
+be empty.
+ */
+export interface StoppedPayload {
+  attempt?: number;
+  rev?: number;
+  /** Why it was stopped, in the words of whoever asked. */
+  reason?: string;
+  /** Who asked, such as a subject or `slack:<user id>`. */
+  by?: string;
+  /** The partial answer. */
+  text?: string;
+}
+
 /** A tool acted on something: a comment posted, a file published. When
 `name` is `publish_artifact` and there is no `error`, `data` is the
 `Artifact` that was published.
@@ -1017,7 +1045,7 @@ JSON, base64-encoded, because the server marshals a byte slice: decode
 the base64, then parse the JSON. The decoded shape for each kind is the
 schema named in `contentSchema`. A kind may carry no payload.
  */
-export type RunEvent = TextDeltaEvent | ThinkingDeltaEvent | ToolCallEvent | ToolDoneEvent | CitationEvent | RunAcceptedEvent | RunStartedEvent | RunParkedEvent | RunResumedEvent | RunCompletedEvent | RunFailedEvent | ActionTakenEvent | AgentCreatedEvent | AgentRevisedEvent | AgentDeletedEvent;
+export type RunEvent = TextDeltaEvent | ThinkingDeltaEvent | ToolCallEvent | ToolDoneEvent | CitationEvent | RunAcceptedEvent | RunStartedEvent | RunParkedEvent | RunResumedEvent | RunCompletedEvent | RunFailedEvent | RunStoppedEvent | ActionTakenEvent | AgentCreatedEvent | AgentRevisedEvent | AgentDeletedEvent;
 
 /** One fragment of the answer. */
 export type TextDeltaEvent = EventBase & { kind: "delta.text"; payload?: string };
@@ -1052,6 +1080,9 @@ export type RunCompletedEvent = EventBase & { kind: "lifecycle.completed"; paylo
 /** An attempt failed. Final only when `terminal` is true. */
 export type RunFailedEvent = EventBase & { kind: "lifecycle.failed"; payload?: string };
 
+/** The run was stopped on request, with what it had said. Final. */
+export type RunStoppedEvent = EventBase & { kind: "lifecycle.stopped"; payload?: string };
+
 /** A tool acted on something. */
 export type ActionTakenEvent = EventBase & { kind: "action.taken"; payload?: string };
 
@@ -1068,7 +1099,7 @@ export type AgentDeletedEvent = EventBase & { kind: "control.deleted"; payload?:
 same union as `RunEvent`, without the envelope fields the manifest's
 run already states. `body` is absent when the event carried none.
  */
-export type ManifestEvent = ManifestTextDeltaEvent | ManifestThinkingDeltaEvent | ManifestToolCallEvent | ManifestToolDoneEvent | ManifestCitationEvent | ManifestRunAcceptedEvent | ManifestRunStartedEvent | ManifestRunParkedEvent | ManifestRunResumedEvent | ManifestRunCompletedEvent | ManifestRunFailedEvent | ManifestActionTakenEvent | ManifestAgentCreatedEvent | ManifestAgentRevisedEvent | ManifestAgentDeletedEvent;
+export type ManifestEvent = ManifestTextDeltaEvent | ManifestThinkingDeltaEvent | ManifestToolCallEvent | ManifestToolDoneEvent | ManifestCitationEvent | ManifestRunAcceptedEvent | ManifestRunStartedEvent | ManifestRunParkedEvent | ManifestRunResumedEvent | ManifestRunCompletedEvent | ManifestRunFailedEvent | ManifestRunStoppedEvent | ManifestActionTakenEvent | ManifestAgentCreatedEvent | ManifestAgentRevisedEvent | ManifestAgentDeletedEvent;
 
 export type ManifestTextDeltaEvent = ManifestEventBase & { kind: "delta.text"; body?: TextPayload };
 
@@ -1092,6 +1123,8 @@ export type ManifestRunCompletedEvent = ManifestEventBase & { kind: "lifecycle.c
 
 export type ManifestRunFailedEvent = ManifestEventBase & { kind: "lifecycle.failed"; body?: LifecyclePayload };
 
+export type ManifestRunStoppedEvent = ManifestEventBase & { kind: "lifecycle.stopped"; body?: StoppedPayload };
+
 export type ManifestActionTakenEvent = ManifestEventBase & { kind: "action.taken"; body?: ActionPayload };
 
 export type ManifestAgentCreatedEvent = ManifestEventBase & { kind: "control.created"; body?: unknown };
@@ -1103,7 +1136,8 @@ export type ManifestAgentDeletedEvent = ManifestEventBase & { kind: "control.del
 /** Everything recorded about one run. */
 export interface ManifestRun {
   run: Run;
-  state: "queued" | "running" | "waiting" | "failed" | "stopped" | "done";
+  /** Where the run stands. `stopping` is a run asked to stop that has not ended yet. */
+  state: "queued" | "running" | "waiting" | "stopping" | "failed" | "stopped" | "done";
   /** Why a failed run failed or a stopped run was stopped, in one line. */
   cause?: string;
   definition?: Revision;

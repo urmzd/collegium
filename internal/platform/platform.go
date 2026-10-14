@@ -151,7 +151,9 @@ type Platform struct {
 	rt      *runtime.Runtime
 	// stops is how a run is asked to stop: the runtime, unless a test
 	// stands in for it.
-	stops  stopper
+	stops stopper
+	// asked reads whether the runtime holds a stop request for a run.
+	asked  func(ctx context.Context, tenant, runID string) (runtime.StopRecord, bool, error)
 	ledger *ledger.Memory
 	queue  *dqueue.Memory
 
@@ -260,11 +262,16 @@ func New(cfg Config) (*Platform, error) {
 		exec,
 		runtime.WithLogger(log),
 		runtime.WithStopGrace(cfg.StopGrace),
+		// The ledger is where a stop is recorded, so a request made while a
+		// run waits in the queue or between attempts is honoured however long
+		// it waits. It is the same ledger the runs execute from.
+		runtime.WithStopLedger(p.ledger),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("platform: runtime: %w", err)
 	}
 	p.rt, p.stops = rt, rt
+	p.asked = rt.StopRequested
 	return p, nil
 }
 

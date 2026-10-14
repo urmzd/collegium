@@ -246,8 +246,11 @@ func TestStopIsIdempotentAndSafeAgainstACompletion(t *testing.T) {
 		}
 		switch end.Status {
 		case runs.Stopped:
-			// The stop may land as the model finishes, in which case what it
-			// had said is all it was going to say. It is still stopped.
+			// Stopped means cut short, and the agent loop is the judge: a
+			// turn that finished its answer before the request took effect
+			// completes instead. A request that took effect while the model
+			// was still streaming keeps what had arrived, here all or none
+			// of a one-chunk script.
 			if end.Cause != "Stopped by ada" || (end.Answer != "" && end.Answer != "Done.") {
 				t.Fatalf("round %d: stopped = %+v", i, end)
 			}

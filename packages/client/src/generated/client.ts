@@ -833,10 +833,19 @@ allowed to spawn the target, and depth, fan-out and lease limits apply.
     });
   }
 
-  /** Runs it delegated keep going. Stopping a run that has ended changes
-nothing and answers 200 with the run as it stands. A model call in
-flight is not interrupted: the run starts nothing more and its answer
-is discarded.
+  /** The request goes to the runtime, which cancels the model call in
+flight and ends the run with `lifecycle.stopped`. Runs attached to it
+are asked too. Runs it delegated keep going.
+
+It does not wait for the run. From the moment it is asked, the run is
+`stopping` and starts no further calls. It then ends `stopped`, with
+`answer` holding what it had said and `cause` why, or `completed` or
+`failed` if its turn finished before the request took effect. A run is
+never reported stopped and then completed.
+
+Asking a run that has ended changes nothing and answers 200 with the
+run as it stands, so asking twice is safe. Another workspace's run
+answers 404.
  */
   async stopRun(id: string, options?: RequestOptions): Promise<Run> {
     let path = "/api/runs/{id}/stop";
