@@ -47,9 +47,11 @@ func eventually(t *testing.T, what string, ok func() bool) {
 	}
 }
 
-// Pressing stop on a Slack session stops the run answering in it, says so in
-// the thread, takes the session off "Working", and keeps the answer the model
-// was still producing off the surface.
+// Pressing stop on a Slack session interrupts the model call of the run
+// answering in it, says so in the thread and takes the session off "Working".
+// The message keeps what the agent had said, marked stopped, and the session
+// ends active however late the run's own events arrive. A follow-up mention
+// in the thread is answered.
 func TestStoppingASlackSessionStopsItsRun(t *testing.T) {
 	fake := slack.NewFake()
 	peer, err := slack.New(slack.Config{
@@ -60,8 +62,8 @@ func TestStoppingASlackSessionStopsItsRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &cast{
-		says:  map[string][][]saigetypes.Delta{"lead": {say("Too late.")}},
-		gates: map[string]chan struct{}{"lead": make(chan struct{})},
+		says:  map[string][][]saigetypes.Delta{"lead": {say("Picked up again.")}},
+		talks: map[string]talk{"lead": {after: 0, text: "Partial answer so far"}},
 	}
 	p := stage(t, c, platform.Config{Connections: func(registry.Store) ([]platform.Connection, error) {
 		return []platform.Connection{{Tenant: tenant, Peer: peer}}, nil
@@ -70,9 +72,11 @@ func TestStoppingASlackSessionStopsItsRun(t *testing.T) {
 	eventually(t, "the slack trigger is ingesting", peer.Ingesting)
 
 	const thread = "1700000000.000100"
-	mention := `{"type":"event_callback","team_id":"T01ABCDEF","event_id":"Ev1","event":{"type":"app_mention",` +
-		`"user":"U0HUMAN1","text":"<@U08BOTID> start","ts":"1700000090.001200","thread_ts":"` + thread + `","channel":"C02CHANNEL"}}`
-	if code := slackPost(t, ingress, mention); code != http.StatusOK {
+	mention := func(event, ts string) string {
+		return `{"type":"event_callback","team_id":"T01ABCDEF","event_id":"` + event + `","event":{"type":"app_mention",` +
+			`"user":"U0HUMAN1","text":"<@U08BOTID> start","ts":"` + ts + `","thread_ts":"` + thread + `","channel":"C02CHANNEL"}}`
+	}
+	if code := slackPost(t, ingress, mention("Ev1", "1700000090.001200")); code != http.StatusOK {
 		t.Fatalf("mention answered %d", code)
 	}
 
@@ -86,34 +90,47 @@ func TestStoppingASlackSessionStopsItsRun(t *testing.T) {
 		}
 		return false
 	})
+	answer := func() (slack.FakeMessage, bool) {
+		for _, m := range fake.Messages() {
+			if strings.Contains(m.Text, "Partial answer so far") {
+				return m, true
+			}
+		}
+		return slack.FakeMessage{}, false
+	}
+	eventually(t, "the partial answer is on the surface", func() bool { _, ok := answer(); return ok })
 	eventually(t, "slack shows the session working", func() bool {
 		s := fake.Statuses()
 		return len(s) > 0 && s[len(s)-1].Status == slack.StatusProcessing
 	})
 
-	stop := func(team string) string {
-		return `{"type":"event_callback","team_id":"` + team + `","event_id":"Ev2","event":{"type":"agent_session_stopped",` +
+	stop := func(team, event string) string {
+		return `{"type":"event_callback","team_id":"` + team + `","event_id":"` + event + `","event":{"type":"agent_session_stopped",` +
 			`"user":"U0HUMAN2","channel":"C02CHANNEL","thread_ts":"` + thread + `","streaming_message_ts":[]}}`
 	}
 	// Another workspace's stop is acknowledged and reaches nothing.
-	if code := slackPost(t, ingress, stop("T09OTHER")); code != http.StatusOK {
+	if code := slackPost(t, ingress, stop("T09OTHER", "Ev2")); code != http.StatusOK {
 		t.Fatalf("a foreign stop answered %d", code)
 	}
-	if r, _ := p.Runs.Get(tenant, run.ID); r.Status != runs.Running {
-		t.Fatalf("another workspace stopped the run: %s", r.Status)
+	if r, _ := p.Runs.Get(tenant, run.ID); r.Status != runs.Running || r.Stopping || c.interrupted("lead") {
+		t.Fatalf("another workspace stopped the run: %s, stopping %v", r.Status, r.Stopping)
 	}
 
-	if code := slackPost(t, ingress, stop("T01ABCDEF")); code != http.StatusOK {
+	pressed := len(fake.Statuses())
+	if code := slackPost(t, ingress, stop("T01ABCDEF", "Ev2")); code != http.StatusOK {
 		t.Fatalf("stop answered %d", code)
 	}
-	got, _ := p.Runs.Get(tenant, run.ID)
-	if got.Status != runs.Stopped || got.Cause != "Stopped by slack:U0HUMAN2" {
-		t.Fatalf("run = %s (%q), want stopped by the slack user", got.Status, got.Cause)
+	// The model call was cancelled, not left to finish unheard.
+	eventually(t, "the model call was interrupted", func() bool { return c.interrupted("lead") })
+	got := await(t, p, run.ID, runs.Stopped)
+	if got.Cause != "Stopped by slack:U0HUMAN2" || got.Answer != "Partial answer so far" {
+		t.Fatalf("run = %q (%q), want the partial answer stopped by the slack user", got.Answer, got.Cause)
 	}
-	statuses := fake.Statuses()
-	if last := statuses[len(statuses)-1]; last.Status != slack.StatusActive || last.ThreadTS != thread {
-		t.Fatalf("session = %+v, want active in the thread", last)
-	}
+	// What the agent had said stays on the surface, marked stopped.
+	eventually(t, "the run's message says it stopped", func() bool {
+		m, ok := answer()
+		return ok && strings.Contains(m.Text, "stopped") && strings.Contains(m.Text, "Stopped by slack:U0HUMAN2")
+	})
 	confirmed := false
 	for _, m := range fake.Messages() {
 		confirmed = confirmed || (m.ThreadTS == thread && m.Text == "Stopped by <@U0HUMAN2>.")
@@ -123,18 +140,12 @@ func TestStoppingASlackSessionStopsItsRun(t *testing.T) {
 	}
 
 	// Slack redelivers; a second stop is a no-op, not a second confirmation.
-	if code := slackPost(t, ingress, stop("T01ABCDEF")); code != http.StatusOK {
+	if code := slackPost(t, ingress, stop("T01ABCDEF", "Ev2")); code != http.StatusOK {
 		t.Fatalf("a repeated stop answered %d", code)
 	}
-
-	// The held model call finishes now. None of it reaches Slack.
-	c.release("lead")
-	time.Sleep(300 * time.Millisecond)
+	time.Sleep(200 * time.Millisecond)
 	confirmations := 0
 	for _, m := range fake.Messages() {
-		if strings.Contains(m.Text, "Too late.") {
-			t.Fatalf("a stopped run's answer was delivered: %q", m.Text)
-		}
 		if strings.HasPrefix(m.Text, "Stopped by") {
 			confirmations++
 		}
@@ -142,8 +153,33 @@ func TestStoppingASlackSessionStopsItsRun(t *testing.T) {
 	if confirmations != 1 {
 		t.Fatalf("%d stop confirmations, want 1", confirmations)
 	}
-	statuses = fake.Statuses()
-	if last := statuses[len(statuses)-1]; last.Status != slack.StatusActive {
-		t.Fatalf("session went back to %s after the stop", last.Status)
+	// From the press on, the session is never set back to working.
+	statuses := fake.Statuses()
+	for _, s := range statuses[pressed:] {
+		if s.Status != slack.StatusActive {
+			t.Fatalf("after the stop the session went to %s: %+v", s.Status, statuses[pressed:])
+		}
 	}
+	if last := statuses[len(statuses)-1]; last.Status != slack.StatusActive || last.ThreadTS != thread {
+		t.Fatalf("session = %+v, want active in the thread", last)
+	}
+
+	// The thread is still a conversation: a follow-up mention is answered.
+	// Slack mentions carry no history in collegium today, so the follow-up is
+	// a run of its own that is not sent the stopped turn.
+	if code := slackPost(t, ingress, mention("Ev3", "1700000095.001300")); code != http.StatusOK {
+		t.Fatalf("follow-up answered %d", code)
+	}
+	eventually(t, "the follow-up is answered", func() bool {
+		for _, m := range fake.Messages() {
+			if strings.Contains(m.Text, "Picked up again.") {
+				return true
+			}
+		}
+		return false
+	})
+	eventually(t, "the session ends active", func() bool {
+		s := fake.Statuses()
+		return s[len(s)-1].Status == slack.StatusActive
+	})
 }

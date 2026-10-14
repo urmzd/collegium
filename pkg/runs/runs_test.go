@@ -213,3 +213,39 @@ func TestThreadPaging(t *testing.T) {
 		t.Fatalf("the limit was not capped: %d", len(page))
 	}
 }
+
+// A run asked to stop is stopping, not stopped, until the runtime says how it
+// ended. lifecycle.stopped ends it with its partial answer and the reason the
+// runtime honoured. A completion that wins the race ends it completed, with
+// no cause and no stopping left on it.
+func TestAStopIsRequestedThenConfirmedByTheRuntime(t *testing.T) {
+	x := NewIndex()
+	record(t, x, "acme", "r1", "lead", "api", 0, nil)
+	record(t, x, "acme", "r2", "lead", "api", 0, nil)
+	for _, id := range []string{"r1", "r2"} {
+		r, ok := x.AskStop(id, "Stopped by ada", t0.Add(time.Second))
+		if !ok || !r.Stopping || r.Status.Terminal() || r.Cause != "" {
+			t.Fatalf("asked = %+v, %v", r, ok)
+		}
+	}
+	// Asking again keeps the first request.
+	if r, _ := x.AskStop("r1", "Stopped by bob", t0.Add(2*time.Second)); !r.StopRequestedAt.Equal(t0.Add(time.Second)) {
+		t.Fatalf("a second request moved the first: %+v", r)
+	}
+
+	b, _ := payload.Encode(payload.Stopped{Reason: "Stopped by ada", By: "ada", Text: "Half"})
+	r, ended := x.Observe(envelope.Event{RunID: "r1", Tenant: "acme", Kind: envelope.KindStopped, Payload: b, At: t0.Add(3 * time.Second)})
+	if !ended || r.Status != Stopped || r.Answer != "Half" || r.Cause != "Stopped by ada" || r.Stopping {
+		t.Fatalf("stopped = %+v, %v", r, ended)
+	}
+	r, ended = end(t, x, "acme", "r2", 3*time.Second, envelope.KindCompleted, payload.Lifecycle{Text: "Whole"})
+	if !ended || r.Status != Completed || r.Answer != "Whole" || r.Cause != "" || r.Stopping {
+		t.Fatalf("completed first = %+v, %v", r, ended)
+	}
+	if _, ok := x.AskStop("r2", "late", t0.Add(4*time.Second)); ok {
+		t.Fatal("a run that ended was asked to stop")
+	}
+	if _, again := x.Observe(envelope.Event{RunID: "r1", Tenant: "acme", Kind: envelope.KindStopped, Payload: b, At: t0.Add(5 * time.Second)}); again {
+		t.Fatal("a redelivered lifecycle.stopped ended the run twice")
+	}
+}

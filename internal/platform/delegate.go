@@ -37,10 +37,14 @@ import (
 // the inbox, because the caller may be gone by then. What it attaches dies
 // with it, not with whoever delegated to it.
 //
-// Stopping is done at the platform's edge. The runtime cannot interrupt a
-// model call in flight, so a stopped run is marked stopped at once: it can
-// start nothing more, its answer is not taken, and whoever was waiting on it
-// is told. The call it was in the middle of runs to its end unheard.
+// Stopping is the runtime's. A stop is a request published on the bus, which
+// the attempt executing the run hears: the model call in flight is cancelled,
+// the turn wraps up with what it had said, and the run ends with
+// lifecycle.stopped. Until that event arrives the run is stopping, and from
+// the moment it is asked it can start no further calls. A run whose turn
+// finished before the request reached it ends as it would have, and is never
+// reported stopped. Everything attached to a stopped run is asked to stop with
+// it, through the runtime, all the way down.
 
 // ToolDelegate is the tool an agent starts another agent with and does not
 // wait. An agent has it only if its spec names it, and may only name agents
@@ -125,6 +129,14 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 		}
 		select {
 		case <-ctx.Done():
+			// The runtime cancels a delegation when the turn that made it
+			// is stopped, and leaves the run it started to this host. A
+			// caller that was asked to stop takes its attached run along.
+			// One whose worker merely went away does not: its next attempt
+			// makes the same call and joins the same run.
+			if caller, err := p.Runs.Get(parent.Tenant, parent.RunID); err == nil && (caller.Stopping || caller.Status == runs.Stopped) {
+				_ = p.requestStop(context.WithoutCancel(ctx), child.Tenant, child.ID, attachedCause("stopped", caller), "system")
+			}
 			return "", ctx.Err()
 		case <-tick.C:
 		}
@@ -164,15 +176,18 @@ func (p *Platform) delegateTool(req runtime.Request, action func(payload.Action)
 
 // cascade is what the ending of one run does to the runs around it.
 func (p *Platform) cascade(ctx context.Context, run runs.Run) {
-	// A run that failed or was stopped takes what is attached to it along.
-	// What it delegated is not attached, and carries on.
+	// A run that failed or was stopped takes what is attached to it along,
+	// through the runtime, so each of them keeps what it had said. What it
+	// delegated is not attached, and carries on.
 	if run.Status == runs.Failed || run.Status == runs.Stopped {
-		why := "The run it was attached to failed"
+		why := "failed"
 		if run.Status == runs.Stopped {
-			why = "The run it was attached to was stopped"
+			why = "stopped"
 		}
 		for _, child := range p.Runs.AttachedTo(run.ID) {
-			p.stop(ctx, child.ID, fmt.Sprintf("%s (%s, %s)", why, run.Agent, run.ID), "system")
+			if err := p.requestStop(ctx, child.Tenant, child.ID, attachedCause(why, run), "system"); err != nil {
+				p.log.Warn("platform: an attached run could not be asked to stop", "tenant", child.Tenant, "run", child.ID, "error", err)
+			}
 		}
 	}
 	// A caller that had answered and was waiting on this run may be done now.
@@ -193,20 +208,80 @@ func (p *Platform) cascade(ctx context.Context, run runs.Run) {
 	}
 }
 
-// stop ends a run from outside and lets that ending do what any ending does.
-func (p *Platform) stop(ctx context.Context, runID, cause, by string) (runs.Run, bool) {
-	run, stopped := p.Runs.Stop(runID, cause, p.now())
-	if !stopped {
-		return runs.Run{}, false
-	}
-	p.log.Info("platform: run stopped", "tenant", run.Tenant, "run", run.ID, "agent", run.Agent, "cause", cause, "by", by,
-		"root", run.Root, "parent", run.Parent, "lifecycle", run.Lifecycle)
-	p.ended(ctx, run)
-	return run, true
+// attachedCause says why an attached run was stopped: what became of the run
+// it was attached to.
+func attachedCause(what string, caller runs.Run) string {
+	return fmt.Sprintf("The run it was attached to was %s (%s, %s)", what, caller.Agent, caller.ID)
 }
 
-// StopRun stops a run at a person's request. Everything attached to it stops
-// with it. What it delegated keeps running and can be stopped by itself.
+// ErrStopUnavailable reports a runtime that cannot interrupt a run. The run is
+// still recorded as asked to stop, so it can start nothing more, but the work
+// it is doing carries on and it ends as its own events say.
+var ErrStopUnavailable = errors.New("platform: this runtime cannot interrupt a run")
+
+// stopper is the part of the runtime a stop goes through.
+type stopper interface {
+	Stop(ctx context.Context, req runtime.StopRequest) error
+}
+
+// requestStop asks a run, and everything attached to it, to stop.
+//
+// Each run is first marked stopping in the index, which is what refuses its
+// further calls, and then asked through the runtime, which is what interrupts
+// it. A run whose turn is already over and that only this platform holds open
+// (it has answered and waits for what it attached) has nothing to interrupt,
+// so it ends stopped here, keeping its answer.
+//
+// Asking is idempotent: a run already asked is asked again, which the runtime
+// ignores, so a request whose publication failed can be retried. The error is
+// the first request that could not be published. Every other run is still
+// asked.
+func (p *Platform) requestStop(ctx context.Context, tenant, runID, cause, by string) error {
+	type ask struct{ id, cause string }
+	var ended []runs.Run
+	var failed error
+	// Serialized with Call, so a call either lands before the request and is
+	// stopped with the rest, or after it and is refused.
+	p.calls.Lock()
+	for queue := []ask{{runID, cause}}; len(queue) > 0; queue = queue[1:] {
+		next := queue[0]
+		run, ok := p.Runs.AskStop(next.id, next.cause, p.now())
+		if !ok || run.Tenant != tenant {
+			continue
+		}
+		p.log.Info("platform: run asked to stop", "tenant", run.Tenant, "run", run.ID, "agent", run.Agent, "cause", next.cause, "by", by,
+			"root", run.Root, "parent", run.Parent, "lifecycle", run.Lifecycle)
+		if run.Finishing {
+			if stopped, did := p.Runs.Stop(run.ID, "", next.cause, p.now()); did {
+				// Its ending stops what is attached to it.
+				ended = append(ended, stopped)
+			}
+			continue
+		}
+		err := p.stops.Stop(ctx, runtime.StopRequest{Tenant: run.Tenant, RunID: run.ID, Reason: next.cause, By: by})
+		if errors.Is(err, runtime.ErrStopUnavailable) {
+			err = fmt.Errorf("%w: %w", ErrStopUnavailable, err)
+		}
+		if err != nil && failed == nil {
+			failed = err
+		}
+		for _, child := range p.Runs.AttachedTo(run.ID) {
+			queue = append(queue, ask{child.ID, attachedCause("stopped", run)})
+		}
+	}
+	p.calls.Unlock()
+	for _, run := range ended {
+		p.ended(ctx, run)
+	}
+	return failed
+}
+
+// StopRun asks a run to stop at a person's request. Everything attached to it
+// is asked too. What it delegated keeps running and can be stopped by itself.
+//
+// It does not wait for the run. The run it returns is stopping, or already
+// over: stopped, or completed or failed when its turn finished first. A run
+// that has ended is returned as it is, so asking twice is safe.
 func (p *Platform) StopRun(ctx context.Context, who auth.Principal, runID string) (runs.Run, error) {
 	run, err := p.Runs.Get(who.Tenant, runID)
 	if err != nil {
@@ -215,18 +290,20 @@ func (p *Platform) StopRun(ctx context.Context, who auth.Principal, runID string
 	if run.Status.Terminal() {
 		return run, nil
 	}
-	if stopped, ok := p.stop(ctx, runID, "Stopped by "+who.Subject, who.Subject); ok {
-		return stopped, nil
+	err = p.requestStop(ctx, who.Tenant, runID, "Stopped by "+who.Subject, who.Subject)
+	now, gerr := p.Runs.Get(who.Tenant, runID)
+	if gerr != nil {
+		return runs.Run{}, gerr
 	}
-	return p.Runs.Get(who.Tenant, runID)
+	return now, err
 }
 
-// stopFromSurface stops a run for a person who pressed stop where the run is
-// answering, such as a Slack session. The tenant and the client are those of
-// the client whose secret verified the request, never the request's, and a run
-// outside either does not exist to this caller. Anyone who can see the
-// surface's stop control may use it: the surface, not a console role, is the
-// authority here.
+// stopFromSurface asks a run to stop for a person who pressed stop where the
+// run is answering, such as a Slack session. The tenant and the client are
+// those of the client whose secret verified the request, never the request's,
+// and a run outside either does not exist to this caller. Anyone who can see
+// the surface's stop control may use it: the surface, not a console role, is
+// the authority here.
 func (p *Platform) stopFromSurface(ctx context.Context, tenant, client, surface, runID, who string) error {
 	run, err := p.Runs.Get(tenant, runID)
 	if errors.Is(err, runs.ErrNotFound) {
@@ -239,6 +316,5 @@ func (p *Platform) stopFromSurface(ctx context.Context, tenant, client, surface,
 		return nil
 	}
 	by := surface + ":" + who
-	p.stop(ctx, runID, "Stopped by "+by, by)
-	return nil
+	return p.requestStop(ctx, tenant, runID, "Stopped by "+by, by)
 }

@@ -11,6 +11,9 @@ type Bucket struct {
 	Start     time.Time `json:"start"`
 	Completed int       `json:"completed"`
 	Failed    int       `json:"failed"`
+	// Stopped is runs that were stopped, by a person or with the run they
+	// were attached to. They are neither completed nor failed.
+	Stopped int `json:"stopped"`
 	// Active is runs that have not ended: queued, running or parked.
 	Active int `json:"active"`
 }
@@ -21,6 +24,7 @@ type Group struct {
 	Runs      int    `json:"runs"`
 	Completed int    `json:"completed"`
 	Failed    int    `json:"failed"`
+	Stopped   int    `json:"stopped"`
 	Active    int    `json:"active"`
 	// P50 and P95 are durations of ended runs, in milliseconds.
 	P50 int64 `json:"p50_ms"`
@@ -96,6 +100,8 @@ func (x *Index) Summarize(tenant string, since, until time.Time, bucket time.Dur
 				a.g.Completed++
 			case Failed:
 				a.g.Failed++
+			case Stopped:
+				a.g.Stopped++
 			default:
 				a.g.Active++
 			}
@@ -109,6 +115,8 @@ func (x *Index) Summarize(tenant string, since, until time.Time, bucket time.Dur
 				b.Completed++
 			case Failed:
 				b.Failed++
+			case Stopped:
+				b.Stopped++
 			default:
 				b.Active++
 			}

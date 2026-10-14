@@ -114,6 +114,9 @@ func (p *Platform) evalCase(ctx context.Context, tenant string, suite evals.Suit
 			return failed("the run was lost", started)
 		case r.Status == runs.Failed:
 			return failed("the run failed: "+r.Error, r)
+		case r.Status == runs.Stopped:
+			// A partial answer is not the agent's answer, so it is not scored.
+			return failed("the run was stopped: "+r.Cause, r)
 		case r.Status == runs.Completed:
 			res, err := evals.ScoreAnswer(ctx, c, r.Answer, r.UpdatedAt.Sub(r.CreatedAt))
 			if err != nil {

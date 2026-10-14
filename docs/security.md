@@ -47,9 +47,14 @@ no permission, grants nothing.
   unknown role and an unknown scope each grant nothing.
 - **Tenant is never taken from a request.** It comes from the deployment or a
   verified token claim. A body that carries a `tenant` field is rejected.
-- **Another tenant's objects do not exist.** Reads, deletes and calls across
-  tenants return 404, never 403, so a response cannot confirm that something
-  exists.
+- **Another tenant's objects do not exist.** Reads, deletes, calls and stops
+  across tenants return 404, never 403, so a response cannot confirm that
+  something exists.
+- **A run id carries its tenant.** The runtime derives it from the tenant and
+  the tag id together, so a trigger's id, chosen outside, cannot name or join
+  another tenant's run. A stop request is honoured only by a run of the tenant
+  it was made under, and the platform only makes one for a run the caller's
+  tenant holds.
 - **An ID token is not an API credential.** Bearer tokens must be issued for
   the API audience. A token issued to the web client is refused.
 - **Sessions are server-side.** The cookie is a random 256-bit id, `HttpOnly`,

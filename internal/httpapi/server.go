@@ -468,12 +468,18 @@ func (s *Server) createCall(w http.ResponseWriter, r *http.Request, who auth.Pri
 	ok(w, http.StatusAccepted, run)
 }
 
-// stopRun stops a run and everything attached to it. Runs it delegated keep
-// going. Stopping a run that has ended changes nothing.
+// stopRun asks a run and everything attached to it to stop. Runs it delegated
+// keep going. It does not wait: a run that has not ended yet is answered 202
+// with stopping set, and its stream says how it ended. A run that has ended is
+// answered 200 as it is, so asking twice is safe.
 func (s *Server) stopRun(w http.ResponseWriter, r *http.Request, who auth.Principal) {
 	run, err := s.P.StopRun(r.Context(), who, r.PathValue("id"))
 	if err != nil {
 		s.problem(w, err)
+		return
+	}
+	if !run.Status.Terminal() {
+		ok(w, http.StatusAccepted, run)
 		return
 	}
 	ok(w, http.StatusOK, run)
@@ -630,6 +636,10 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, memory.ErrSensitive):
 		fail(w, http.StatusBadRequest, "that note carries personal data, such as an email address or a card number, so it was not stored")
+	case errors.Is(err, platform.ErrStopUnavailable):
+		// The run was marked as asked, so it starts nothing more, but the
+		// work in flight was not interrupted.
+		fail(w, http.StatusServiceUnavailable, "this server cannot interrupt a run; it will start nothing more and ends when its current work does")
 	case errors.As(err, &tooBig):
 		fail(w, http.StatusRequestEntityTooLarge, "request is too large")
 	default:
