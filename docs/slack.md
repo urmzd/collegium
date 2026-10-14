@@ -26,11 +26,19 @@ before anything is parsed.
 
 ## Configuration
 
+Each Slack app is a [client](clients.md): its team and app id, its secrets, the
+agents it may reach, and the options on this page. A workspace may have several,
+and every app posts to the same two URLs. The request goes to the client whose
+signing secret verifies it.
+
+For a single app, these variables create the default client, `default-slack`:
+
 | Variable | Meaning |
 |----------|---------|
 | `COLLEGIUM_SLACK_TOKEN` | Bot token (`xoxb-`). Required with the signing secret. |
 | `COLLEGIUM_SLACK_SIGNING_SECRET` | Authenticates every inbound request. |
-| `COLLEGIUM_SLACK_TEAM` | Team id this deployment serves. Other workspaces are refused. |
+| `COLLEGIUM_SLACK_TEAM` | Team id the client serves. A request for another team is a 404. |
+| `COLLEGIUM_SLACK_APP` | App id. Optional for one app, required of each when a team has several. |
 | `COLLEGIUM_SLACK_BOTS` | `U08BOT=docs-bot` pairs: which agent a bot user id stands for. |
 | `COLLEGIUM_SLACK_DEFAULT_AGENT` | Answers a mention or command that named no agent. |
 | `COLLEGIUM_SLACK_SESSIONS` | `true` reports run lifecycle as session status. |
@@ -43,6 +51,18 @@ export COLLEGIUM_SLACK_COMMANDS='[{"name":"create-pr","description":"Open a pull
 
 Malformed values fail startup. So do commands Slack would refuse: more than 10,
 a name over 31 characters, a leading slash, a missing description, a duplicate.
+The same values on a client created through the API are refused with a 400.
+
+| Variable | Client field |
+|----------|--------------|
+| `COLLEGIUM_SLACK_TOKEN`, `COLLEGIUM_SLACK_SIGNING_SECRET` | `credentials.token`, `credentials.signing_secret` |
+| `COLLEGIUM_SLACK_TEAM`, `COLLEGIUM_SLACK_APP` | `identity.team`, `identity.app_id` |
+| `COLLEGIUM_SLACK_BOTS` | `bots` |
+| `COLLEGIUM_SLACK_DEFAULT_AGENT` | `default_agent` |
+| `COLLEGIUM_SLACK_SESSIONS`, `COLLEGIUM_SLACK_COMMANDS` | `slack.sessions`, `slack.commands` |
+
+The default client may route to any agent. One created through the API routes
+to its default agent and its `agents` list, and to nothing else.
 
 ## Session status
 
@@ -78,8 +98,13 @@ flight is not interrupted, because the runtime has no cancel; its output is
 discarded. Anyone who can see the button may press it: the session, not a
 console role, is the authority.
 
-Which runs a session holds is remembered in memory. After a restart the button
-still settles the status but finds no run to stop.
+A press reaches only the runs its own client raised. Two apps answering in one
+thread each hold their own sessions, and another workspace's app in the same
+team cannot stop a run it did not raise.
+
+Which runs a session holds is remembered in memory, per client. After a
+restart, or after the client is changed, the button still settles the status
+but finds no run to stop.
 
 Check the manifest with the Slack CLI from `examples/slack`:
 
@@ -129,8 +154,8 @@ are returned, so the router retries them with its bounded backoff.
 - **Native streaming.** Answers are edited with `chat.update`, not streamed
   with `chat.startStream`.
 - Command registration, lifecycle replay cursors and the runs a session holds
-  are bounded and in memory, like the sink's message handles. A restart forgets
-  them.
+  are bounded, in memory and per client, like the sink's message handles. A
+  restart forgets them, and so does changing the client.
 
 Code channels and agent sessions are new Slack surfaces. This connector is
 tested against the documented contract through the in-memory fake and has not

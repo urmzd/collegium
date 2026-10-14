@@ -56,7 +56,9 @@ use mandatum's offline provider and call no model. Set an agent's provider to
 
 The console links vultus from a sibling checkout at `../vultus`.
 GitHub and Slack workflows also run here, using mandatum's connector capabilities
-and vultus's Markdown presentation. See the [integration trial guide](docs/integrations.md).
+and vultus's Markdown presentation. A workspace answers through one or more
+[clients](docs/clients.md): a Slack app or a GitHub installation, each with its
+own identity, secrets, agents and limits. See the [integration trial guide](docs/integrations.md).
 The Go module temporarily references sibling `../mandatum` and `../vultus/go`
 checkouts until the coordinated changes have release versions.
 

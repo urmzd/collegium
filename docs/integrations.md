@@ -1,7 +1,8 @@
 # GitHub and Slack trial
 
-Collegium owns installation configuration, agent definitions, review and command
-policy, and the run history shown in its console. Mandatum supplies signed
+Collegium owns [clients](clients.md) (which Slack apps and GitHub installations a
+workspace answers through), agent definitions, review and command policy, and
+the run history shown in its console. Mandatum supplies signed
 webhooks, API capabilities, routing and execution. Vultus `go/github` supplies
 the review and guide Markdown. Existing web/Slack components remain in vultus.
 
@@ -26,9 +27,11 @@ make web
 ```
 
 The console uses localhost:5173 and the API localhost:8080. External runs appear
-on the same Runs page as console runs. Only tenant `trial` can see or use these
-installations; inbound payloads cannot choose a tenant. One GitHub installation
-and one Slack installation per process are supported. Stores are still in memory.
+on the same Runs page as console runs. The variables below create one default
+client per surface in tenant `trial`. Only that tenant can see or use it;
+inbound payloads cannot choose a tenant. Further clients, such as a second Slack
+app that answers as another agent, are created through `POST /api/clients`. See
+[clients](clients.md). Stores are still in memory.
 
 Forward **only port 8383**, whose handler exposes signed webhook endpoints and
 readiness. `/api`, `/auth` and the console are absent there. Never forward the
@@ -51,7 +54,7 @@ not command-line arguments, source files, terminal output or chat.
 | `slack_signing_secret` | `COLLEGIUM_SLACK_SIGNING_SECRET` |
 | `slack_team_id`, `slack_bot_user_id` | Workspace and agent routing |
 
-The server accepts a token; it does not yet mint or refresh GitHub installation
+The server accepts a token per client; it does not yet mint or refresh GitHub installation
 tokens. Refresh expired tokens before a trial. App IDs/private keys alone do
 not configure the connector. Keep non-secret model, repository, bot mappings and
 forwarding URLs alongside the item's instructions. No credentials were created
@@ -69,6 +72,8 @@ COLLEGIUM_SLACK_SIGNING_SECRET=op://Private/Collegium integrations/slack_signing
 
 Then start the command above through `op run --env-file=<local-reference-file> --`.
 Do not commit that local file or capture the injected environment in logs.
+The default clients record only the names of these variables. A client created
+through the API can reference its own, as `env:COLLEGIUM_<anything>`.
 
 ## GitHub installation
 
@@ -122,8 +127,9 @@ Create or update the app using [the manifest](../examples/slack/manifest.json),
 replace `YOUR_HOST` with the forwarder URL, install it, and invite its bot to the
 trial channel. Configure the bot token/signing secret through the credential
 item. Set `COLLEGIUM_SLACK_TEAM`, `COLLEGIUM_SLACK_BOTS` (bot-user-id=agent-name)
-and `COLLEGIUM_SLACK_DEFAULT_AGENT`. Team is required; another team's signed
-events or commands are refused.
+and `COLLEGIUM_SLACK_DEFAULT_AGENT`. Team is required; a request for a team no
+client serves is a 404. Set `COLLEGIUM_SLACK_APP` to the app id when more than
+one Slack app will be installed in the team.
 
 `COLLEGIUM_SLACK_SESSIONS=true` enables agent-session progress. Optional
 `COLLEGIUM_SLACK_COMMANDS` is a JSON array of command names, descriptions and
@@ -134,12 +140,13 @@ grants in `COLLEGIUM_GITHUB_READ_REPOSITORIES`.
 
 Session and code-channel availability depends on Slack's workspace features.
 Permanent feature/permission refusals are logged; normal threaded answers remain
-usable. No stop button, code-channel creation or native streaming is advertised.
+usable. No code-channel creation or native streaming is advertised.
 See [Slack](slack.md) for status/error behavior and the remaining limitations.
 
 ## Acceptance evidence
 
-The automated suite checks signed ingress, correct tenant visibility in the
+The automated suite checks signed ingress, routing to the right client among
+several, isolation between workspaces, correct tenant visibility in the
 console API, guide updates, distinct reviews, thread replies, atomic fix commits,
 workflow reruns and pending states, and Slack lifecycle/command policy using
 fake or in-process APIs. A live trial additionally needs a real bot reply, the

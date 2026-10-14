@@ -4,6 +4,31 @@ The GitHub connector accepts signed mentions on issues, pull requests, reviews,
 and review comments. It also accepts review requests for configured agent logins.
 Responses use one Markdown comment per run, edited as events arrive.
 
+## Configuration
+
+Each GitHub installation is a [client](clients.md): the accounts it serves, its
+installation and app ids, its token and webhook secret, the agents it may reach,
+and the options on this page. A workspace may have several, and every one
+delivers to `/connectors/github`. A delivery goes to the client that serves its
+account and whose webhook secret verifies it.
+
+For a single installation, the `COLLEGIUM_GITHUB_*` variables on this page
+create the default client, `default-github`:
+
+| Variable | Client field |
+|----------|--------------|
+| `COLLEGIUM_GITHUB_TOKEN`, `COLLEGIUM_GITHUB_WEBHOOK_SECRET` | `credentials.token`, `credentials.signing_secret` |
+| `COLLEGIUM_GITHUB_OWNERS` | `identity.owners` |
+| `COLLEGIUM_GITHUB_APP`, `COLLEGIUM_GITHUB_INSTALLATION` | `identity.app_id`, `identity.installation`. Optional |
+| `COLLEGIUM_GITHUB_BOTS` | `bots` |
+| `COLLEGIUM_GITHUB_AUTO_LABELS` | `github.auto_labels` |
+| `COLLEGIUM_GITHUB_CHECKS`, `COLLEGIUM_GITHUB_GUIDES`, `COLLEGIUM_GITHUB_MUTATIONS` | `github.checks`, `github.guides`, `github.mutations` |
+| `COLLEGIUM_GITHUB_READ_REPOSITORIES` | `github.read_repositories` |
+
+The default client may route to any agent. One created through the API routes
+to its default agent and its `agents` list, and an auto-label or a bot that
+names any other agent is refused when the client is saved.
+
 ## Automatic labels
 
 Set repository-specific label mappings alongside the GitHub token and webhook
@@ -37,7 +62,9 @@ The configured agent must exist in the registry when the trigger is accepted.
 also returns the head SHA, reviews, inline comments and changed-file patches.
 Follow `next_page` until absent. A missing patch is unavailable evidence.
 Reads default to the source repository. To allow GitHub context from Slack,
-Jira, or links in another repository, grant exact repository names:
+Jira, or links in another repository, grant exact repository names. A run from
+another surface reads through the oldest GitHub client in its workspace that may
+route to its agent:
 
 ```sh
 export COLLEGIUM_GITHUB_READ_REPOSITORIES='acme/handbook,acme/service'
@@ -144,8 +171,9 @@ write permission. Permission is checked at acceptance and again before writing.
 The connector signs a grant bound to the run ID, actor, repository, PR and head.
 The runtime supplies the actual run identity separately from model arguments,
 so copying a source URI into another invocation does not authorize a write.
-The CLI uses the webhook secret as the signing key with a distinct protocol
-prefix; mutations require at least 16 bytes. Rotating it invalidates old grants.
+Each client signs with its own webhook secret under a distinct protocol
+prefix, so a grant from one client is worth nothing to another; mutations
+require at least 16 bytes. Rotating it invalidates old grants.
 Automatic reviews and ordinary questions never receive a mutation grant.
 Explicit `/check` requests receive a separate workflow-only grant.
 

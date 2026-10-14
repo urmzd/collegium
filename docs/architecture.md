@@ -110,6 +110,8 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Limit today | What it needs |
 |-------------|---------------|
 | The admission lock is in process, so two servers can both admit the last run | A counter in the shared store, taken in the same transaction as the ledger entry |
+| Clients and the secret values written for them are lost on restart, so a webhook is a 404 until they are created again | A durable `clients.Store`, and a secret manager behind `clients.Secrets`. `New` already starts every enabled client a store holds |
+| A run id is the trigger's event id, so one workspace can hold an id another's event would have used. The second is refused | Run ids scoped by workspace in the runtime |
 | The usage ledger and policies are lost on restart | A durable ledger. `Rebuild` already derives every count from entries |
 | Usage is recounted from entries on each read | Counters per scope and period, checked against a rebuild |
 | Policy history grows without bound | Paging, as for conversations |
@@ -122,10 +124,18 @@ Admission is one process holding one lock, reading counts from memory. That is c
 
 | Piece | State |
 |-------|-------|
-| GitHub and Slack integrations: signed webhook ingress, tenant-bound tools and delivery through `Invoke` | Built, tested with simulated APIs. One installation per connector scheme per process |
+| GitHub and Slack integrations: signed webhook ingress, tenant-bound tools and delivery through `Invoke` | Built, tested with simulated APIs |
+| `pkg/clients`: a workspace's Slack apps and GitHub installations as records, each with an identity, an allow-list of agents, options and an enabled flag. Several per surface per workspace, and several workspaces per process. See [clients](clients.md) | Built, in memory behind `clients.Store`. Tested with two clients in one workspace and two workspaces in one team |
+| Routing a webhook to a client: offered to the clients whose identity it states, taken by the first whose own secret verifies the bytes. 404 for unknown or disabled, 401 for a signature no offered client accepts | Built. One surface per address scheme sits in mandatum's registry and fans in and out to the clients behind it |
+| Client secrets: written as a value or an `env:COLLEGIUM_*` reference, never returned or logged | Built. Values are in memory behind `clients.Secrets` and lost on restart. A reference survives one |
+| Client limits: `max_clients` and `max_clients_per_surface` on the tenant's policy, and a `client` policy scope for runs and concurrency | Built on `pkg/policy` and the admission lock. Spend and storage per client are not |
+| A default client per surface from the `COLLEGIUM_SLACK_*` and `COLLEGIUM_GITHUB_*` variables | Built. Managed by the environment and read-only in the API |
+| Client API: `/api/clients` create, read, replace, delete, behind `clients:read` and `clients:write` | Built, tested across tenants |
+| Console for clients: Settings, Connections lists them, and an admin can disable or remove one | Built. Creating one, and setting its limits, are API calls. Not checked in a browser |
+| Minting GitHub installation tokens, Slack OAuth installation | Not built. A client is given a token |
 | GitHub auto-label and per-commit reviews, PR guides, explicit writer-authorized fix commits and workflow reruns | Built in `pkg/integrations/github`, on mandatum API capabilities. Rendering in vultus `go/github` |
 | Slack agent-session status and code-channel command policy | Built in `pkg/integrations/slack`. Signed command decoding and optional `AgentAPI` in mandatum. Not live-validated |
-| Slack stop button: `agent_session_stopped` stops the runs answering in that session, confirms in the thread and settles the status | Built, tested end to end against the fake. The session-to-run map is in memory. Not live-validated |
+| Slack stop button: `agent_session_stopped` stops the runs answering in that session, confirms in the thread and settles the status | Built, tested end to end against the fake. The session-to-run map is in memory and per client: one app's button cannot stop a run another app raised. Not live-validated |
 | `pkg/call`: edge, modes, depth, fan-out and lease checks | Built, tested |
 | `pkg/runs`: run index, call tree, statistics | Built, in memory |
 | `internal/platform`: mandatum composed, `Invoke`, `Call` with the spawn allowlist | Built, tested |
@@ -144,7 +154,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Projects: conversations filed together, shared memory sent to every agent in the project, schedules whose runs are filed there | Built, in memory |
 | Workspace settings, `pkg/prefs`: per-person theme, accent and profile picture | Built, in memory |
 | Memory approval: what the memory agent writes waits for a person, following saige's memory policy | Built |
-| `pkg/policy`: versioned limits per workspace, project and agent on runs, concurrency, spend and lease; a narrower scope can only tighten | Built, in memory. One pure `Decide` function, so a refusal can be replayed from the policy version it names |
+| `pkg/policy`: versioned limits per workspace, project, agent and client on runs, concurrency, spend and lease; a narrower scope can only tighten | Built, in memory. One pure `Decide` function, so a refusal can be replayed from the policy version it names |
 | `pkg/usage`: append-only ledger of admitted, refused, warned and ended runs, with `Rebuild` from its entries | Built, in memory. Admissions are kept 62 days |
 | Admission: every run is checked under one lock before it is accepted; a refusal answers 429 or 402 with the limit, the policy version and the reset time, and raises a budget alert | Built, tested with 40 racers against a limit of 7 |
 | Console for limits: Settings, each project page, and usage against limits in Analytics | Built |
@@ -177,7 +187,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Evals against a knowledge variant | Not built. Evals search the current view |
 | Summarizing history | Not built. Long conversations are truncated to the limit, oldest turns first |
 | Knowledge retrieval inside a run | Not built. mandatum's retriever is not given the tenant or the agent, so wiring it would cross tenants |
-| Connections: MCP servers, OAuth to third parties, stored credentials | Not built |
+| Connections: MCP servers, OAuth to third parties | Not built. Slack and GitHub credentials are held per client, see above |
 | Schedule delivery to Slack, email or another system | Not built. Needs connections |
 | Call tool inside the sandbox | Not built. Calls are made through the API |
 | Returning a subagent's answer to its caller | Built for a call made by tagging: the answer is the tool's result. A call made through the API is not returned to the caller's model |
