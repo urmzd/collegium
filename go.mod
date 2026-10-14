@@ -21,6 +21,10 @@ require (
 	github.com/dslipak/pdf v0.0.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.11.0 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/redis/go-redis/v9 v9.21.0 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
@@ -32,5 +36,13 @@ require (
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+require github.com/urmzd/vultus/go v0.0.0
+
+// Local integration until the coordinated mandatum/vultus changes are released.
+replace github.com/urmzd/mandatum => ../mandatum
+
+replace github.com/urmzd/vultus/go => ../vultus/go
