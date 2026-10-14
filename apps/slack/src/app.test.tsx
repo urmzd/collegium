@@ -576,6 +576,30 @@ for (const where of ["home", "thread"] as const) {
   });
 }
 
+test("a forged Retry on an inbox part that is not a failure is refused, and nothing is sent", async () => {
+  const w = world({ operators: [USER] });
+  w.collegium.mailbox.set("m-memory", memoryMail("api-svc-slack-any"));
+  w.collegium.mailbox.set("m-alert", alertMail());
+  for (const [id, target] of [
+    ["m-memory", "p1"],
+    ["m-alert", "p1"],
+    ["m-alert", "no-such-part"],
+  ]) {
+    const env = interactive({
+      type: "block_actions",
+      channel: { id: CHANNEL },
+      container: { type: "message", channel_id: CHANNEL },
+      message: { ts: "1800000007.000100", thread_ts: TS },
+      actions: [{ action_id: "aui.retry#0", value: JSON.stringify({ turnId: id, target }) }],
+    });
+    await deliver(w, env);
+    await w.app.idle();
+    assert.deepEqual(w.collegium.resolved, [], `${id}/${target}`);
+    assert.equal(w.slack.of("chat.postEphemeral").at(-1)?.text, defaultCopy.cantRetry);
+  }
+  assert.equal(w.collegium.started.length, 0);
+});
+
 test("a Slack write that fails mid-turn still ends the turn: whole, and off processing", async () => {
   const w = world();
   await deliver(w, mention("long answer", TS));

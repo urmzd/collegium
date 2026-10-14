@@ -827,7 +827,9 @@ export class App {
     // A failed turn is asked again here, where its answer can be shown, when the thread is this app's.
     const part = message.parts.find((x) => partMatches(x, ui.payload.target));
     let request = toRequest(message, ui);
-    if (ui.id === ActionId.retry && part?.type === "failure") {
+    if (ui.id === ActionId.retry) {
+      // Only a failed run can be asked again. A Retry on anything else is refused.
+      if (part?.type !== "failure") return this.refuseRetry(p, "elsewhere");
       // A retry is always this app's, so its answer shows where it was asked and the
       // client's agents are checked. Collegium is never asked to retry on its own.
       const run = part.failure.reference
