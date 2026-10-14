@@ -597,6 +597,11 @@ func TestSpecSchemasHaveTheFieldsTheGoTypesMarshal(t *testing.T) {
 		"TextPayload": {typ: payload.Text{}}, "ThinkingPayload": {typ: payload.Thinking{}}, "ToolCallPayload": {typ: payload.ToolCall{}},
 		"ToolDonePayload": {typ: payload.ToolDone{}}, "Provenance": {typ: payload.Provenance{}}, "CitationPayload": {typ: payload.Citation{}},
 		"LifecyclePayload": {typ: payload.Lifecycle{}}, "ActionPayload": {typ: payload.Action{}},
+		"StoppedPayload": {typ: payload.Stopped{}}, "Cost": {typ: payload.Cost{}}, "Usage": {typ: payload.Usage{}},
+		"ContextUsage": {typ: payload.ContextUsage{}}, "RunUsage": {typ: payload.RunUsage{}},
+		"UsageCallPayload": {typ: payload.UsageCall{}}, "UsageChildPayload": {typ: payload.UsageChild{}},
+		"PolicyCost": {typ: policy.Cost{}}, "UsageSpend": {typ: usage.Spend{}}, "SpendMeasure": {typ: spendMeasure{}},
+		"AnalyticsUsage": {typ: runs.GroupUsage{}}, "UsageCallEvent": {typ: envelope.Event{}},
 		// Every variant of the event union is the same Go struct.
 		"TextDeltaEvent": {typ: envelope.Event{}}, "RunCompletedEvent": {typ: envelope.Event{}}, "ActionTakenEvent": {typ: envelope.Event{}},
 	}
@@ -637,6 +642,7 @@ func TestSpecSchemasHaveTheFieldsTheGoTypesMarshal(t *testing.T) {
 		string(envelope.KindText), string(envelope.KindThinking), string(envelope.KindToolCall), string(envelope.KindToolDone),
 		string(envelope.KindCitation), string(envelope.KindAccepted), string(envelope.KindStarted), string(envelope.KindParked),
 		string(envelope.KindResumed), string(envelope.KindCompleted), string(envelope.KindFailed), string(envelope.KindStopped), string(envelope.KindActionTaken),
+		string(envelope.KindUsageCall), string(envelope.KindUsageChild),
 		string(envelope.KindAgentCreated), string(envelope.KindAgentRevised), string(envelope.KindAgentDeleted),
 	}
 	if !slices.Equal(kinds, declared) {
@@ -1103,6 +1109,14 @@ func TestResponsesMatchTheSpec(t *testing.T) {
 	// A lease over the limit is a money limit, so it is refused with 402.
 	c.call(acme, "PUT", "/api/policies", "/api/policies", `{"scope":{"kind":"tenant"},"period":"day","max_runs":100,"max_concurrent":50,"max_lease":10}`, http.StatusOK)
 	c.callFromLiveRun(acme, `{"key":"k402","agent":"helper","text":"hi","mode":"delegate","lease":1000}`, http.StatusPaymentRequired)
+	// A workspace that has spent its spend limit refuses a new run with 402.
+	// The offline provider prices nothing, so the spend is written to the
+	// ledger as a priced call would be.
+	c.call(acme, "PUT", "/api/policies", "/api/policies", `{"scope":{"kind":"tenant"},"period":"day","max_runs":100,"max_concurrent":50,"spend_limit":5000}`, http.StatusOK)
+	c.f.p.Usage.Append(usage.Entry{Kind: usage.Spent, Tenant: "acme", Agent: "helper", RunID: "r-spent", Key: "r-spent/a1/1",
+		At: time.Now(), Spend: &usage.Spend{Micros: 5000, ModelCalls: 1, Tokens: 1000}})
+	c.call(acme, "POST", "/api/runs", "/api/runs", `{"agent":"helper","text":"hi"}`, http.StatusPaymentRequired)
+	c.call(acme, "PUT", "/api/policies", "/api/policies", `{"scope":{"kind":"tenant"},"period":"day","max_runs":100,"max_concurrent":50,"spend_limit":1000000}`, http.StatusOK)
 	// With the agent at its day's limit, everything that would start it is
 	// told so.
 	c.call(acme, "PUT", "/api/policies", "/api/policies", `{"scope":{"kind":"agent","name":"helper"},"period":"day","max_runs":1}`, http.StatusOK)
@@ -1235,6 +1249,11 @@ var unexercised = map[string]string{
 	// retry needs a failed turn a person asked, and the offline provider
 	// never fails, so no test can raise one here.
 	"POST /api/inbox/{id}/parts/{part}/resolve 429": "retry refused by a limit",
+	"POST /api/inbox/{id}/parts/{part}/resolve 402": "retry refused by a limit",
+	// A spend refusal is the same answer through every route that starts a
+	// run. createRun's 402 is exercised; a schedule's run now goes through
+	// the same admission.
+	"POST /api/schedules/{name}/run 402": "spend refusal, exercised through createRun",
 }
 
 // The event stream is server-sent events. Each message's data is validated

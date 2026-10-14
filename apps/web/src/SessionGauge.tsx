@@ -4,6 +4,7 @@ import { api } from "./api.ts";
 import { LimitsPanel } from "./Limits.tsx";
 import { amount, binding, type Limit, type Limits, scopeWords, share } from "./limits.ts";
 import { button, dollars, type Period, Popover, Switch, type UsageState, usageOf } from "./ui.tsx";
+import { contextFill } from "./usage.ts";
 
 /** How much of something is used. A limit of 0 means nothing caps it. */
 export type Fill = { used: number; limit: number };
@@ -24,10 +25,10 @@ export function gaugeWords(context: Fill | undefined, budget: Fill | undefined, 
     context:
       context && c !== null
         ? `${tokens(context.used)} of ${tokens(context.limit)} tokens, ${Math.round(c * 100)}%`
-        : "Not reported. The platform does not count tokens yet.",
+        : "Not reported yet. The latest turn has made no model call, or its model's window is not in the catalog.",
     budget:
       budget && b !== null
-        ? `${dollars(budget.used)} of ${dollars(budget.limit)} handed to calls, ${Math.round(b * 100)}%${
+        ? `${dollars(budget.used)} of ${dollars(budget.limit)} spent or handed to calls, ${Math.round(b * 100)}%${
             usual ? `. The usual limit is ${dollars(usual)}` : ""
           }`
         : usual
@@ -105,9 +106,9 @@ export function SessionGauge({
   onAnalytics?: () => void;
   /** Raise the session's spend limit, when the reader may. */
   onRaise?: (microUsd: number, period: Period) => void;
-  /** Tokens in the context window. Leave out until the platform reports them. */
+  /** The latest model call's prompt against the model's context window, in tokens. Leave out when not reported. */
   context?: Fill;
-  /** Micro-USD the latest turn handed on, against what it holds. */
+  /** Micro-USD the latest turn spent or handed on, against what it holds. */
   budget?: Fill;
   /** Micro-USD a run may hold when nothing says otherwise. */
   usual?: number;
@@ -192,7 +193,7 @@ export function SessionGauge({
             >
               Compact Now
             </button>
-            {!compaction && <p className="text-aui-xs text-aui-muted">Compaction is not built yet. The platform does not count tokens.</p>}
+            {!compaction && <p className="text-aui-xs text-aui-muted">Compaction is not built yet.</p>}
           </div>
           </div>
         )}
@@ -202,8 +203,9 @@ export function SessionGauge({
 }
 
 /**
- * The gauge for a conversation, from its latest turn. It asks once for the
- * workspace's limits, to mark the usual budget.
+ * The gauge for a conversation, from its latest turn. The top edge is how full
+ * that turn's context was at its latest model call, as the runtime reported
+ * it. It asks once for the workspace's limits, to mark the usual budget.
  */
 export function SessionGaugeFor({
   tail,
@@ -231,7 +233,8 @@ export function SessionGaugeFor({
 
   return (
     <SessionGauge
-      budget={tail && tail.lease > 0 ? { used: tail.granted, limit: tail.lease } : undefined}
+      context={contextFill(tail?.usage)}
+      budget={tail && tail.lease > 0 ? { used: (tail.spent ?? 0) + tail.granted, limit: tail.lease } : undefined}
       usual={usual}
       limits={limits}
       onAnalytics={onAnalytics}

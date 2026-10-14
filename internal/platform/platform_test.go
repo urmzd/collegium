@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -29,7 +30,14 @@ const tenant = "acme"
 // helper may call no one.
 func start(t *testing.T, lim call.Limits) *platform.Platform {
 	t.Helper()
-	p, err := platform.New(platform.Config{Workspace: t.TempDir(), Limits: lim})
+	return startWith(t, platform.Config{Limits: lim})
+}
+
+// startWith is start with more of the configuration given.
+func startWith(t *testing.T, cfg platform.Config) *platform.Platform {
+	t.Helper()
+	cfg.Workspace = t.TempDir()
+	p, err := platform.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +454,7 @@ func TestConcurrentRunsNeverExceedALimit(t *testing.T) {
 		t.Fatalf("%d refusal alerts, want exactly one", budget)
 	}
 	// The live counts are a projection of the ledger: replaying it agrees.
-	if live, replayed := p.Usage.Usage(tenant, scope, time.Time{}), usage.Rebuild(p.Usage.Entries()).Usage(tenant, scope, time.Time{}); live != replayed {
+	if live, replayed := p.Usage.Usage(tenant, scope, time.Time{}), usage.Rebuild(p.Usage.Entries()).Usage(tenant, scope, time.Time{}); !reflect.DeepEqual(live, replayed) {
 		t.Fatalf("live %+v, rebuilt %+v", live, replayed)
 	}
 }

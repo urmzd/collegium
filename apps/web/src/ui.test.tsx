@@ -1064,7 +1064,7 @@ test("SessionGauge: the bottom edge follows the binding limit, and without one i
   assert.equal(attr(none, "data-binding"), "none");
   assert.match(none, /The latest turn holds no budget\./);
   const plain = html(<SessionGauge budget={{ used: 500_000, limit: 2_000_000 }} />);
-  assert.match(plain, /\$0\.50 of \$2\.00 handed to calls, 25%/);
+  assert.match(plain, /\$0\.50 of \$2\.00 spent or handed to calls, 25%/);
 });
 
 test("Activity: a selected run shows the limits it draws on, with only its own runs", () => {

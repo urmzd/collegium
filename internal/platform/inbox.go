@@ -466,6 +466,9 @@ func (p *Platform) raiseLimit(who auth.Principal, part inbox.BudgetPart, to inbo
 	if to.SpendLimit > 0 {
 		pol.SpendLimit = to.SpendLimit
 	}
+	if to.MaxTokens > 0 {
+		pol.MaxTokens = to.MaxTokens
+	}
 	return p.Policies.Put(who.Tenant, pol, who.Subject, p.now())
 }
 

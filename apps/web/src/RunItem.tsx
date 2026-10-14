@@ -117,7 +117,13 @@ export function RunItem({
             <span className="text-aui-fg">{status.word}</span>
             <span className="tabular-nums text-aui-muted">{ended ? took(elapsed(run)) : ""}</span>
             {run.lease > 0 && (
-              <UsageMeter size="mini" label="Budget handed to calls" spent={run.granted} limit={run.lease} testId="run-item-budget" />
+              <UsageMeter
+                size="mini"
+                label="Budget spent or handed to calls"
+                spent={(run.spent ?? 0) + run.granted}
+                limit={run.lease}
+                testId="run-item-budget"
+              />
             )}
           </span>
         }

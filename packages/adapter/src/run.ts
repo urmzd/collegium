@@ -22,6 +22,34 @@ export interface BusEvent {
   at: string;
 }
 
+/** Money in integer millionths of a currency, from saige's price catalog. */
+export interface Cost {
+  micros: number;
+  currency: string;
+  as_of?: string;
+}
+
+/** What some model calls used. `cost` is a lower bound when `unpriced_calls` is set. */
+export interface Usage {
+  model_calls?: number;
+  requests?: number;
+  prompt_tokens?: number;
+  cached_prompt_tokens?: number;
+  cache_write_tokens?: number;
+  completion_tokens?: number;
+  cost?: Cost;
+  other_costs?: Cost[];
+  unpriced_calls?: number;
+}
+
+/** What a run used: its own calls, the attached runs it rolled up, and how full its context was. */
+export interface RunUsage {
+  own: Usage;
+  children?: Usage;
+  total: Usage;
+  context?: { model?: string; window?: number; tokens?: number };
+}
+
 /** A run as the platform's index reports it. */
 export interface Run {
   id: string;
@@ -45,7 +73,12 @@ export interface Run {
   picked?: string;
   project?: string;
   lease: number;
+  /** Micro-USD leased to calls that have not ended. */
   granted: number;
+  /** Micro-USD priced in US dollars: the run's own calls and the calls it made that have ended. */
+  spent?: number;
+  /** What the run used, as the runtime counts it. Absent until its first model call. */
+  usage?: RunUsage;
   calls: number;
   /** Stopped is ended from outside: by a person, or because the run it was attached to ended. */
   status: "accepted" | "running" | "parked" | "completed" | "failed" | "stopped";

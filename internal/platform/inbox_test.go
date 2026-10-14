@@ -6,12 +6,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/urmzd/mandatum/pkg/agentrt"
 	"github.com/urmzd/mandatum/pkg/agentspec"
+	saigetypes "github.com/urmzd/saige/agent/types"
 
 	"github.com/urmzd/collegium/internal/platform"
 	"github.com/urmzd/collegium/pkg/alerts"
 	"github.com/urmzd/collegium/pkg/auth"
-	"github.com/urmzd/collegium/pkg/call"
 	"github.com/urmzd/collegium/pkg/inbox"
 	"github.com/urmzd/collegium/pkg/memory"
 	"github.com/urmzd/collegium/pkg/runs"
@@ -155,11 +156,27 @@ func TestMemoryDecidedElsewhereClosesItsMessage(t *testing.T) {
 
 // A failed run is one message whether or not a rule was watching for it, and
 // an alert and its message are settled together from either side.
+// refusing is a model that fails every call at once.
+type refusing struct{ saigetypes.Provider }
+
+func (refusing) Stream(context.Context, saigetypes.Request) (<-chan saigetypes.Delta, error) {
+	return nil, errors.New("the model is unavailable")
+}
+
 func TestInboxHoldsFailures(t *testing.T) {
-	t.Setenv("OLLAMA_HOST", "http://127.0.0.1:1")
-	p := start(t, call.Limits{})
+	// A run fails only after every attempt has. A real provider that cannot
+	// be reached is retried inside each attempt as well, which made three
+	// failing runs take seconds each and, under load, longer than the test
+	// waited. The test is about the inbox: the model refuses at once, and
+	// the attempts are not spaced out.
+	p := startWith(t, platform.Config{
+		Backoff: func(int) time.Duration { return time.Millisecond },
+		AgentOptions: []agentrt.Option{agentrt.WithProvider(agentrt.ProviderOffline, func(agentrt.Spec) (saigetypes.Provider, error) {
+			return refusing{}, nil
+		})},
+	})
 	ctx := t.Context()
-	broken := agentspec.AgentSpec{Name: "broken", Model: "none", Provider: "ollama", SystemPrompt: "x"}
+	broken := agentspec.AgentSpec{Name: "broken", Model: "offline", Provider: "offline", SystemPrompt: "x"}
 	if _, err := p.Agents.Create(ctx, tenant, broken, "test"); err != nil {
 		t.Fatal(err)
 	}

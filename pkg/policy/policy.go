@@ -17,14 +17,18 @@
 // # What is metered
 //
 // Runs started in the period and runs in flight are counted exactly. Spend is
-// part of the model and of Decide, but the runtime does not report what a run
-// cost, so the usage it is given is always zero today: a spend limit is
-// recorded and versioned, and not yet enforced.
+// what the runtime priced in US dollars, in micro-USD, from saige's catalog.
+// A model call with no price, or priced in another currency, cannot be held
+// against a dollar limit: it is counted in Usage.UnpricedCalls or
+// Usage.OtherCosts and never as zero spend silently, and its tokens count
+// against MaxTokens, which bounds every call whether it is priced or not.
 package policy
 
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/big"
 	"time"
 )
 
@@ -117,6 +121,10 @@ type Policy struct {
 	SpendLimit int64 `json:"spend_limit,omitempty"`
 	// MaxLease is the largest budget one run may be granted, in micro-USD.
 	MaxLease int64 `json:"max_lease,omitempty"`
+	// MaxTokens is the most model tokens, prompt and completion together,
+	// that may be used in the period. It counts every call, priced or not, so
+	// it is the bound that holds when spend cannot be known.
+	MaxTokens int64 `json:"max_tokens,omitempty"`
 	// MaxStorage is the most bytes of published files the scope may hold. It
 	// is a standing total, not a rate, so the period does not apply to it.
 	MaxStorage int64 `json:"max_storage,omitempty"`
@@ -155,7 +163,7 @@ func (p Policy) Validate() error {
 	case p.Period != Day && p.Period != Month:
 		return fmt.Errorf("%w: the period is day or month", ErrInvalid)
 	case p.MaxRuns < 0 || p.MaxConcurrent < 0 || p.SpendLimit < 0 || p.MaxLease < 0 || p.MaxStorage < 0 ||
-		p.MaxClients < 0 || p.MaxClientsPerSurface < 0:
+		p.MaxClients < 0 || p.MaxClientsPerSurface < 0 || p.MaxTokens < 0:
 		return fmt.Errorf("%w: a limit cannot be negative", ErrInvalid)
 	case p.Scope.Kind != Tenant && (p.MaxClients > 0 || p.MaxClientsPerSurface > 0):
 		return fmt.Errorf("%w: only the tenant's policy limits how many clients there are", ErrInvalid)
@@ -164,7 +172,7 @@ func (p Policy) Validate() error {
 	case p.MaxClients > MaxClientsCeiling || p.MaxClientsPerSurface > MaxClientsCeiling:
 		return fmt.Errorf("%w: a workspace may have at most %d clients", ErrInvalid, MaxClientsCeiling)
 	case p.MaxRuns == 0 && p.MaxConcurrent == 0 && p.SpendLimit == 0 && p.MaxLease == 0 && p.MaxStorage == 0 &&
-		p.MaxClients == 0 && p.MaxClientsPerSurface == 0:
+		p.MaxClients == 0 && p.MaxClientsPerSurface == 0 && p.MaxTokens == 0:
 		return fmt.Errorf("%w: a policy sets at least one limit", ErrInvalid)
 	case p.WarnAt < 0 || p.WarnAt > 100:
 		return fmt.Errorf("%w: the warning threshold is a percentage from 1 to 100", ErrInvalid)
@@ -199,6 +207,8 @@ func (p Policy) Within(parent Policy) error {
 		return fmt.Errorf("%w: %s has a higher spend limit than %s", ErrInvalid, p.Scope, parent.Scope)
 	case over(p.MaxLease, parent.MaxLease):
 		return fmt.Errorf("%w: %s allows a larger budget per run than %s", ErrInvalid, p.Scope, parent.Scope)
+	case over(p.MaxTokens, parent.MaxTokens):
+		return fmt.Errorf("%w: %s allows more tokens than %s", ErrInvalid, p.Scope, parent.Scope)
 	}
 	return nil
 }
@@ -209,9 +219,33 @@ type Usage struct {
 	Runs int `json:"runs"`
 	// Concurrent is how many runs are in flight now.
 	Concurrent int `json:"concurrent"`
-	// Spend is what has been spent in the period, in micro-USD.
+	// Spend is what has been spent in the period, in micro-USD: the calls
+	// the runtime priced in US dollars. It is a lower bound whenever
+	// UnpricedCalls or OtherCosts is not empty.
 	Spend int64 `json:"spend"`
+	// Tokens is every model token used in the period, prompt and completion,
+	// priced or not.
+	Tokens int64 `json:"tokens"`
+	// ModelCalls is every model call made in the period.
+	ModelCalls int `json:"model_calls"`
+	// UnpricedCalls is the calls in the period that had no price: a model
+	// saige's catalog does not price. Their spend is unknown, not zero.
+	UnpricedCalls int `json:"unpriced_calls"`
+	// OtherCosts is what was priced in a currency other than US dollars, one
+	// entry per currency. It is never converted and never compared with a
+	// dollar limit.
+	OtherCosts []Cost `json:"other_costs,omitempty"`
 }
+
+// Cost is an amount in one currency: millionths of it.
+type Cost struct {
+	Micros   int64  `json:"micros"`
+	Currency string `json:"currency"`
+}
+
+// Unmetered reports whether some of the usage could not be held against a
+// dollar limit, so Spend is a lower bound.
+func (u Usage) Unmetered() bool { return u.UnpricedCalls > 0 || len(u.OtherCosts) > 0 }
 
 // Applied is a policy and the usage counted against it.
 type Applied struct {
@@ -255,6 +289,7 @@ const (
 	LimitConcurrent Limit = "concurrent"
 	LimitSpend      Limit = "spend"
 	LimitLease      Limit = "lease"
+	LimitTokens     Limit = "tokens"
 )
 
 // Decision is whether a run may start, and why.
@@ -293,15 +328,15 @@ func decideOne(a Applied, req Request) Decision {
 		}
 		d := Decision{Policy: &p, Limit: limit, Remaining: max0(max - used)}
 		switch {
-		case used+ask > max:
+		case sum(used, ask) > max:
 			d.Verdict = Deny
 			if p.Action == Approve {
 				d.Verdict = NeedsApproval
 			}
 			d.Reason = fmt.Sprintf("%s has reached its limit of %s", p.Scope, what)
-		case (used+ask)*100 >= max*int64(p.warnAt()):
+		case Reaches(sum(used, ask), max, p.warnAt()):
 			d.Verdict = Warn
-			d.Reason = fmt.Sprintf("%s is at %d%% of its limit of %s", p.Scope, (used+ask)*100/max, what)
+			d.Reason = fmt.Sprintf("%s is at %d%% of its limit of %s", p.Scope, Percent(sum(used, ask), max), what)
 		default:
 			return
 		}
@@ -312,7 +347,11 @@ func decideOne(a Applied, req Request) Decision {
 	per := "a " + string(p.Period)
 	consider(LimitRuns, int64(a.Usage.Runs), 1, int64(p.MaxRuns), counted(p.MaxRuns)+" "+per)
 	consider(LimitConcurrent, int64(a.Usage.Concurrent), 1, int64(p.MaxConcurrent), counted(p.MaxConcurrent)+" at once")
-	consider(LimitSpend, a.Usage.Spend, req.Lease, p.SpendLimit, "spend "+per)
+	// A run asks for at least one micro-dollar, so a scope that has reached
+	// its spend limit, to the micro, starts nothing more. The same holds for
+	// tokens: a run will use some.
+	consider(LimitSpend, a.Usage.Spend, max(req.Lease, 1), p.SpendLimit, "spend "+per)
+	consider(LimitTokens, a.Usage.Tokens, 1, p.MaxTokens, "tokens "+per)
 	// A lease is judged on its own size, not against what was used.
 	if p.MaxLease > 0 && req.Lease > p.MaxLease {
 		d := Decision{
@@ -324,6 +363,72 @@ func decideOne(a Applied, req Request) Decision {
 		}
 	}
 	return best
+}
+
+// Exceeded judges what runs already in flight have used, after a model call:
+// whether a scope has reached its spend or token limit, and must stop what is
+// running in it, or is past its warning threshold. Counts of runs are not
+// judged here: they decide whether a run may start, not whether one may go
+// on. Like Decide it is pure, and the strictest answer wins.
+func Exceeded(applied []Applied) Decision {
+	best := Decision{Verdict: Allow}
+	for _, a := range applied {
+		p := a.Policy
+		for _, m := range []struct {
+			limit     Limit
+			used, max int64
+			what      string
+		}{
+			{LimitSpend, a.Usage.Spend, p.SpendLimit, "spend a " + string(p.Period)},
+			{LimitTokens, a.Usage.Tokens, p.MaxTokens, "tokens a " + string(p.Period)},
+		} {
+			if m.max <= 0 {
+				continue
+			}
+			d := Decision{Policy: &p, Limit: m.limit, Remaining: max0(m.max - m.used)}
+			switch {
+			case m.used >= m.max:
+				d.Verdict = Deny
+				d.Reason = fmt.Sprintf("%s has reached its limit of %s", p.Scope, m.what)
+			case Reaches(m.used, m.max, p.warnAt()):
+				d.Verdict = Warn
+				d.Reason = fmt.Sprintf("%s is at %d%% of its limit of %s", p.Scope, Percent(m.used, m.max), m.what)
+			default:
+				continue
+			}
+			if d.Verdict.rank() > best.Verdict.rank() {
+				best = d
+			}
+		}
+	}
+	return best
+}
+
+// sum adds two non-negative counts, stopping at the largest int64 rather than
+// wrapping.
+func sum(a, b int64) int64 {
+	if a > math.MaxInt64-b {
+		return math.MaxInt64
+	}
+	return a + b
+}
+
+// Reaches reports whether used is at least pct percent of max, for any
+// non-negative int64 values, without overflowing: the threshold is computed
+// from max divided down, never from used or max multiplied up.
+func Reaches(used, max int64, pct int) bool {
+	p := int64(pct)
+	threshold := max/100*p + (max%100*p+99)/100
+	return used >= threshold
+}
+
+// Percent is used as a whole percentage of max, rounded down, without
+// overflowing.
+func Percent(used, max int64) int64 {
+	if max <= 0 {
+		return 0
+	}
+	return new(big.Int).Div(new(big.Int).Mul(big.NewInt(used), big.NewInt(100)), big.NewInt(max)).Int64()
 }
 
 // counted writes a number of runs: "1 run", "10 runs".

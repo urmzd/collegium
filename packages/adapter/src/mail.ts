@@ -31,8 +31,8 @@ export const kinds: { id: string; label: string }[] = [
   { id: "budget", label: "Limits" },
 ];
 
-export type LimitKind = "runs" | "concurrent" | "spend" | "lease";
-export type Limits = { max_runs?: number; max_concurrent?: number; spend_limit?: number };
+export type LimitKind = "runs" | "concurrent" | "spend" | "lease" | "tokens";
+export type Limits = { max_runs?: number; max_concurrent?: number; spend_limit?: number; max_tokens?: number };
 export type BudgetData = {
   scope: { kind: string; name?: string };
   which: LimitKind;
@@ -47,7 +47,8 @@ export type BudgetData = {
 
 /** Which of a refusal's limits is the one that was reached, and its value. */
 export function reached(data: BudgetData): { field: keyof Limits; value: number } {
-  const field = data.which === "spend" ? "spend_limit" : data.which === "concurrent" ? "max_concurrent" : "max_runs";
+  const field =
+    data.which === "spend" ? "spend_limit" : data.which === "concurrent" ? "max_concurrent" : data.which === "tokens" ? "max_tokens" : "max_runs";
   return { field, value: data.current[field] ?? 0 };
 }
 
@@ -62,6 +63,7 @@ export const limitWord: Record<LimitKind, string> = {
   concurrent: "runs at once",
   spend: "spend",
   lease: "time per run",
+  tokens: "tokens",
 };
 
 type Wire = Record<string, unknown>;
@@ -98,7 +100,8 @@ function budgetOf(raw: unknown): BudgetData {
 }
 
 /** The unit a limit is counted in. Spend is shown as dollars, so its micro-USD are divided down. */
-export const unitOf = (which: LimitKind) => (which === "spend" ? "usd" : which === "concurrent" ? "runs at once" : "runs");
+export const unitOf = (which: LimitKind) =>
+  which === "spend" ? "usd" : which === "concurrent" ? "runs at once" : which === "tokens" ? "tokens" : "runs";
 const inUnit = (which: LimitKind, value: number) => (which === "spend" ? value / 1_000_000 : value);
 const fromUnit = (which: LimitKind, value: number) => (which === "spend" ? Math.round(value * 1_000_000) : Math.floor(value));
 

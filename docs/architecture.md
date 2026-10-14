@@ -113,11 +113,95 @@ the caller's turn with no run id and no stream. Both shapes stay available.
 
 | Concern | Rule |
 |---------|------|
-| Cost | A child leases budget from its caller and settles when it completes. Limits apply to the whole tree, keyed by the root run. |
+| Cost | A child leases budget from its caller and settles when it completes: the lease is released and what the child spent, priced by the runtime, becomes the caller's. Limits apply to the whole tree: every run counts against its root's project and client. See [Usage and spend](#usage-and-spend). |
 | Access | A child gets the intersection of its spec's access and its caller's grant. It is never wider. |
 | Shape | Depth and fan-out are capped. The zero limits allow no calls. |
 | Tracking | Root, parent, depth and trace context travel with the tag, so telemetry shows one tree. |
 | Stopping | Stopping a run stops everything attached beneath it, through the runtime. What it delegated carries on. |
+
+## Usage and spend
+
+The runtime reports what every model call used (mandatum's `usage` family,
+v0.10.0 and later): tokens, cost from saige's price catalog in integer micros
+of a currency, and the model's context window. collegium counts it, holds it
+against limits, and stops what goes over.
+
+### Counted once
+
+| Source | When | Key | What it adds |
+|--------|------|-----|--------------|
+| `usage.call` on a run's stream | As each call completes | The runtime's `accounting_id` | The call, to the usage ledger, under the run's place |
+| The run's total (`lifecycle.completed` or `lifecycle.stopped`, else the ledger's output, else `runtime.RecordedUsage` for a failed run) | When the run ends | `run:<id>` | Only what the calls already counted for the run do not cover: a call whose event was missed |
+
+The platform's observer sees every event (a subscription with no kind filter
+receives the usage family). A redelivered call, a redelivered terminal event
+and a reconciler pass all find their key already counted and add nothing. A
+run is counted as the larger, field by field, of the calls seen for it and its
+settled total, and both are kept after it settles: a call whose event arrives
+after the settlement (the call a stop cut short is reported late, while the
+settlement runs from the reconciler or the stop) adds only what goes beyond
+the settled total, in either order. Once a run has settled its `spent` no
+longer moves, since it has settled into its caller. A run's settled total is
+its own calls (`RunUsage.Own`), never the runs it called, which settle their
+own: each model call in a tree is counted once, in the run that made it.
+
+Every ledger entry is stamped with the server's clock when it is appended
+(the call's own time is kept as `event_at`), and counts in the period its
+stamp falls in, whatever order entries arrive in. Counts are kept per scope
+and UTC day as entries are applied, so judging a call reads at most 62 days
+of totals.
+
+### Roll-up
+
+An attached run (tagged, the caller waits) is rolled up into its caller: once
+it has ended and the ledger records it, the Delegator calls
+`runtime.ReportChildUsage`, and the caller's `usage.children` and `usage.total`
+include it, once. A delegated run (`delegate_task`) is not rolled up: the turn
+that handed it over has moved on, so there is no turn to report it to. Its
+spend is the same request's work, so it counts against the same budgets: every
+run in a tree counts against its root's project and client, its own agent, and
+the workspace. The run manifest's `usage.total` sums every run's own calls in
+the tree, attached and delegated alike.
+
+### Enforced
+
+| When | What is judged | What happens |
+|------|----------------|--------------|
+| A run asks to start | Spend and tokens in the period, with runs and concurrency, under one lock | A scope that has reached its spend limit, to the micro-dollar, or its token limit refuses: 402 for spend, 429 for tokens, with the limit, the policy and its version, and `resets_at` |
+| A call is counted | Spend and tokens of every scope the run is in (`policy.Exceeded`) | At the warning threshold, one budget alert and one inbox message per scope and limit while it is open. At the limit, the run is stopped through `runtime.Stop`, with a reason naming the limit, the scope and the policy version, a `halted` notice, and one alert. Every other run in the scope is stopped at its own next call |
+| A run with a lease spends | Its `spent` plus what it has handed to calls still working (`granted`), against its `lease` | Stopped through the runtime once the two reach the lease |
+| A called run ends | Its lease and its spend | The caller's `granted` releases the lease and its `spent` gains what the child spent. If the caller has already settled, the spend climbs on to the nearest ancestor still open, or the root |
+
+An agent's own calls (tagging, `delegate_task`) lease from a metered caller
+without naming an amount: each is granted half of what the caller has left.
+What is left is read from the calls already counted, and the model call that
+asked may not be counted yet, so the other half holds room for it; everything
+is trued up when the call settles. A caller with nothing left is refused. A
+stop at a limit that could not be requested is asked again at the run's next
+counted call. Housekeeping runs are never refused or stopped,
+and what they spend is still counted.
+
+### Unpriced calls and other currencies
+
+A limit is in US dollars. A call saige could not price (a model with no rate
+card) and money in any other currency are never counted as zero dollars and
+never compared with a dollar limit. They are counted apart: `unpriced_calls`
+and `other_costs` on the run, on `GET /api/usage`, and in Analytics, where the
+spend is shown as a lower bound. The first such call in a scope with a spend
+limit raises one alert, open until settled, saying its spend is a lower bound.
+Tokens are counted for every call, priced or not, so `max_tokens` on a policy
+is the bound that holds whatever the price.
+
+### Where it shows
+
+| Surface | What |
+|---------|------|
+| `GET /api/runs/{id}` | `usage` (own, children, total, context), `spent`, `granted` |
+| The event stream and `listRunEvents` | `usage.call` and `usage.child` |
+| `GET /api/usage` | `spend` (used, limit, `unpriced_calls`, `other_costs`) and `tokens` per scope |
+| `GET /api/analytics` | `usage` per group: calls, tokens, spend, unpriced calls |
+| Console | The run's Activity page (calls, tokens, cost, context), the session gauge's context edge, Analytics, Limits |
+| Slack app | Nothing. Usage is not shown on a turn in the console either, so the shared adapter carries none (see [clients](clients.md#usage-on-a-turn)) |
 
 ## People in the loop
 
@@ -157,7 +241,8 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | The admission lock is in process, so two servers can both admit the last run | A counter in the shared store, taken in the same transaction as the ledger entry |
 | Clients and the secret values written for them are lost on restart, so a webhook is a 404 until they are created again | A durable `clients.Store`, and a secret manager behind `clients.Secrets`. `New` already starts every enabled client a store holds |
 | The usage ledger and policies are lost on restart | A durable ledger. `Rebuild` already derives every count from entries |
-| Usage is recounted from entries on each read | Counters per scope and period, checked against a rebuild |
+| Usage is kept as counters per scope and UTC day in memory, rebuilt from the entries, and spend has an entry per model call | The same counters in the shared store, checked against a rebuild |
+| The live spend tally is per process, so two servers each see half a scope's calls between reads | The spend counter in the same shared store as the admission counter |
 | Policy history grows without bound | Paging, as for conversations |
 | The inbox record grows without bound, and open counts are a scan | A durable log, with counters per reader |
 | The artifact index is in memory while the bytes are on disk, so a restart orphans stored files | The index in the same durable store as everything else |
@@ -173,7 +258,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Routing a webhook to a client: offered to the clients whose identity it states, taken by the first whose own secret verifies the bytes. 404 for unknown or disabled, 401 for a signature no offered client accepts | Built. One surface per address scheme sits in mandatum's registry and fans in and out to the clients behind it |
 | Client secrets: written as a value or an `env:COLLEGIUM_*` reference, never returned or logged | Built. Values are in memory behind `clients.Secrets` and lost on restart. A reference survives one |
 | Secret references are default deny per tenant: read only for a variable the operator listed for that tenant with `-secret-refs`, checked where the secret is read, refused the same way whatever the reason | Built, tested across tenants and against a record written straight into the store |
-| Client limits: `max_clients` and `max_clients_per_surface` on the tenant's policy, and a `client` policy scope for runs and concurrency | Built on `pkg/policy` and the admission lock. Spend and storage per client are not |
+| Client limits: `max_clients` and `max_clients_per_surface` on the tenant's policy, and a `client` policy scope for runs, concurrency, spend and tokens | Built on `pkg/policy` and the admission lock. Storage per client is not |
 | A default client per surface from the `COLLEGIUM_SLACK_*` and `COLLEGIUM_GITHUB_*` variables | Built. Managed by the environment and read-only in the API |
 | Client API: `/api/clients` create, read, replace, delete, behind `clients:read` and `clients:write` | Built, tested across tenants |
 | Console for clients: Settings, Connections lists them, and an admin can disable or remove one | Built. Creating one, and setting its limits, are API calls. Not checked in a browser |
@@ -205,11 +290,12 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Projects: conversations filed together, shared memory sent to every agent in the project, schedules whose runs are filed there | Built, in memory |
 | Workspace settings, `pkg/prefs`: per-person theme, accent and profile picture | Built, in memory |
 | Memory approval: what the memory agent writes waits for a person, following saige's memory policy | Built |
-| `pkg/policy`: versioned limits per workspace, project, agent and client on runs, concurrency, spend and lease; a narrower scope can only tighten | Built, in memory. One pure `Decide` function, so a refusal can be replayed from the policy version it names |
-| `pkg/usage`: append-only ledger of admitted, refused, warned and ended runs, with `Rebuild` from its entries | Built, in memory. Admissions are kept 62 days |
-| Admission: every run is checked under one lock before it is accepted; a refusal answers 429 or 402 with the limit, the policy version and the reset time, and raises a budget alert | Built, tested with 40 racers against a limit of 7 |
-| Console for limits: Settings, each project page, and usage against limits in Analytics | Built |
-| Spend limits | Stored and versioned, not enforced. mandatum reports no cost for a run, so `spend.metered` is false |
+| `pkg/policy`: versioned limits per workspace, project, agent and client on runs, concurrency, spend, tokens and lease; a narrower scope can only tighten | Built, in memory. Two pure functions, `Decide` at admission and `Exceeded` mid-run, so a refusal or a stop can be replayed from the policy version it names |
+| `pkg/usage`: append-only ledger of admitted, refused, warned, halted and ended runs, and of spend (one entry per model call, keyed by the runtime's `accounting_id`, and one settlement per run), with counters per scope and day and `Rebuild` from its entries | Built, in memory. Admissions and spend are kept 62 days, whole days. Tested: a call or a settlement delivered twice counts once, a call after its run settled counts only beyond the settled total, entries out of time order count in their own period, and a rebuild agrees |
+| Admission: every run is checked under one lock before it is accepted; a refusal answers 429 or 402 with the limit, the policy version and the reset time, and raises a budget alert | Built, tested with 40 racers against a limit of 7, and at a spend limit reached to the micro-dollar |
+| Console for limits: Settings, each project page, and usage against limits in Analytics, with token limits and a lower-bound note on spend | Built. Not checked in a browser |
+| Spend and token limits: enforced at admission and mid-run, with the warning threshold and a stop through the runtime. See [Usage and spend](#usage-and-spend) | Built on mandatum v0.10.0's usage reports, tested with scripted priced models under the race detector. Not run against a real provider here: no model key was available. Cost is a list price from saige's catalog, not a provider's invoice. A call in flight when the limit is crossed finishes and is counted, so a scope can end a little over its limit |
+| Unpriced calls and other currencies: counted apart, never as dollars, one lower-bound alert per scope, bounded by `max_tokens` | Built, tested |
 | Asking a person to approve a run at a limit | Not built. A run cannot be parked on a person, so the only action is to block |
 | Limits set by a project's owner | Not built. Only an admin sets limits, because projects have no owners |
 | First-run setup: the first admin names themselves and the workspace | Built. `first_admin`, `onboarded_at` and the workspace's setup fields |
@@ -237,8 +323,10 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Stopping a run: `POST /api/runs/{id}/stop` asks the runtime to stop it and everything attached to it. The model call in flight is cancelled, the run ends `stopped` with its partial answer and cause, and what it delegated keeps running. See [Stopping a run](#stopping-a-run) | Built on mandatum v0.8.0's `runtime.Stop`, recorded in the run ledger, tested with scripted models under the race detector, three levels deep, and against a completion racing the stop |
 | A place is always kept for work that waits on nobody, so runs waiting on each other cannot fill every place and hang | Built. With `Concurrency` 4 by default, three runs may wait at once and a fourth is told no |
 | Publishing that waits for approval | Not built. A run cannot be parked on a person |
-| Run manifest: one JSON document of a run, every run under it, each pinned definition and every event with its body | Built, from the journal. A run older than the journal's ring comes back marked incomplete |
-| Token counts, context window and cost per run | Not available. The runtime reports none |
+| Run manifest: one JSON document of a run, every run under it, each pinned definition, every event with its body, and the tree's usage | Built, from the journal. A run older than the journal's ring comes back marked incomplete |
+| Token counts, context window and cost per run: `usage` on the run (own, rolled-up attached runs, total, context), live while it works and the runtime's record once it ends, recorded once whatever is redelivered | Built, tested with redelivered events, a reconciler pass, a stopped run and a three-run tree. Context fill is the latest call's prompt against the window saige's catalog declares; a model with no declared window shows tokens only |
+| Leases on real cost: a called run is held to its lease by what it spends and what it has handed on, and settles with its caller when it ends, climbing past a caller that settled first | Built, tested, with a grant made before the caller's own call was counted and a call that ends after its caller. An API caller still names a lease; an agent's own calls lease half of what is left |
+| Usage in the Slack app | Not shown, on purpose: the console shows none on a turn either. A vultus usage summary would let both show it |
 | Uploading binary files (PDF, images) to knowledge or a message | Not built. Files are read as text in the browser |
 | Evals against a knowledge variant | Not built. Evals search the current view |
 | Summarizing history | Not built. Long conversations are truncated to the limit, oldest turns first |

@@ -86,6 +86,8 @@ export interface Group {
   active: number;
   p50_ms: number;
   p95_ms: number;
+  /** What the runs' own model calls used. Each run counts only its own calls. */
+  usage?: { model_calls: number; tokens: number; spend: number; unpriced_calls: number; other_currency_runs: number };
 }
 
 export interface Bucket {
@@ -246,9 +248,11 @@ export interface Policy {
   period: "day" | "month";
   max_runs?: number;
   max_concurrent?: number;
-  /** Micro-USD. Recorded and versioned, not enforced until runs report cost. */
+  /** Micro-USD a period, enforced. Only money priced in US dollars counts. */
   spend_limit?: number;
   max_lease?: number;
+  /** Model tokens a period, enforced, priced or not. */
+  max_tokens?: number;
   warn_at?: number;
   action: "block" | "approve";
   version: number;
@@ -312,7 +316,9 @@ export interface ScopeUsage {
   action: "block" | "approve";
   runs: Measure;
   concurrent: Measure;
-  spend: Measure & { metered: boolean };
+  /** Micro-USD priced in US dollars. A lower bound when calls had no price or another currency. */
+  spend: Measure & { metered: boolean; unpriced_calls: number; other_costs?: { micros: number; currency: string }[] };
+  tokens: Measure;
   max_lease: number;
   state: "ok" | "warn" | "over";
 }

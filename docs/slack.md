@@ -14,6 +14,7 @@
 | Inbox items about a run | No | In the run's thread, and on Home |
 | Several apps per workspace, as [clients](clients.md) | Yes: tenant, limits and allow-list come from the client | Reads one client's default agent and allow-list. Its runs are not yet recorded as the client's, see below |
 | Who asked | Recorded on the run | Not recorded yet: the API takes no actor |
+| Tokens and cost | No | No. See [usage on a turn](clients.md#usage-on-a-turn) |
 
 Use the connector for code channels, for several apps per workspace, and where
 a public URL is fine. Use the Slack app for the console's experience in Slack,

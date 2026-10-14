@@ -80,6 +80,7 @@ const run: Run = {
   thread: "r31d24839ddee5733b221391dfb156ce0",
   lease: 0,
   granted: 0,
+  spent: 0,
   calls: 0,
   status: "accepted",
   created_at: "2026-01-01T00:00:00Z",

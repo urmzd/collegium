@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
@@ -98,11 +99,14 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 		p.waiting.Add(-1)
 		return "", fmt.Errorf("%w, so %s cannot be asked right now", ErrBusy, target)
 	}
-	defer p.waiting.Add(-1)
+	// The place is given back once the run has ended, before its usage is
+	// rolled up: waiting on the ledger is not waiting on a run.
+	var release sync.Once
+	defer release.Do(func() { p.waiting.Add(-1) })
 
-	child, err := p.Call(ctx, parent.Tenant, parent.RunID, call.Request{
+	child, err := p.call(ctx, parent.Tenant, parent.RunID, call.Request{
 		Key: callKey("attach", target, text), Agent: target, Text: text, Mode: call.Subagent,
-	})
+	}, true)
 	if err != nil {
 		return "", err
 	}
@@ -114,6 +118,11 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 		run, err := p.Runs.Get(parent.Tenant, child.ID)
 		if err != nil {
 			return "", err
+		}
+		if run.Status.Terminal() {
+			release.Do(func() { p.waiting.Add(-1) })
+			// What it spent is the caller's spending too, however it ended.
+			p.rollUp(ctx, child.ID)
 		}
 		switch run.Status {
 		case runs.Completed:
@@ -155,6 +164,45 @@ func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, t
 	}
 }
 
+// ledgerWait bounds how long a Delegator waits for the run ledger to record
+// the end of a run it already saw end on the bus.
+const ledgerWait = 10 * time.Second
+
+// rollUp reports an attached run that has ended to the runtime, so the run
+// that waited on it counts it in its own usage: in RunUsage.Children, and so
+// in its Total. The runtime reads the child from the ledger and takes nothing
+// from here but its id, and counts it once however often it is reported.
+//
+// The run's end is seen on the bus first, and the ledger records it a moment
+// later, so this waits for the ledger, within a bound. A child it never sees
+// end there is logged and not rolled up: its own calls are still counted in
+// the usage ledger, under its own run.
+//
+// A delegated run is not rolled up: the turn that handed it over has moved on
+// and may be gone, so there is no turn to report it to. Its spend counts
+// against the same scopes as its caller's (see placeOf), and its own record
+// says what it used.
+func (p *Platform) rollUp(ctx context.Context, childID string) {
+	deadline := time.Now().Add(ledgerWait)
+	for {
+		rec, err := p.ledger.GetRun(ctx, childID)
+		if err == nil && rec.Status.Terminal() {
+			break
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			p.log.Warn("platform: an attached run's end is not in the ledger, so its usage is not rolled up into its caller", "run", childID)
+			return
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := runtime.ReportChildUsage(ctx, childID); err != nil {
+		p.log.Warn("platform: an attached run's usage could not be rolled up into its caller", "run", childID, "error", err)
+	}
+}
+
 // delegateTool is the tool an agent hands work to another agent with, without
 // waiting for it.
 func (p *Platform) delegateTool(req runtime.Request, action func(payload.Action) error) saigetypes.Tool {
@@ -174,9 +222,9 @@ func (p *Platform) delegateTool(req runtime.Request, action func(payload.Action)
 				return "", fmt.Errorf("%w: a turn with no run of its own cannot hand work on", call.ErrInvalid)
 			}
 			target, text := arg(args, "agent"), arg(args, "text")
-			child, err := p.Call(ctx, req.Tenant, req.RunID, call.Request{
+			child, err := p.call(ctx, req.Tenant, req.RunID, call.Request{
 				Key: callKey("delegate", target, text), Agent: target, Text: text, Mode: call.Delegate,
-			})
+			}, true)
 			if err != nil {
 				return "", err
 			}
