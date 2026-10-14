@@ -20,6 +20,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+
+	"github.com/urmzd/collegium/pkg/authz"
 )
 
 // Sentinel errors. Handlers map ErrUnauthenticated to 401 and ErrForbidden to 403.
@@ -113,6 +115,11 @@ type Principal struct {
 	// policy decides what Roles allow. Nil means DefaultPolicy. It is set
 	// by whoever authenticated the caller, and is never serialized.
 	policy *Policy
+	// held is Roles with the grant of policy that gave each, kept from the
+	// sign-in so Explain can name it. It is all that is kept of the claims:
+	// the grant is the policy's own statement, not anything from the token.
+	// Empty when the roles were not derived from claims.
+	held []authz.HeldRole
 }
 
 // WithPolicy returns the caller decided by pol instead of the built-in policy.

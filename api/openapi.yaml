@@ -168,6 +168,29 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "500": {$ref: "#/components/responses/ServerError"}
 
+  /api/access/explain:
+    get:
+      operationId: explainAccess
+      tags: [session]
+      summary: Why the caller may or may not do one thing
+      description: >-
+        Decides one permission for the caller and says why: the rule that
+        decided, the role it reached them through, and the grant that gave
+        that role when the sign-in kept it. It is only ever about the caller;
+        there is no way to name another person.
+      x-permission: authenticated
+      parameters:
+        - {name: permission, in: query, required: true, description: "The permission to explain, one of Permission, such as runs:read.", schema: {type: string}}
+      responses:
+        "200":
+          description: The decision.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessDecision"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
   /api/agents:
     get:
       operationId: listAgents
@@ -2496,6 +2519,52 @@ components:
           description: A machine's permissions, from its token.
           type: array
           items: {$ref: "#/components/schemas/Permission"}
+    AccessDecision:
+      description: Why the caller may or may not do one thing.
+      type: object
+      required: [permission, allowed, outcome, held]
+      properties:
+        permission: {$ref: "#/components/schemas/Permission"}
+        allowed: {type: boolean}
+        outcome:
+          description: >-
+            allowed; denied, when a rule denies it, which beats every allow;
+            no match, when no rule in the roles held mentions it and the
+            default is deny; scope, when a machine's token scope decided.
+          type: string
+          enum: [allowed, denied, no match, scope]
+        role:
+          description: The held role the deciding rule reached the caller through.
+          type: string
+        path:
+          description: From role to the role that declares the rule.
+          type: array
+          items: {type: string}
+        rule:
+          description: The deciding rule, as the policy writes it.
+          type: string
+        grant:
+          description: The grant that gave the role, when the sign-in kept it.
+          type: string
+        held:
+          description: Every role the decision considered.
+          type: array
+          items: {$ref: "#/components/schemas/AccessHeldRole"}
+        unknown:
+          description: Roles the caller holds that the policy does not declare. They grant nothing.
+          type: array
+          items: {type: string}
+    AccessHeldRole:
+      type: object
+      required: [role]
+      properties:
+        role: {type: string}
+        grant:
+          description: The grant that gave the role, as the policy writes it, when known.
+          type: string
+        group:
+          description: The group the grant names, when it names one.
+          type: string
     Me:
       type: object
       required: [principal, permissions, first_admin]

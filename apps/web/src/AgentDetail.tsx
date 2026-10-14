@@ -107,8 +107,8 @@ export function AgentDetail({
 }: {
   /** null creates a new agent. */
   revision: Revision | null;
-  /** Open on the Memory tab, for someone arriving to review proposals. */
-  startOn?: "memory";
+  /** Open on the Memory tab, for someone arriving to review proposals, or on Evals. */
+  startOn?: "memory" | "evals";
   agents: Revision[];
   sources: Source[];
   suites: SuiteView[];
@@ -135,7 +135,7 @@ export function AgentDetail({
     access: { spawn: [] },
   };
   const [spec, setSpec] = useState<AgentSpec>(saved);
-  const [tab, setTab] = useState<Tab>(startOn === "memory" && revision ? "memory" : "prompt");
+  const [tab, setTab] = useState<Tab>(startOn && revision ? startOn : "prompt");
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [history, setHistory] = useState<Revision[]>([]);

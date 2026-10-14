@@ -172,6 +172,9 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Recents: conversations paged by an opaque keyset cursor, 200 a page | Built |
 | Project membership and per-project access | Not built. Everyone in the workspace sees every project |
 | Web console on vultus: chat, inbox, agent editor with revisions, evals, knowledge, schedules, analytics, alerts, settings | Built |
+| Console home: vultus `Home` as the default view, its model built by `apps/web/src/home.ts` from what the console fetches, its actions routed in place | Built, unit-tested, checked in a browser as an operator, a viewer and someone with no role. Personal accounts and Jira are not offered: the platform has neither |
+| Console menu: Home, New conversation, Inbox, then Work, Build, Watch and Workspace. An entry is hidden from someone who may not read what it opens | Built. Connections, Access and Limits open their Settings sections |
+| "Why can I do this?": `GET /api/access/explain` and the Access panel. A sign-in keeps the grant behind each role, not the claims or the token | Built, tested. Sessions are in memory, so a restart signs everyone out |
 | Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the modes are loopback dev auth and the loopback mock provider |
 | Model parameters on an agent (temperature, token and step limits) | Not built. mandatum's agent spec has no fields for them |
 | Stopping a run in flight | Not built. The composer's queue waits for the run to end |

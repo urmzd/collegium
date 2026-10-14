@@ -354,6 +354,33 @@ func TestExplainRolesFollowsInheritance(t *testing.T) {
 	}
 }
 
+// What Held keeps of a sign-in explains the same as the claims did, and
+// matches the roles Roles lists.
+func TestExplainHeldNamesTheGrantWithoutTheClaims(t *testing.T) {
+	p := load(t, example)
+	finance := who(func(i *authz.Identity) {
+		i.Groups = []string{"platform-admins"}
+		i.Claims = map[string]any{"department": "finance"}
+	})
+	held := p.Held(finance)
+	var roles []string
+	for _, h := range held {
+		roles = append(roles, h.Role)
+	}
+	if !slices.Equal(roles, p.Roles(finance)) {
+		t.Fatalf("held %v, roles %v", roles, p.Roles(finance))
+	}
+	for _, perm := range perms {
+		want, got := p.Explain(finance, perm), p.ExplainHeld(held, perm)
+		if got.String() != want.String() || got.Grant != want.Grant {
+			t.Errorf("%s:\nheld:   %s\nclaims: %s", perm, got, want)
+		}
+	}
+	if e := p.ExplainHeld(nil, "runs:read"); e.Allowed || e.Outcome != authz.NoMatch {
+		t.Fatalf("got %+v", e)
+	}
+}
+
 // Explain and Allows must never disagree, or the explanation lies.
 func TestExplainAgreesWithAllows(t *testing.T) {
 	p := load(t, example)
