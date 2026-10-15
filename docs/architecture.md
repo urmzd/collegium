@@ -326,6 +326,9 @@ Admission is one process holding one lock, reading counts from memory. That is c
 
 ## Status
 
+Releases run the reusable CI workflow before publishing a versioned Go module
+and GitHub release from `main`, using the main-only `release` environment.
+
 | Piece | State |
 |-------|-------|
 | GitHub and Slack integrations: signed webhook ingress, tenant-bound tools and delivery through `Invoke` | Built, tested with simulated APIs |
