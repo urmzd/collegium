@@ -61,7 +61,7 @@ jobs:
     name: JS
     runs-on: ubuntu-latest
     env:
-      VULTUS_REF: 77993030cfda27faa00846681295a1bc63fa1ddf
+      VULTUS_REF: bd4b3084cb7981e2d10caaa2bab0a673882b2fa4
     steps:
       - uses: actions/checkout@v4
         with:
@@ -131,7 +131,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     env:
-      VULTUS_REF: 77993030cfda27faa00846681295a1bc63fa1ddf
+      VULTUS_REF: bd4b3084cb7981e2d10caaa2bab0a673882b2fa4
     steps:
       - uses: actions/checkout@v4
         with:

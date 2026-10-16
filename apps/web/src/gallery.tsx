@@ -1,5 +1,6 @@
 import { StrictMode, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { orbLabel, type OrbState } from "@vultus/web";
 import "@fontsource-variable/figtree";
 import "@fontsource-variable/bricolage-grotesque/wdth.css";
 import "./styles.css";
@@ -78,6 +79,22 @@ function Gallery() {
           onChange={setTheme}
         />
       </header>
+
+      <Section title="Agent marks: activity within the row">
+        <div id="agent-marks" data-testid="gallery-agent-marks" className="grid grid-cols-2 gap-4 sm:grid-cols-5">
+          {(["idle", "thinking", "searching", "calling", "delegating", "composing", "waiting", "done", "error", "stopped"] as OrbState[]).map((state) => (
+            <div key={state} className="flex flex-col gap-2">
+              <span className="text-aui-xs text-aui-muted">{orbLabel[state]}</span>
+              {[12, 14, 16, 18, 24, 32].map((size) => (
+                <div key={size} data-mark-size={size} className="flex items-center gap-2 overflow-hidden text-aui-xs" style={{ height: size }}>
+                  <AgentMark name="oncall" size={size} state={state} />
+                  <span>oncall · {size}px</span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+      </Section>
 
       <Section title="Stroke, by state">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-5">

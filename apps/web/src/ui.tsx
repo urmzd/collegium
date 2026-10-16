@@ -1,5 +1,5 @@
 import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, XIcon } from "@vultus/render-web";
-import { AgentOrb, type OrbSize, type OrbState } from "@vultus/web";
+import { AgentOrb, type OrbState } from "@vultus/web";
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
 import { cause, dollars, elapsed, took } from "./format.ts";
@@ -248,8 +248,6 @@ export function AgentTint({ name, className, children }: { name: string; classNa
   );
 }
 
-const orbSize = (px: number): OrbSize => (px <= 14 ? "xs" : px <= 22 ? "sm" : px <= 36 ? "md" : "lg");
-
 /**
  * An agent's mark is its orb, in its own color. The same orb sits beside its
  * answers, where it moves with what the agent is doing, so the mark in a list
@@ -257,8 +255,8 @@ const orbSize = (px: number): OrbSize => (px <= 14 ? "xs" : px <= 22 ? "sm" : px
  */
 export function AgentMark({ name, size = 18, state = "idle" }: { name: string; size?: number; state?: OrbState }) {
   return (
-    <span data-accent="agent" className="inline-flex shrink-0" style={{ "--aui-accent-h": hueOf(name) } as CSSProperties}>
-      <AgentOrb state={state} size={orbSize(size)} label="" />
+    <span data-accent="agent" className="inline-flex shrink-0 items-center align-middle" style={{ "--aui-accent-h": hueOf(name) } as CSSProperties}>
+      <AgentOrb state={state} size={size} label="" />
     </span>
   );
 }
