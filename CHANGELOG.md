@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.2.1 (2026-10-16)
+
+### Bug Fixes
+
+- fit agent orbs naturally in compact console rows (#21) ([7c2adbb](https://github.com/urmzd/collegium/commit/7c2adbbb5f1a629dfc081256f797d3f07a6924dd))
+
+[Full Changelog](https://github.com/urmzd/collegium/compare/v0.2.0...v0.2.1)
+
+
 ## 0.2.0 (2026-10-16)
 
 ### Features
