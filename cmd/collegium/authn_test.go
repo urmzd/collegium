@@ -19,10 +19,54 @@ import (
 	"github.com/urmzd/collegium/internal/httpapi"
 	"github.com/urmzd/collegium/internal/platform"
 	"github.com/urmzd/collegium/pkg/auth"
+	"github.com/urmzd/collegium/pkg/auth/authtest"
 	"github.com/urmzd/collegium/pkg/call"
 )
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
+
+func TestTailscaleServeAuth(t *testing.T) {
+	base := authConfig{mode: "tailscale", addr: "127.0.0.1:8080", publicURL: "https://collegium.example.ts.net", tenant: "acme", policy: auth.DefaultPolicy()}
+	a, stop, err := newAuthn(context.Background(), base)
+	stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := http.NewRequest("GET", base.publicURL+"/api/me", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.RemoteAddr = "127.0.0.1:1234"
+	r.Header.Set("Tailscale-User-Login", "alice@example.com")
+	who, err := a.Authenticate(r)
+	if err != nil || who.Tenant != "acme" || len(who.Granted()) != 0 {
+		t.Fatalf("default deny: %+v, %v", who, err)
+	}
+	base.tenantClaim = "tenant"
+	if _, _, err := newAuthn(context.Background(), base); err == nil {
+		t.Fatal("accepted a tenant claim in Tailscale mode")
+	}
+}
+
+func TestOktaAlias(t *testing.T) {
+	issuer := authtest.New(t)
+	a, stop, err := newAuthn(context.Background(), authConfig{
+		mode: "okta", publicURL: "https://collegium.example.com", tenant: "acme", groups: "groups", policy: auth.DefaultPolicy(),
+		getenv: env(map[string]string{
+			"COLLEGIUM_OIDC_ISSUER":        issuer.URL,
+			"COLLEGIUM_OIDC_CLIENT_ID":     "web",
+			"COLLEGIUM_OIDC_CLIENT_SECRET": "secret",
+			"COLLEGIUM_OIDC_AUDIENCE":      "api://collegium",
+		}),
+	})
+	stop()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Verifier == nil || a.OAuth.ClientID != "web" || a.OAuth.RedirectURL != "https://collegium.example.com/auth/callback" {
+		t.Fatalf("Okta did not use the OIDC flow: %+v", a)
+	}
+}
 
 func writeFile(t *testing.T, name, content string) string {
 	t.Helper()

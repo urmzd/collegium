@@ -6,10 +6,8 @@ import "@fontsource-variable/bricolage-grotesque/wdth.css";
 import "./styles.css";
 import { ActivityPanel } from "./Activity.tsx";
 import { sampleTrees } from "./activity.fixtures.ts";
-import type { Me, Preferences, Settings } from "./api.ts";
 import { InboxPage } from "./InboxPage.tsx";
 import { memoryTransport } from "./mail.fixtures.ts";
-import { Onboarding } from "./Onboarding.tsx";
 import { LimitsPanel } from "./Limits.tsx";
 import { overLimit, parentBound, sessionBound, unlimited } from "./limits.fixtures.ts";
 import { RunItem } from "./RunItem.tsx";
@@ -31,9 +29,7 @@ import {
 /**
  * Every state of the console's own primitives, drawn from props alone. Open
  * /gallery.html on the dev server. Rendering calls nothing on the platform, so
- * it is also what a browser test can load. The onboarding buttons are the one
- * exception: pressing them saves, as they do in the console. It is not part of
- * the built console.
+ * it is also what a browser test can load. It is not part of the built console.
  */
 const states: StrokeState[] = ["idle", "working", "waiting", "failed", "done"];
 const agents = ["lead", "oncall", "releaser", "helper", "billing", "triage"];
@@ -42,11 +38,6 @@ const M = 1_000_000;
 const inbox = memoryTransport();
 const trees = sampleTrees();
 const files = memoryStorage();
-const person: Me = {
-  principal: { subject: "gallery", tenant: "default", kind: "user", name: "Ada Lovelace", email: "ada@example.com" },
-  permissions: [],
-};
-const workspace = { baseline: "", history: "recent", history_limit: 10, projects: [], title_agent: "", memory_agent: "", memory_auto_approve: false } as Settings;
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -62,7 +53,6 @@ function Gallery() {
   const [limit, setLimit] = useState<number | null>(null);
   const [period, setPeriod] = useState<Period>("month");
   const [run, setRun] = useState<string | null>(null);
-  const [prefs, setPrefs] = useState<Preferences>({ display_name: "", theme: "system", accent: "purple", has_photo: false, photo_version: 0 });
   document.documentElement.dataset.theme = theme;
 
   return (
@@ -233,24 +223,6 @@ function Gallery() {
           <StorageUsed use={sampleUse({ used_bytes: 6 * 1024 ** 2, by_project: [] })} />
           <StoredList files={[]} selected={null} state="loading" narrowed={false} onSelect={() => {}} />
           <StoredList files={[]} selected={null} state="failed" narrowed={false} onSelect={() => {}} />
-        </div>
-      </Section>
-
-      <Section title="Onboarding, for everyone and for the first admin">
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-          {[false, true].map((first) => (
-            <div key={String(first)} className="h-[46rem] overflow-hidden rounded-aui-lg border border-[var(--collegium-rule)]">
-              <Onboarding
-                me={person}
-                prefs={prefs}
-                workspace={workspace}
-                firstAdmin={first}
-                onPrefs={setPrefs}
-                onWorkspace={() => {}}
-                onDone={() => {}}
-              />
-            </div>
-          ))}
         </div>
       </Section>
 

@@ -246,6 +246,9 @@ func (f *fixture) signIn(t *testing.T, groups ...string) *http.Client {
 		t.Fatalf("login redirected to %q", res.Header.Get("Location"))
 	}
 	q := to.Query()
+	if q.Get("prompt") != "" || q.Get("max_age") != "" {
+		t.Fatalf("SSO must allow the provider's existing session: %v", q)
+	}
 	if q.Get("code_challenge_method") != "S256" || q.Get("code_challenge") == "" || q.Get("nonce") == "" || q.Get("state") == "" {
 		t.Fatalf("authorization request is missing PKCE, nonce or state: %v", q)
 	}

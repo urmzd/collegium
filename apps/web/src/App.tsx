@@ -25,7 +25,6 @@ import { Chat } from "./Chat.tsx";
 import { EvalsPage } from "./EvalsPage.tsx";
 import { InboxPage } from "./InboxPage.tsx";
 import { Knowledge } from "./Knowledge.tsx";
-import { Onboarding } from "./Onboarding.tsx";
 import { ProjectNav, ProjectPage } from "./Projects.tsx";
 import { RunList } from "./Runs.tsx";
 import { Schedules } from "./Schedules.tsx";
@@ -205,16 +204,19 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [sources, setSources] = useState<Source[]>([]);
   const [suites, setSuites] = useState<SuiteView[]>([]);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
-  const [prefs, setPrefs] = useState<Preferences | null>(null);
+  const [prefs, setPrefs] = useState<Preferences>({
+    display_name: "",
+    theme: "system",
+    accent: "purple",
+    has_photo: false,
+    photo_version: 0,
+  });
   const [day, setDay] = useState<Summary | null>(null);
   const [live, setLive] = useState(false);
   // Bumped whenever a run starts or ends, so pages that aggregate refetch.
   const [tick, setTick] = useState(0);
 
   useAppearance(prefs);
-  // Set when onboarding ends, whether or not saving that fact worked, so
-  // nobody is asked twice in one sitting or left unable to get in.
-  const [welcomed, setWelcomed] = useState(false);
 
   const toggle = () =>
     setOpen((was) => {
@@ -283,21 +285,8 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     loadRuns();
     loadAgents();
     loadSources();
-    api
-      .preferences()
-      .then(setPrefs)
-      // Preferences that cannot be read cannot be saved either, so use the
-      // defaults and do not ask first-run questions.
-      .catch(() =>
-        setPrefs({
-          display_name: "",
-          theme: "system",
-          accent: "purple",
-          has_photo: false,
-          photo_version: 0,
-          onboarded_at: new Date().toISOString(),
-        }),
-      );
+    // Preferences are optional: render immediately with defaults while they load.
+    api.preferences().then(setPrefs).catch(() => {});
   }, [loadRuns, loadAgents, loadSources]);
 
   // One stream for the whole tenant keeps every list current. Lifecycle and
@@ -372,28 +361,6 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     if (!workspace) return;
     api.saveSettings({ ...workspace, baseline: name }).then(setWorkspace).catch(() => {});
   };
-
-
-  // Wait for preferences, so the console never shows for a moment before the
-  // first-run questions do.
-  if (!prefs) return <Centered>Loading</Centered>;
-  if (!prefs.onboarded_at && !welcomed) {
-    return (
-      <Onboarding
-        me={me}
-        prefs={prefs}
-        workspace={workspace}
-        firstAdmin={can("agents:write") && workspace !== null && !workspace.setup_at}
-        onPrefs={setPrefs}
-        onWorkspace={setWorkspace}
-        onDone={() => {
-          setWelcomed(true);
-          loadAgents();
-          loadProjects();
-        }}
-      />
-    );
-  }
 
   return (
     <div className="flex h-full text-aui-fg">

@@ -83,20 +83,13 @@ With a fresh `make dev` process and `make web` running:
 teasr run
 ```
 
-[`teasr.toml`](teasr.toml) captures onboarding, completes the setup form, then captures the console pages. After onboarding has already completed:
-
-```sh
-teasr run --scenes home,runs,agents,analytics,primitives
-```
-
-Images are written to [`showcase/`](showcase/). Restart the development backend to capture onboarding again.
+[`teasr.toml`](teasr.toml) captures the console pages and writes images to [`showcase/`](showcase/). The console opens directly after sign-in. Personal preferences are optional in Profile and Appearance settings.
 
 <p align="center">
   <img src="showcase/runs.png" alt="Seeded offline run history" width="30%"> &nbsp;
-  <img src="showcase/onboarding.png" alt="First-run workspace setup" width="30%"> &nbsp;
   <img src="showcase/analytics.png" alt="Analytics for the seeded offline runs" width="30%">
 </p>
-<p align="center"><em>Runs &middot; Workspace setup &middot; Analytics</em></p>
+<p align="center"><em>Runs &middot; Analytics</em></p>
 
 ## Conversations
 

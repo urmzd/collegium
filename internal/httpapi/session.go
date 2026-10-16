@@ -23,7 +23,7 @@ const (
 	loginTTL   = 10 * time.Minute
 )
 
-// Authn authenticates requests. Exactly one of Dev or Verifier is set.
+// Authn authenticates requests using OIDC, Tailscale Serve or development auth.
 //
 // A browser never holds a token. Sign-in runs the authorization code flow with
 // PKCE on the server, and the browser gets an opaque, HttpOnly session cookie.
@@ -32,7 +32,8 @@ type Authn struct {
 	// Dev, when set, is who every request is. It exists so the platform can
 	// be previewed before an identity provider is configured, and the server
 	// refuses to start with it on anything but a loopback address.
-	Dev *auth.Principal
+	Dev       *auth.Principal
+	tailscale *tailscaleAuth
 
 	Verifier *auth.Verifier
 	OAuth    *oauth2.Config
@@ -131,10 +132,16 @@ func (a *Authn) Authenticate(r *http.Request) (auth.Principal, error) {
 	if a.Dev != nil {
 		return *a.Dev, nil
 	}
+	if a.tailscale != nil {
+		return a.tailscale.authenticate(r)
+	}
 	if h := r.Header.Get("Authorization"); h != "" {
 		raw, ok := strings.CutPrefix(h, "Bearer ")
 		if !ok {
 			return auth.Principal{}, fmt.Errorf("%w: unsupported authorization scheme", auth.ErrUnauthenticated)
+		}
+		if a.Verifier == nil {
+			return auth.Principal{}, auth.ErrUnauthenticated
 		}
 		return a.Verifier.Bearer(r.Context(), raw)
 	}
@@ -154,6 +161,10 @@ func (a *Authn) Authenticate(r *http.Request) (auth.Principal, error) {
 
 // handleLogin starts a sign-in and redirects to the identity provider.
 func (a *Authn) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if a.tailscale != nil {
+		a.tailscaleLogin(w, r)
+		return
+	}
 	if a.Dev != nil {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return
@@ -187,6 +198,10 @@ func (a *Authn) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 // handleCallback finishes a sign-in.
 func (a *Authn) handleCallback(w http.ResponseWriter, r *http.Request) {
+	if a.tailscale != nil {
+		http.Error(w, "Tailscale authentication has no callback", http.StatusBadRequest)
+		return
+	}
 	if a.Dev != nil {
 		http.Redirect(w, r, "/", http.StatusFound)
 		return

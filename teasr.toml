@@ -1,45 +1,12 @@
 # Screenshots of the web console, written to ./showcase.
-#
-# Needs `make dev` and `make web` running. On a freshly started server the
-# console opens on the onboarding page, so run everything:
-#
-#   teasr run
-#
-# The `onboarding` scene takes its picture and then finishes onboarding as the
-# dev user, which is what lets the later scenes reach the console. Once that has
-# happened the page is not shown again until the server restarts, so refresh
-# the rest with:
-#
-#   teasr run --scenes home,runs,agents,analytics,primitives
+# Needs `make dev` and `make web` running, then `teasr run`.
+# The console opens directly, including on a fresh server.
 
 [output]
 dir = "./showcase"
 
 [[output.formats]]
 output_type = "png"
-
-[[scenes]]
-type = "web"
-name = "onboarding"
-uri = "http://127.0.0.1:5173/"
-viewport = { width = 1440, height = 900 }
-
-[[scenes.interactions]]
-type = "wait"
-duration = 1500
-
-[[scenes.interactions]]
-type = "snapshot"
-
-[[scenes.interactions]]
-type = "click"
-selector = 'button[type="submit"]'
-hidden = true
-
-[[scenes.interactions]]
-type = "wait"
-duration = 1000
-hidden = true
 
 [[scenes]]
 type = "web"

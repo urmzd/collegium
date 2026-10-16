@@ -56,7 +56,7 @@ func run(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	addr := fs.String("addr", "127.0.0.1:8080", "listen address")
 	webhookAddr := fs.String("webhook-addr", "", "optional separate listener exposing only signed connector webhooks")
-	authMode := fs.String("auth", "oidc", `who may call: "oidc"; "mock" for sign-in against a built-in development identity provider on loopback; or "dev" for a loopback-only preview with no sign-in`)
+	authMode := fs.String("auth", "oidc", `who may call: "oidc" (or "okta") for SSO; "tailscale" behind local Tailscale Serve; "mock" for the loopback development identity provider; "dev" for a loopback preview with no sign-in`)
 	tenant := fs.String("tenant", "default", "tenant every caller is confined to, unless -tenant-claim is set")
 	tenantClaim := fs.String("tenant-claim", "", "token claim that carries the caller's tenant")
 	groupsClaim := fs.String("groups-claim", "groups", "token claim that lists a person's groups")
