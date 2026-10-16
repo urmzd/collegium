@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -160,7 +161,14 @@ func TestGitHubCollaborationFlowsThroughDurableSandboxAndRouter(t *testing.T) {
 		workerDone <- worker.New(lgr, q, worker.WithRegistry(durable.Registry()), worker.WithConcurrency(1), worker.WithJanitorEvery(0), worker.WithLogger(quiet)).Run(ctx)
 	}()
 	go func() { ingestDone <- gh.Ingest(ctx, tags) }()
-	t.Cleanup(func() { cancel(); <-routerDone; <-workerDone; <-ingestDone })
+	t.Cleanup(func() {
+		cancel()
+		for _, done := range []<-chan error{routerDone, workerDone, ingestDone} {
+			if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+				t.Errorf("integration shutdown: %v", err)
+			}
+		}
+	})
 	select {
 	case <-broker.subscribed:
 	case <-ctx.Done():
