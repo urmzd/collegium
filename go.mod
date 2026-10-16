@@ -8,7 +8,7 @@ require (
 	github.com/urmzd/duraturo v0.1.1
 	github.com/urmzd/legatus v0.2.0
 	github.com/urmzd/mandatum v0.11.1-0.20261016195836-799b78eb1277
-	github.com/urmzd/saige v0.36.0
+	github.com/urmzd/saige v0.37.0
 	golang.org/x/oauth2 v0.37.0
 )
 
