@@ -378,6 +378,8 @@ func (p *Platform) observeQuestion(ctx context.Context, e envelope.Event) {
 			p.raiseQuestion(ctx, child, cq.Question, e.RunID)
 		}
 	case envelope.KindResumed:
+		p.answers.Lock()
+		defer p.answers.Unlock()
 		body, err := payload.Decode[payload.Lifecycle](e)
 		if err != nil || body.Answer == nil {
 			return
@@ -445,6 +447,8 @@ func (p *Platform) settleQuestion(tenant, runID, questionID string, o inbox.Outc
 // settleQuestionsOf settles every question still open on a run that ended:
 // stopped while it waited, or ended without an answer to it.
 func (p *Platform) settleQuestionsOf(run runs.Run) {
+	p.answers.Lock()
+	defer p.answers.Unlock()
 	for _, kind := range []inbox.Kind{inbox.KindApproval, inbox.KindClarification} {
 		for _, m := range p.Inbox.OpenOf(run.Tenant, kind) {
 			if m.Source.Run != run.ID {
@@ -649,6 +653,10 @@ func (p *Platform) answer(ctx context.Context, who auth.Principal, m inbox.Messa
 	req := runtime.AnswerRequest{
 		Tenant: who.Tenant, RunID: q.Run, QuestionID: q.ID, Answer: ans, By: reader.Subject, Via: who.Subject,
 	}
+	// Answer wakes the run before returning. Its resumed or terminal event
+	// must not settle the message ahead of the surface attribution below.
+	p.answers.Lock()
+	defer p.answers.Unlock()
 	got, first, err := p.rt.Answer(actx, req)
 	// A question answered the moment it is announced may not be recorded yet.
 	// It is asked again for a short while, never past the request.
