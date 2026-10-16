@@ -1,4 +1,4 @@
-import { BotIcon, CheckIcon, ClockIcon, MessageIcon } from "@vultus/render-web";
+import { BotIcon, CheckIcon, ClockIcon, ComposeIcon, HistoryIcon, PanelLeftCloseIcon, PanelLeftOpenIcon, SettingsIcon, Tooltip } from "@vultus/render-web";
 import { type MouseEvent, type ReactNode, type SVGProps, useId, useState } from "react";
 import type { Me, Preferences, ThreadSummary } from "./api.ts";
 import { Avatar, type Section } from "./Settings.tsx";
@@ -23,7 +23,7 @@ export type View =
 
 // Glyphs vultus does not ship. Same grid and stroke as its set.
 function glyph(d: ReactNode) {
-  return function Glyph({ size = 16, ...rest }: SVGProps<SVGSVGElement> & { size?: number }) {
+  return function Glyph({ size = 18, ...rest }: SVGProps<SVGSVGElement> & { size?: number }) {
     return (
       <svg
         aria-hidden="true"
@@ -44,17 +44,10 @@ function glyph(d: ReactNode) {
     );
   };
 }
-const PlusIcon = glyph(<path d="M5 12h14M12 5v14" />);
 const InboxIcon = glyph(
   <>
     <path d="M22 12h-6l-2 3h-4l-2-3H2" />
     <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z" />
-  </>,
-);
-const PanelIcon = glyph(
-  <>
-    <rect x="3" y="3" width="18" height="18" rx="2" />
-    <path d="M9 3v18" />
   </>,
 );
 const BookIcon = glyph(<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />);
@@ -122,15 +115,14 @@ function Item({
     e.preventDefault();
     onClick();
   };
-  return (
+  const link = (
     <a
       href={href}
       onClick={go}
       aria-current={active ? "page" : undefined}
       aria-label={count ? `${label}, ${count} need you` : open ? undefined : label}
-      title={open ? undefined : label}
-      className={`relative flex h-8 items-center gap-2.5 rounded-aui text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:font-medium aria-[current=page]:text-aui-fg ${
-        open ? "px-2.5" : "w-8 justify-center"
+      className={`relative flex h-9 items-center gap-2.5 [&>svg]:size-[18px] rounded-aui text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:font-medium aria-[current=page]:text-aui-fg ${
+        open ? "px-2.5" : "w-9 justify-center"
       }`}
     >
       {icon}
@@ -145,6 +137,7 @@ function Item({
         ))}
     </a>
   );
+  return open ? link : <Tooltip label={label}>{link}</Tooltip>;
 }
 
 /** One group in the filter panel: a title, then choices where exactly one is on. */
@@ -316,14 +309,14 @@ export function Sidebar({
   // nothing in the menu answers with a refusal.
   const top: Entry[] = [
     to("home", "Home", <HomeIcon />, true),
-    to("chat", "New conversation", <PlusIcon />, can("runs:write"), { active: view === "chat" && !selected, go: onNewChat }),
+    to("chat", "New conversation", <ComposeIcon />, can("runs:write"), { active: view === "chat" && !selected, go: onNewChat }),
     to("inbox", "Inbox", <InboxIcon />, can("runs:read"), { badge: inboxCount }),
   ];
   const groups: { label: string; entries: Entry[] }[] = [
     {
       label: "Work",
       entries: [
-        to("runs", "Runs", <MessageIcon />, can("runs:read")),
+        to("runs", "Runs", <HistoryIcon />, can("runs:read")),
         to("schedules", "Schedules", <ClockIcon />, can("schedules:read")),
       ],
     },
@@ -359,10 +352,12 @@ export function Sidebar({
   };
 
   return (
+    <>
+    {open && <button type="button" tabIndex={-1} aria-label="Dismiss navigation" onClick={onToggle} className="fixed inset-0 z-40 bg-black/40 md:hidden" />}
     <aside
       aria-label="Navigation"
       className={`collegium-glass-bar flex shrink-0 flex-col border-[var(--collegium-rule)] border-r transition-[width] duration-200 motion-reduce:transition-none ${
-        open ? "w-64" : "w-12"
+        open ? "w-64 max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:z-50" : "w-12"
       }`}
     >
       <div className={`flex h-12 items-center ${open ? "justify-between pr-2 pl-3.5" : "justify-center"}`}>
@@ -374,28 +369,14 @@ export function Sidebar({
           aria-label={open ? "Close sidebar" : "Open sidebar"}
           className="inline-flex size-8 items-center justify-center rounded-aui text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent"
         >
-          <PanelIcon />
+          {open ? <PanelLeftCloseIcon size={18} /> : <PanelLeftOpenIcon size={18} />}
         </button>
       </div>
 
       {/* Everything between the top row and the account scrolls as one, so a short window never squeezes Recents into a sliver. */}
       <div className="aui-scroll flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
       <nav aria-label="Sections" className={`flex shrink-0 flex-col gap-0.5 ${open ? "px-2" : "items-center"}`}>
-        {can("runs:write") && (
-          <Item href="/?view=chat" icon={open ? null : <PlusIcon />} label="+ New" open={open} active={view === "chat" && !selected} onClick={onNewChat} />
-        )}
-        {can("runs:read") && (
-          <>
-            <Item
-              icon={<InboxIcon />}
-              href="/?view=inbox" label="Inbox"
-              open={open}
-              active={view === "inbox"}
-              badge={inboxCount}
-              onClick={() => onView("inbox")}
-            />
-          </>
-        )}
+        <Group entries={top} open={open} />
 
       </nav>
 
@@ -554,7 +535,7 @@ export function Sidebar({
         {can("evals:read") && <Item icon={<CheckListIcon />} href="/?view=evals" label="Evals" open={open} active={view === "evals"} onClick={() => onView("evals")} />}
 
         <Heading open={open}>Observe</Heading>
-        {can("runs:read") && <Item icon={<MessageIcon />} href="/?view=runs" label="Execution history" open={open} active={view === "runs"} onClick={() => onView("runs")} />}
+        {can("runs:read") && <Item icon={<HistoryIcon />} href="/?view=runs" label="Execution history" open={open} active={view === "runs"} onClick={() => onView("runs")} />}
         {can("runs:read") && (
           <Item
             icon={<ChartIcon />}
@@ -586,10 +567,10 @@ export function Sidebar({
           aria-label={`Settings for ${name}`}
           title={open ? undefined : "Settings"}
           className={`flex min-w-0 items-center gap-2 rounded-aui p-1 text-left transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover ${
-            open ? "flex-1" : ""
+            open ? "flex-1" : "size-9 justify-center"
           }`}
         >
-          <Avatar name={name} prefs={prefs} size={26} />
+          {open ? <Avatar name={name} prefs={prefs} size={26} /> : <SettingsIcon size={18} />}
           {open && (
             <span className="min-w-0 flex-1">
               <span className="block truncate text-aui-sm text-aui-fg">{name}</span>
@@ -612,5 +593,6 @@ export function Sidebar({
         )}
       </div>
     </aside>
+    </>
   );
 }

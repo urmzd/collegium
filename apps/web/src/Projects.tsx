@@ -1,20 +1,14 @@
+import { FolderIcon, FolderOpenIcon, FolderPlusIcon } from "@vultus/render-web";
 import { type FormEvent, useEffect, useState } from "react";
 import { ApiError, api, type Note, type ProjectView, type Revision, type ScheduleView, type ThreadSummary } from "./api.ts";
 import { ScopeLimits } from "./Billing.tsx";
-import { AgentMark, agentOptions, ago, button, field, Label, Menu, Page, Problem, primary } from "./ui.tsx";
+import { AgentMark, agentOptions, ago, button, field, Label, Menu, Page, Popover, Problem, primary } from "./ui.tsx";
 
 const iconButton =
   "inline-flex size-6 items-center justify-center rounded-aui text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent";
 const row =
   "flex h-8 w-full items-center gap-2 rounded-aui px-2 text-left text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg";
 
-function Plus() {
-  return (
-    <svg aria-hidden="true" width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round">
-      <path d="M5 12h14M12 5v14" />
-    </svg>
-  );
-}
 
 /**
  * The sidebar's list of projects. A project is opened from here, and made from
@@ -28,7 +22,7 @@ export function ProjectNav({
   onOpen,
   onCreated,
 }: {
-  /** The sidebar is open. Collapsed, this renders nothing. */
+  /** Collapsed, a folder opens the same list in a flyout. */
   open: boolean;
   projects: ProjectView[];
   current: string | null;
@@ -37,57 +31,64 @@ export function ProjectNav({
   onCreated: (name: string) => void;
 }) {
   const [adding, setAdding] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [name, setName] = useState("");
   const [problem, setProblem] = useState<string | null>(null);
-  if (!open) return null;
 
-  const create = (e: FormEvent) => {
+  const create = (e: FormEvent, close?: () => void) => {
     e.preventDefault();
+    if (saving) return;
+    setSaving(true);
     setProblem(null);
     api
       .createProject(name.trim(), "")
       .then(() => {
+        close?.();
         onCreated(name.trim());
         setName("");
         setAdding(false);
       })
-      .catch((err) => setProblem(err instanceof ApiError ? err.message : "The area could not be created."));
+      .catch((err) => setProblem(err instanceof ApiError ? err.message : "The project could not be created."))
+      .finally(() => setSaving(false));
   };
 
-  return (
-    <section aria-label="Areas" className="shrink-0">
-      <div className="flex items-center justify-between gap-1 pt-4 pr-2 pb-1 pl-2">
-        <p className="px-2 text-aui-xs text-aui-muted">Areas</p>
+  const contents = (close?: () => void) => (
+    <>
+      <div className={`flex items-center justify-between gap-1 pr-2 pb-1 pl-2 ${open ? "pt-4" : "pt-1"}`}>
+        <p className="px-2 text-aui-xs text-aui-muted">Projects</p>
         {canCreate && (
-          <button type="button" className={iconButton} aria-label="New area" aria-expanded={adding} onClick={() => setAdding(!adding)}>
-            <Plus />
+          <button type="button" className={iconButton} aria-label="New project" aria-expanded={adding} onClick={() => setAdding(!adding)}>
+            <FolderPlusIcon size={16} />
           </button>
         )}
       </div>
       {adding && (
-        <form onSubmit={create} className="flex flex-col gap-1 px-2 pb-1">
+        <form onSubmit={(e) => create(e, close)} className="flex flex-col gap-1 px-2 pb-1">
           <input
             // biome-ignore lint/a11y/noAutofocus: the form appears because the person asked to type a name
             autoFocus
-            aria-label="Area name"
+            aria-label="Project name"
             className={`${field} h-8`}
-            placeholder="Area name"
+            placeholder="Project name"
             value={name}
             required
             maxLength={63}
+            disabled={saving}
             onChange={(e) => setName(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === "Escape") setAdding(false);
             }}
           />
-          {problem && <p className="px-1 text-aui-2xs text-aui-muted">{problem}</p>}
+          <button type="submit" className={button} disabled={saving || !name.trim()}>{saving ? "Creating…" : "Create project"}</button>
+          {problem && <p role="alert" className="px-1 text-aui-2xs text-aui-muted">{problem}</p>}
         </form>
       )}
-      <ul className="px-2">
-        {projects.length === 0 && !adding && <li className="px-2 py-1.5 text-aui-xs text-aui-muted">No areas yet.</li>}
+      <ul className={`aui-scroll overflow-y-auto px-2 ${open ? "" : "max-h-[50vh]"}`}>
+        {projects.length === 0 && !adding && <li className="px-2 py-1.5 text-aui-xs text-aui-muted">No projects yet.</li>}
         {projects.map((p) => (
           <li key={p.name}>
-            <button type="button" className={row} aria-current={current === p.name ? "page" : undefined} onClick={() => onOpen(p.name)}>
+            <button type="button" className={row} aria-current={current === p.name ? "page" : undefined} onClick={() => { close?.(); onOpen(p.name); }}>
+              {current === p.name ? <FolderOpenIcon size={18} /> : <FolderIcon size={18} />}
               <span className="min-w-0 flex-1 truncate">{p.name}</span>
               {/* A count only when something is happening or waiting. */}
               {p.active > 0 ? (
@@ -99,8 +100,19 @@ export function ProjectNav({
           </li>
         ))}
       </ul>
+    </>
+  );
+
+  if (!open) return (
+    <section aria-label="Projects" className="collegium-project-nav flex shrink-0 justify-center py-2">
+      <Popover label="Projects" tooltip={current ? `Projects: ${current}` : "Projects"} side="right"
+        className={`relative inline-flex size-9 items-center justify-center rounded-aui hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-expanded:bg-aui-hover aria-expanded:text-aui-fg ${current ? "bg-aui-hover text-aui-fg" : "text-aui-muted"}`}
+        button={current ? <FolderOpenIcon size={18} /> : <FolderIcon size={18} />}>
+        {(close) => contents(close)}
+      </Popover>
     </section>
   );
+  return <section aria-label="Projects" className="shrink-0">{contents()}</section>;
 }
 
 const section = "flex flex-col gap-2 border-aui-border border-t pt-5";
@@ -136,13 +148,13 @@ function SharedMemory({ project, canWrite, onChanged }: { project: string; canWr
     <section className={section}>
       <h2 className={heading}>Shared memory</h2>
       <p className="max-w-xl text-aui-sm text-aui-muted">
-        Every agent answering in this area is sent these, in every conversation. Keep them few and lasting.
+        Every agent answering in this project is sent these, in every conversation. Keep them few and lasting.
       </p>
       <Problem message={problem} />
       {proposed.length > 0 && (
         <div className="flex flex-col gap-2 rounded-aui-lg border border-aui-border p-3">
           <h3 className="text-aui-sm font-medium text-aui-fg">Proposed ({proposed.length})</h3>
-          <p className="text-aui-xs text-aui-muted">Not in use yet. Tick what the area should keep.</p>
+          <p className="text-aui-xs text-aui-muted">Not in use yet. Tick what the project should keep.</p>
           <ul>
             {proposed.map((n) => (
               <li key={n.id} className="border-aui-border border-t py-2 first:border-t-0">
@@ -241,7 +253,7 @@ function SharedMemory({ project, canWrite, onChanged }: { project: string; canWr
           }}
         >
           <input
-            aria-label="Something everyone in this area should know"
+            aria-label="Something everyone in this project should know"
             className={field}
             value={text}
             maxLength={300}
@@ -308,12 +320,12 @@ export function ProjectPage({
             <button
               type="button"
               className={button}
-              onClick={() => api.deleteProject(project.name).then(onDeleted).catch(fail("The area could not be deleted."))}
+              onClick={() => api.deleteProject(project.name).then(onDeleted).catch(fail("The project could not be deleted."))}
             >
-              Delete Project
+              Delete project
             </button>
             <button type="button" className={primary} onClick={onNewChat}>
-              + New
+              New conversation
             </button>
           </>
         ) : undefined
@@ -324,7 +336,7 @@ export function ProjectPage({
       <section className={section}>
         <h2 className={heading}>Tasks ({mine.length})</h2>
         {mine.length === 0 ? (
-          <p className="text-aui-sm text-aui-muted">Start a task here to keep its conversation, execution history and shared context in this area.</p>
+          <p className="text-aui-sm text-aui-muted">Start a task here to keep its conversation, execution history and shared context in this project.</p>
         ) : (
           <ul>
             {mine.map((t) => (
@@ -367,7 +379,7 @@ export function ProjectPage({
             </button>
           )}
         </div>
-        <p className="max-w-xl text-aui-sm text-aui-muted">Each time one fires, its run is filed in this area and is sent what the area knows.</p>
+        <p className="max-w-xl text-aui-sm text-aui-muted">Each time one fires, its run is filed in this project and is sent what the project knows.</p>
         {adding && (
           <form
             className="flex flex-col gap-3 rounded-aui-lg border border-aui-border p-3"

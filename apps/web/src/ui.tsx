@@ -1,4 +1,4 @@
-import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, XIcon } from "@vultus/render-web";
+import { BanIcon, CheckIcon, ChevronDownIcon, ShieldIcon, Tooltip, XIcon } from "@vultus/render-web";
 import { AgentOrb, type OrbState } from "@vultus/web";
 import { type CSSProperties, type ReactNode, useEffect, useId, useRef, useState } from "react";
 import type { Run } from "./adapter.ts";
@@ -366,6 +366,8 @@ export function Popover({
   align = "left",
   up = false,
   narrow = false,
+  side,
+  tooltip,
   children,
 }: {
   label: string;
@@ -375,6 +377,9 @@ export function Popover({
   up?: boolean;
   /** A slimmer panel, for a button in a tight column such as the sidebar. */
   narrow?: boolean;
+  /** A rail flyout opens alongside its trigger instead of above or below. */
+  side?: "right";
+  tooltip?: string;
   children: (close: () => void) => ReactNode;
 }) {
   const [open, setOpen] = useState(false);
@@ -391,6 +396,32 @@ export function Popover({
     return () => document.removeEventListener("mousedown", away);
   }, [open]);
 
+  const [flyout, setFlyout] = useState<{ left: number; top: number }>();
+  useEffect(() => {
+    if (side === "right" && open && present.mounted) {
+      root.current?.querySelector<HTMLElement>('[role="dialog"] button, [role="dialog"] input')?.focus();
+    }
+  }, [side, open, present.mounted]);
+
+  const triggerButton = (
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls={open ? id : undefined}
+        onClick={() => {
+          if (side === "right") {
+            const rect = root.current?.getBoundingClientRect();
+            if (rect) setFlyout({ left: rect.right + 8, top: Math.max(16, Math.min(rect.top, window.innerHeight - 320)) });
+          }
+          setOpen(!open);
+        }}
+        className={className}
+      >
+        {trigger}
+      </button>
+  );
   return (
     <div
       ref={root}
@@ -403,29 +434,22 @@ export function Popover({
         }
       }}
     >
-      <button
-        type="button"
-        aria-label={label}
-        aria-haspopup="dialog"
-        aria-expanded={open}
-        aria-controls={open ? id : undefined}
-        onClick={() => setOpen(!open)}
-        className={className}
-      >
-        {trigger}
-      </button>
+      {tooltip ? <Tooltip label={tooltip}>{triggerButton}</Tooltip> : triggerButton}
       {present.mounted && (
         <div
           id={id}
           role="dialog"
           aria-label={label}
           data-leaving={present.leaving}
-          style={{ "--collegium-pop-origin": `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
-          className={`collegium-glass-pop collegium-pop absolute z-40 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${narrow ? "w-56" : "w-80"} ${
-            align === "right" ? "right-0" : "left-0"
-          } ${up ? "bottom-full mb-2" : "top-full mt-2"}`}
+          style={{ ...(side === "right" ? flyout : {}), "--collegium-pop-origin": side === "right" ? "top left" : `${up ? "bottom" : "top"} ${align}` } as CSSProperties}
+          className={`collegium-glass-pop collegium-pop ${side === "right" ? "fixed" : "absolute"} z-40 max-w-[calc(100vw-2rem)] rounded-aui-lg p-1.5 ${narrow ? "w-56" : "w-80"} ${
+            side === "right" ? "" : align === "right" ? "right-0" : "left-0"
+          } ${side === "right" ? "" : up ? "bottom-full mb-2" : "top-full mt-2"}`}
         >
-          {children(() => setOpen(false))}
+          {children(() => {
+            setOpen(false);
+            root.current?.querySelector<HTMLButtonElement>("button")?.focus();
+          })}
         </div>
       )}
     </div>

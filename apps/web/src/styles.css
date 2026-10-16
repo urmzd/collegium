@@ -115,6 +115,21 @@ body {
   box-shadow: 0 18px 50px oklch(0 0 0 / 0.22), var(--collegium-bevel);
 }
 
+/* Project names and descriptions stay legible over the message draft. */
+.collegium-project-picker .collegium-glass-pop {
+  background: var(--collegium-panel);
+  width: min(20rem, calc(100vw - 8rem));
+  max-height: min(32rem, calc(100dvh - 6rem));
+  overflow-y: auto;
+}
+
+.collegium-project-nav .collegium-glass-pop {
+  background: var(--collegium-panel);
+  width: min(20rem, calc(100vw - 4rem));
+  max-height: calc(100dvh - 12rem);
+  overflow-y: auto;
+}
+
 /* Without backdrop blur, glass is unreadable. Fall back to a solid surface. */
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .collegium-glass-pop {

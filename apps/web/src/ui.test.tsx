@@ -9,6 +9,8 @@ import { isEnded } from "./format.ts";
 import { sampleTrees } from "./activity.fixtures.ts";
 import { Alerts } from "./Alerts.tsx";
 import { LimitsPanel } from "./Limits.tsx";
+import { ProjectChoices, ProjectPicker } from "./ProjectPicker.tsx";
+import { ProjectNav } from "./Projects.tsx";
 import { amount, binding, byAgent, byRun, forRun, scopeWords } from "./limits.ts";
 import { overLimit, parentBound, sessionBound, unlimited } from "./limits.fixtures.ts";
 import { bindingWords, SessionGauge } from "./SessionGauge.tsx";
@@ -23,6 +25,34 @@ import { WebSurface } from "@vultus/render-web";
 import { replay } from "./Runs.tsx";
 import { formats } from "./copyas.ts";
 import { emptyTurn } from "@vultus/core";
+
+test("collapsed navigation keeps an accessible Projects entry; creation follows permission", () => {
+  const props = { projects: [], current: null, onOpen: () => {}, onCreated: () => {} };
+  const collapsed = renderToStaticMarkup(<ProjectNav {...props} open={false} canCreate={false} />);
+  assert.match(collapsed, /aria-label="Projects"/);
+  assert.match(collapsed, /aria-haspopup="dialog"/);
+  assert.match(collapsed, /<svg/);
+  const readOnly = renderToStaticMarkup(<ProjectNav {...props} open canCreate={false} />);
+  assert.doesNotMatch(readOnly, /aria-label="New project"/);
+  const writable = renderToStaticMarkup(<ProjectNav {...props} open canCreate />);
+  assert.match(writable, /aria-label="New project"/);
+});
+
+test("project selection: an empty workspace still offers projectless work and creation inside the composer", () => {
+  const actions = { onChange: () => {}, onCreated: () => {}, close: () => {} };
+  const out = renderToStaticMarkup(<ProjectChoices projects={[]} value={null} {...actions} />);
+  assert.match(out, /Projectless/);
+  assert.match(out, /Create project/);
+  assert.match(out, /No projects yet/);
+  assert.doesNotMatch(out, /<form/, "the picker must not nest a form inside the message form");
+  const loading = renderToStaticMarkup(<ProjectChoices projects={null} value={null} {...actions} />);
+  assert.match(loading, /Loading projects/);
+  assert.doesNotMatch(loading, /No projects yet/);
+  const untouched = renderToStaticMarkup(<ProjectPicker projects={[]} value={null} {...actions} />);
+  assert.match(untouched, /aria-label="Select project"/);
+  const projectless = renderToStaticMarkup(<ProjectPicker projects={[]} value="" {...actions} />);
+  assert.match(projectless, /aria-label="Select project: Projectless"/);
+});
 import type { Alert, AlertRule, Me, Preferences, Settings } from "./api.ts";
 import { Onboarding, welcome } from "./Onboarding.tsx";
 import { ActionId, messageState, partTarget, type UiAction } from "@vultus/core";
@@ -835,7 +865,7 @@ test("StorageUsed: a real meter in bytes, under, over and with no limit, and whe
   assert.match(under, /1\.7 MB of 5\.0 MB, 33%\. Under limit\./);
   assert.match(under, /Storage, 4 files/);
   assert.match(under, /Launch/);
-  assert.match(under, /No project/);
+  assert.match(under, /Projectless/);
   const over = html(<StorageUsed use={sampleUse({ used_bytes: 6 * 1024 ** 2 })} />);
   assert.match(over, /data-usage="over"/);
   assert.match(over, /Over by 1\.0 MB/);
