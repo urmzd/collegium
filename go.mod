@@ -7,7 +7,7 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/urmzd/duraturo v0.1.1
 	github.com/urmzd/legatus v0.2.0
-	github.com/urmzd/mandatum v0.6.0
+	github.com/urmzd/mandatum v0.6.1-0.20261016033959-b2b98e149301
 	github.com/urmzd/saige v0.34.0
 	golang.org/x/oauth2 v0.37.0
 )

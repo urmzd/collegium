@@ -36,9 +36,9 @@ A subagent, a handoff and a delegation are the same call with a different mode.
 
 | Mode | Context passed | Caller after the call | Answer goes to |
 |------|----------------|-----------------------|----------------|
-| Subagent | Brief | Parks, then resumes | The caller |
-| Handoff | Compacted history | Ends | The original surface |
-| Delegate | Brief | Keeps working | The inbox, later |
+| Subagent | Explicit ordered messages | Waits, then resumes | The caller |
+| Handoff, low-level API only | Explicit input | No automatic termination; ownership transfer is not exposed as an agent tool | The inherited surface |
+| Delegate | Explicit ordered messages | Keeps working | The inbox, later |
 
 ### One origin, two lifetimes
 
@@ -48,8 +48,8 @@ origin, its caller and how it was called.
 
 | Lifetime | How it is started | If the caller fails or is stopped | When the caller answers first |
 |----------|-------------------|-----------------------------------|-------------------------------|
-| Attached | Tagging an agent, or a subagent call | It is stopped, and so is all that is attached to it | The caller is held open until it ends |
-| Delegated | `delegate_task`, or a delegate or handoff call | Nothing. It carries on | Nothing. The caller is done |
+| Attached | `call_agent` in subagent mode | It is stopped, and so is all that is attached to it | The caller is held open until it ends |
+| Delegated | `call_agent` in delegate mode, legacy `delegate_task`, or a low-level handoff call | Nothing. It carries on | Nothing. The caller is done |
 
 What a delegated run attaches dies with it, not with whoever delegated to it.
 A run stopped this way is `stopped`, not `failed`, and says why.
@@ -61,8 +61,10 @@ topic (`agent:<name>:<runID>`). The caller holds a reference and a result, never
 the child's work. Each branch compacts alone, and a tree can spread across
 nodes.
 
-mandatum's built-in delegate tool is the attached counterpart: a sub-task inside
-the caller's turn with no run id and no stream. Both shapes stay available.
+Collegium exposes one `call_agent` tool for allowed targets. Its input combines
+ordered messages, examples and references, with a discriminated return contract.
+The harness resolves and freezes inputs, injects the return instruction, and
+validates results. See [Agent calls](agent-calls.md) for the contract and lifecycle.
 
 ## Governance rides the edge
 
@@ -151,6 +153,8 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Housekeeping runs: a title agent names a conversation, a memory agent writes notes after a turn | Built. Off until a workspace picks the agents, and never on the offline provider |
 | `pkg/evals`: suites of deterministic checks for agents, retrieval metrics for knowledge, scored by saige | Built, in memory |
 | Conversations: threads, branches, any agent on any turn, replayed history with a configurable limit | Built, in memory |
+| Prompt landing, tasks and areas navigation, configuration overview and routing settings | Built. Tasks use existing threads and areas use projects; conversation and execution history remain available |
+| Structured helper calls: ordered messages and references, text/summary/JSON Schema return contracts, frozen inputs, validated outputs and one answering agent | Built and tested. The runtime extension is pinned to mandatum commit b2b98e149301 |
 | `pkg/pick`: lexical agent picker over name, description and prompt, with a baseline | Built |
 | Projects: conversations filed together, shared memory sent to every agent in the project, schedules whose runs are filed there | Built, in memory |
 | Workspace settings, `pkg/prefs`: per-person theme, accent and profile picture | Built, in memory |
@@ -178,7 +182,7 @@ Admission is one process holding one lock, reading counts from memory. That is c
 | Downloads: tenant and right checked on every request, always an attachment unless an inert type is asked for inline, never HTML or SVG inline | Built, tested |
 | Built-in agents: `collegium-writer` writes a document and publishes it. Provided by the platform, not editable, present only when the server is given `-builtin-provider` and `-builtin-model` | Built. One agent. Not run against a real model here: no provider key was available |
 | Called agents are runs: an agent that tags another starts a run with its own id, events and record, in the caller's conversation and sandbox | Built, on mandatum's `WithDelegator` hook |
-| Two lifetimes for a called run. Attached (tagged, the caller waits): ends with its caller, and the caller is not done until it is. Delegated (`delegate_task`, the caller carries on): independent, and its answer goes to the inbox | Built, tested three levels deep under the race detector |
+| Two lifetimes for a called run. Attached (`call_agent`, subagent mode): ends with its caller, and the caller is not done until it is. Delegated (`call_agent`, delegate mode): independent, and its answer goes to the inbox | Built, tested three levels deep under the race detector |
 | Stopping a run: `POST /api/runs/{id}/stop` stops it and everything attached to it, with the cause recorded. What it delegated keeps running | Built. A stop is taken at the platform's edge: the run can start nothing more and its answer is discarded, but a model call in flight is not interrupted, because the runtime has no cancel |
 | A place is always kept for work that waits on nobody, so runs waiting on each other cannot fill every place and hang | Built. With `Concurrency` 4 by default, three runs may wait at once and a fourth is told no |
 | Publishing that waits for approval | Not built. A run cannot be parked on a person |

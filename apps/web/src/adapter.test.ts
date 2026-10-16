@@ -90,7 +90,7 @@ test("a call to another agent is that agent, not a tool", () => {
   const done = to(ev("delta.tool.done", { id: "t1", result: "Three tests fail." })).find((e) => e.type === "task.upserted");
   if (done?.type === "task.upserted") {
     assert.equal(done.task.status, "complete");
-    assert.deepEqual(done.task.subagent, { name: "helper", runId: undefined, summary: "Three tests fail.", hue: undefined });
+    assert.deepEqual(done.task.subagent, { name: "helper", runId: undefined, summary: "Result returned to caller", hue: undefined });
   }
   const [, tinted] = adapter({ hue: () => 210 })(ev("delta.tool.call", { id: "t3", name: "tag_helper" }));
   if (tinted?.type === "task.upserted") {
@@ -159,7 +159,7 @@ test("a call to another agent learns which run it started", () => {
   if (done?.type === "task.upserted") {
     assert.equal(done.task.status, "complete");
     assert.equal(done.task.subagent?.runId, "run-9");
-    assert.equal(done.task.subagent?.summary, "Three tests fail.");
+    assert.equal(done.task.subagent?.summary, "Result returned to caller");
   }
 });
 
@@ -170,8 +170,39 @@ test("work handed on without waiting is drawn as the agent it went to", () => {
   const [named] = to(ev("action.taken", { name: "delegate_task", data: { run: "run-4", agent: "worker", lifecycle: "delegated" } }));
   if (named?.type === "task.upserted") {
     assert.equal(named.task.title, "worker");
-    assert.deepEqual(named.task.subagent, { name: "worker", runId: "run-4", summary: undefined, hue: undefined });
+    assert.deepEqual(named.task.subagent, { name: "worker", runId: "run-4", summary: "Background work. Open execution history.", hue: undefined });
   } else {
     assert.fail("no task for the run that was started");
   }
+});
+
+
+test("a helper result is kept for inspection without repeating the parent answer", () => {
+  const to = adapter();
+  to(ev("delta.tool.call", { id: "call-1", name: "call_agent" }));
+  to(ev("action.taken", { name: "call_agent", data: { run: "helper-run", agent: "researcher", lifecycle: "attached" } }));
+  const result = "The complete helper result that the parent may incorporate.";
+  const done = to(ev("delta.tool.done", { id: "call-1", result })).find((e) => e.type === "task.upserted");
+  assert.equal(done?.type, "task.upserted");
+  if (done?.type === "task.upserted") {
+    assert.equal(done.task.output, result);
+    assert.equal(done.task.subagent?.runId, "helper-run");
+    assert.equal(done.task.subagent?.summary, "Result returned to caller");
+    assert.notEqual(done.task.subagent?.summary, result);
+  }
+});
+
+
+test("parallel helpers correlate by call ID even when they start out of order", () => {
+  const to = adapter();
+  for (const id of ["call-a", "call-b"]) {
+    to(ev("delta.tool.call", { id, name: "call_agent", phase: "requested" }));
+    to(ev("delta.tool.call", { id, name: "call_agent", phase: "executing" }));
+  }
+  const [b] = to(ev("action.taken", { name: "call_agent", data: { run: "run-b", agent: "second", tool_call_id: "call-b", lifecycle: "attached" } }));
+  const [a] = to(ev("action.taken", { name: "call_agent", data: { run: "run-a", agent: "first", tool_call_id: "call-a", lifecycle: "attached" } }));
+  assert.equal(b?.type === "task.upserted" && b.task.id, "call-b");
+  assert.equal(b?.type === "task.upserted" && b.task.subagent?.runId, "run-b");
+  assert.equal(a?.type === "task.upserted" && a.task.id, "call-a");
+  assert.equal(a?.type === "task.upserted" && a.task.subagent?.runId, "run-a");
 });

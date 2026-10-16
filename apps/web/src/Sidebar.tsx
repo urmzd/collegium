@@ -239,7 +239,7 @@ export function Sidebar({
       <div className="aui-scroll flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
       <nav aria-label="Sections" className={`flex shrink-0 flex-col gap-0.5 ${open ? "px-2" : "items-center"}`}>
         {can("runs:write") && (
-          <Item icon={<PlusIcon />} label="New Chat" open={open} active={view === "chat" && !selected} onClick={onNewChat} />
+          <Item icon={open ? null : <PlusIcon />} label="+ New" open={open} active={view === "chat" && !selected} onClick={onNewChat} />
         )}
         {can("runs:read") && (
           <>
@@ -251,11 +251,132 @@ export function Sidebar({
               badge={inboxCount}
               onClick={() => onView("inbox")}
             />
-            <Item icon={<MessageIcon />} label="Runs" open={open} active={view === "runs"} onClick={() => onView("runs")} />
           </>
         )}
 
-        <Heading open={open}>Build</Heading>
+      </nav>
+
+      {projectsSlot}
+
+      {open && can("runs:read") && (
+        <div className="flex shrink-0 flex-col pt-3">
+          {/* The label stays in reach while the list scrolls under it. */}
+          <div className="sticky top-0 z-10 flex items-center justify-between gap-1 bg-[var(--collegium-plane)] py-1 pr-2 pl-2">
+            <p className="px-2 text-aui-xs text-aui-muted">Tasks</p>
+            <Popover
+              narrow
+              align="right"
+              label={filters > 0 ? `Filter tasks, ${filters} on` : "Filter tasks"}
+              className="relative inline-flex size-6 items-center justify-center rounded-aui text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-expanded:bg-aui-hover aria-expanded:text-aui-fg"
+              button={
+                <>
+                  <FilterIcon size={14} />
+                  {filters > 0 && <span aria-hidden className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-aui-accent" />}
+                </>
+              }
+            >
+              {() => (
+                <div className="aui-scroll flex max-h-[60vh] flex-col overflow-y-auto">
+                  <Choices
+                    title="Show"
+                    value={standing}
+                    options={[
+                      { value: "", label: "Every task" },
+                      { value: "running", label: "Running now" },
+                      { value: "failed", label: "Needs attention" },
+                    ]}
+                    onChange={setStanding}
+                  />
+                  {answering.length > 1 && (
+                    <Choices
+                      title="Answered by"
+                      value={agent}
+                      options={[
+                        { value: "", label: "Any agent" },
+                        ...answering.map((a) => ({ value: a, label: a, mark: <AgentMark name={a} size={12} /> })),
+                      ]}
+                      onChange={setAgent}
+                    />
+                  )}
+                  {filters > 0 && (
+                    <button
+                      type="button"
+                      onClick={clear}
+                      className="mt-1 rounded-aui border-[var(--collegium-rule)] border-t px-2.5 py-2 text-left text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+              )}
+            </Popover>
+          </div>
+          <ul className="px-2 pb-3" aria-label="Tasks" aria-busy={loading !== null}>
+            {recents.length === 0 && loading === "first" && (
+              <li className="px-2.5">
+                <SkeletonRows count={5} height="1.25rem" />
+              </li>
+            )}
+            {recents.length === 0 && loading !== "first" && stalled && (
+              <li className="flex flex-col items-start gap-1.5 px-2.5 py-1.5 text-aui-xs text-aui-muted">
+                Your tasks could not be loaded.
+                <button
+                  type="button"
+                  onClick={retry}
+                  className="collegium-press inline-flex h-6 items-center rounded-full border border-[var(--collegium-rule)] px-2.5 text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+                >
+                  Try Again
+                </button>
+              </li>
+            )}
+            {recents.length === 0 && loading !== "first" && !stalled && (
+              <li className="px-2.5 py-1.5 text-aui-xs text-aui-muted">
+                {filters > 0
+                    ? "No task matches these filters."
+                    : "Your tasks appear here. Start with + New."}
+              </li>
+            )}
+            {recents.map((t) => (
+              <li key={t.id} className="collegium-enter">
+                <button
+                  type="button"
+                  onClick={() => onSelect(t.id)}
+                  aria-current={view === "chat" && t.id === selected ? "page" : undefined}
+                  className="flex min-h-14 w-full items-center gap-2 rounded-aui px-2 py-2 text-left text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg"
+                >
+                  {/* The orb of the agent that last answered: moving while it works, red when a reply failed. */}
+                  <AgentMark
+                    name={t.agents[t.agents.length - 1] ?? "?"}
+                    size={12}
+                    state={t.active > 0 ? "thinking" : t.failed > 0 ? "error" : "idle"}
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block line-clamp-2 text-aui-fg">{t.title || "Untitled task"}</span>
+                    <span className="block text-aui-2xs text-aui-muted">{t.active > 0 ? "In progress" : t.failed > 0 ? "Needs attention" : "Finished"}{t.project ? ` · ${t.project}` : ""} · {t.turns} {t.turns === 1 ? "turn" : "turns"}</span>
+                  </span>
+                  {t.active > 0 && <span className="sr-only">, running</span>}
+                  {t.active === 0 && t.failed > 0 && <span className="sr-only">, a reply failed</span>}
+                </button>
+              </li>
+            ))}
+            {/* Older conversations arrive a page at a time, when asked for. */}
+            {(hasMore || loading === "more") && (
+              <li className="flex justify-center pt-2">
+                <button
+                  type="button"
+                  onClick={more}
+                  disabled={loading === "more"}
+                  className="inline-flex h-6 items-center rounded-full border border-[var(--collegium-rule)] px-2.5 text-aui-xs text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-default"
+                >
+                  {loading === "more" ? <span className="aui-shimmer">Loading</span> : failed ? "Could not load. Try again" : "See more"}
+                </button>
+              </li>
+            )}
+          </ul>
+        </div>
+      )}
+      <nav aria-label="Tools and configuration" className={`flex shrink-0 flex-col gap-0.5 pb-3 ${open ? "px-2" : "items-center"}`}>
+        <Heading open={open}>Tools</Heading>
         {can("agents:read") && (
           <Item
             icon={<BotIcon />}
@@ -288,6 +409,7 @@ export function Sidebar({
         )}
 
         <Heading open={open}>Observe</Heading>
+        {can("runs:read") && <Item icon={<MessageIcon />} label="Execution history" open={open} active={view === "runs"} onClick={() => onView("runs")} />}
         {can("runs:read") && (
           <Item
             icon={<ChartIcon />}
@@ -308,123 +430,6 @@ export function Sidebar({
           />
         )}
       </nav>
-
-      {projectsSlot}
-
-      {open && can("runs:read") && (
-        <div className="flex shrink-0 flex-col pt-3">
-          {/* The label stays in reach while the list scrolls under it. */}
-          <div className="sticky top-0 z-10 flex items-center justify-between gap-1 bg-[var(--collegium-plane)] py-1 pr-2 pl-2">
-            <p className="px-2 text-aui-xs text-aui-muted">Recents</p>
-            <Popover
-              narrow
-              align="right"
-              label={filters > 0 ? `Filter conversations, ${filters} on` : "Filter conversations"}
-              className="relative inline-flex size-6 items-center justify-center rounded-aui text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-expanded:bg-aui-hover aria-expanded:text-aui-fg"
-              button={
-                <>
-                  <FilterIcon size={14} />
-                  {filters > 0 && <span aria-hidden className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-aui-accent" />}
-                </>
-              }
-            >
-              {() => (
-                <div className="aui-scroll flex max-h-[60vh] flex-col overflow-y-auto">
-                  <Choices
-                    title="Show"
-                    value={standing}
-                    options={[
-                      { value: "", label: "Every conversation" },
-                      { value: "running", label: "Running now" },
-                      { value: "failed", label: "With a failed reply" },
-                    ]}
-                    onChange={setStanding}
-                  />
-                  {answering.length > 1 && (
-                    <Choices
-                      title="Answered by"
-                      value={agent}
-                      options={[
-                        { value: "", label: "Any agent" },
-                        ...answering.map((a) => ({ value: a, label: a, mark: <AgentMark name={a} size={12} /> })),
-                      ]}
-                      onChange={setAgent}
-                    />
-                  )}
-                  {filters > 0 && (
-                    <button
-                      type="button"
-                      onClick={clear}
-                      className="mt-1 rounded-aui border-[var(--collegium-rule)] border-t px-2.5 py-2 text-left text-aui-sm text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
-                    >
-                      Clear filters
-                    </button>
-                  )}
-                </div>
-              )}
-            </Popover>
-          </div>
-          <ul className="px-2 pb-3" aria-label="Conversations" aria-busy={loading !== null}>
-            {recents.length === 0 && loading === "first" && (
-              <li className="px-2.5">
-                <SkeletonRows count={5} height="1.25rem" />
-              </li>
-            )}
-            {recents.length === 0 && loading !== "first" && stalled && (
-              <li className="flex flex-col items-start gap-1.5 px-2.5 py-1.5 text-aui-xs text-aui-muted">
-                Your conversations could not be loaded.
-                <button
-                  type="button"
-                  onClick={retry}
-                  className="collegium-press inline-flex h-6 items-center rounded-full border border-[var(--collegium-rule)] px-2.5 text-aui-fg hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
-                >
-                  Try Again
-                </button>
-              </li>
-            )}
-            {recents.length === 0 && loading !== "first" && !stalled && (
-              <li className="px-2.5 py-1.5 text-aui-xs text-aui-muted">
-                {filters > 0
-                    ? "No conversation matches these filters."
-                    : "Your conversations appear here."}
-              </li>
-            )}
-            {recents.map((t) => (
-              <li key={t.id} className="collegium-enter">
-                <button
-                  type="button"
-                  onClick={() => onSelect(t.id)}
-                  aria-current={view === "chat" && t.id === selected ? "page" : undefined}
-                  className="flex h-8 w-full items-center gap-2 rounded-aui px-2 text-left text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg"
-                >
-                  {/* The orb of the agent that last answered: moving while it works, red when a reply failed. */}
-                  <AgentMark
-                    name={t.agents[t.agents.length - 1] ?? "?"}
-                    size={12}
-                    state={t.active > 0 ? "thinking" : t.failed > 0 ? "error" : "idle"}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{t.title}</span>
-                  {t.active > 0 && <span className="sr-only">, running</span>}
-                  {t.active === 0 && t.failed > 0 && <span className="sr-only">, a reply failed</span>}
-                </button>
-              </li>
-            ))}
-            {/* Older conversations arrive a page at a time, when asked for. */}
-            {(hasMore || loading === "more") && (
-              <li className="flex justify-center pt-2">
-                <button
-                  type="button"
-                  onClick={more}
-                  disabled={loading === "more"}
-                  className="inline-flex h-6 items-center rounded-full border border-[var(--collegium-rule)] px-2.5 text-aui-xs text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent disabled:cursor-default"
-                >
-                  {loading === "more" ? <span className="aui-shimmer">Loading</span> : failed ? "Could not load. Try again" : "See more"}
-                </button>
-              </li>
-            )}
-          </ul>
-        </div>
-      )}
       </div>
 
       {!live && open && <p className="px-4 pb-2 text-aui-2xs text-aui-muted">Reconnecting. What you see may be out of date.</p>}

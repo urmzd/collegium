@@ -14,9 +14,8 @@
 // and a result rather than the child's work. Each branch compacts alone, and a
 // tree of calls can spread across nodes.
 //
-// mandatum's delegate tool is the attached counterpart: a sub-task inside the
-// caller's turn with no run id and no stream. This package is the other shape
-// its doc comment describes, the one that outlives the turn.
+// Input messages and return contracts are independent of a call's lifecycle.
+// Helpers return results to their caller; only a handoff transfers delivery.
 //
 // # Governance rides the edge
 //
@@ -163,7 +162,9 @@ type Request struct {
 	Agent string
 	// Text is the request.
 	Text string
-	Mode Mode
+	// Input constructs the helper conversation. Text is the legacy shorthand.
+	Input *Input
+	Mode  Mode
 	// Lease is the budget granted to the child, in micro-USD. A metered
 	// caller must grant one, and cannot grant more than it has left.
 	Lease int64
@@ -180,6 +181,14 @@ func New(parent envelope.Tag, req Request, st State, lim Limits, at time.Time) (
 		return envelope.Tag{}, fmt.Errorf("%w: call has mode %q", ErrInvalid, req.Mode)
 	case req.Lease < 0:
 		return envelope.Tag{}, fmt.Errorf("%w: call has a negative lease", ErrInvalid)
+	}
+	if req.Input != nil {
+		if req.Text != "" {
+			return envelope.Tag{}, fmt.Errorf("%w: use input or text, not both", ErrInvalid)
+		}
+		if err := req.Input.Validate(); err != nil {
+			return envelope.Tag{}, err
+		}
 	}
 	edge, err := EdgeOf(parent)
 	if err != nil {
@@ -237,3 +246,7 @@ func childID(parentID, key string) string {
 	h.Write([]byte(key))
 	return "c" + hex.EncodeToString(h.Sum(nil)[:12])
 }
+
+// TagID is the deterministic identity of a call within its parent's run.
+// Hosts use it to join an accepted call before resolving its references again.
+func TagID(parentID, key string) string { return childID(parentID, key) }

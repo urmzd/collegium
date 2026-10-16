@@ -122,13 +122,15 @@ func lifecycleOf(parent string, mode call.Mode) Lifecycle {
 
 // Run is one run and its place in the tree.
 type Run struct {
-	ID     string         `json:"id"`
-	Tenant string         `json:"tenant"`
-	Agent  string         `json:"agent"`
-	Rev    int            `json:"rev"`
-	Origin string         `json:"origin"`
-	Text   string         `json:"text"`
-	Actor  envelope.Actor `json:"actor,omitzero"`
+	ID     string `json:"id"`
+	Tenant string `json:"tenant"`
+	Agent  string `json:"agent"`
+	Rev    int    `json:"rev"`
+	Origin string `json:"origin"`
+	Text   string `json:"text"`
+	// Input records original references and the exact helper messages supplied.
+	Input *call.Prepared `json:"input,omitempty"`
+	Actor envelope.Actor `json:"actor,omitzero"`
 
 	// Root, Parent, Depth and Mode are the edge the run was called with.
 	Root   string    `json:"root"`
@@ -217,6 +219,10 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 	if err != nil {
 		return err
 	}
+	input, err := call.InputOf(tag)
+	if err != nil {
+		return err
+	}
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if _, ok := x.runs[runID]; ok {
@@ -256,7 +262,7 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 	}
 	x.runs[runID] = &Run{
 		ID: runID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
-		Text: text, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project, Client: client,
+		Text: text, Input: input, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project, Client: client,
 		Root: runtime.RunID(edge.Root), Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
 		Lease: edge.Lease, Schedule: schedule,
 		Status: Accepted, CreatedAt: tag.At, UpdatedAt: tag.At,

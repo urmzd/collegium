@@ -9,7 +9,6 @@ import (
 
 	"github.com/urmzd/mandatum/pkg/agentrt"
 	"github.com/urmzd/mandatum/pkg/agentspec"
-	"github.com/urmzd/mandatum/pkg/runtime"
 	"github.com/urmzd/saige/agent/agenttest"
 	saigetypes "github.com/urmzd/saige/agent/types"
 
@@ -39,17 +38,18 @@ func (g *gated) Stream(ctx context.Context, req saigetypes.Request) (<-chan saig
 // cast is the agents of one test: what each one's model says, turn by turn,
 // who it may call, which tools it holds, and which are held until released.
 type cast struct {
-	says  map[string][][]saigetypes.Delta
-	spawn map[string][]string
-	tools map[string][]string
-	gates map[string]chan struct{}
-	once  map[string]*sync.Once
+	models sync.Map
+	says   map[string][][]saigetypes.Delta
+	spawn  map[string][]string
+	tools  map[string][]string
+	gates  map[string]chan struct{}
+	once   map[string]*sync.Once
 }
 
 func (c *cast) release(agent string) { c.once[agent].Do(func() { close(c.gates[agent]) }) }
 
 func tagging(agent, text string) []saigetypes.Delta {
-	return agenttest.ToolCallResponse("call-"+agent, runtime.DelegateToolName(agent), map[string]any{"text": text})
+	return agenttest.ToolCallResponse("call-"+agent, platform.ToolCallAgent, map[string]any{"agent": agent, "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}}}, "response_format": map[string]any{"type": "text"}})
 }
 
 func say(text string) []saigetypes.Delta { return agenttest.TextResponse(text) }
@@ -64,6 +64,7 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 	cfg.Workspace = t.TempDir()
 	cfg.AgentOptions = []agentrt.Option{agentrt.WithProvider(agentrt.ProviderOffline, func(spec agentrt.Spec) (saigetypes.Provider, error) {
 		scripted := &agenttest.ScriptedProvider{Responses: c.says[spec.Name]}
+		c.models.Store(spec.Name, scripted)
 		if gate, held := c.gates[spec.Name]; held {
 			return &gated{ScriptedProvider: scripted, gate: gate}, nil
 		}

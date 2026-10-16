@@ -51,15 +51,15 @@ export function ProjectNav({
         setName("");
         setAdding(false);
       })
-      .catch((err) => setProblem(err instanceof ApiError ? err.message : "The project could not be created."));
+      .catch((err) => setProblem(err instanceof ApiError ? err.message : "The area could not be created."));
   };
 
   return (
-    <section aria-label="Projects" className="shrink-0">
+    <section aria-label="Areas" className="shrink-0">
       <div className="flex items-center justify-between gap-1 pt-4 pr-2 pb-1 pl-2">
-        <p className="px-2 text-aui-xs text-aui-muted">Projects</p>
+        <p className="px-2 text-aui-xs text-aui-muted">Areas</p>
         {canCreate && (
-          <button type="button" className={iconButton} aria-label="New project" aria-expanded={adding} onClick={() => setAdding(!adding)}>
+          <button type="button" className={iconButton} aria-label="New area" aria-expanded={adding} onClick={() => setAdding(!adding)}>
             <Plus />
           </button>
         )}
@@ -69,9 +69,9 @@ export function ProjectNav({
           <input
             // biome-ignore lint/a11y/noAutofocus: the form appears because the person asked to type a name
             autoFocus
-            aria-label="Project name"
+            aria-label="Area name"
             className={`${field} h-8`}
-            placeholder="Project name"
+            placeholder="Area name"
             value={name}
             required
             maxLength={63}
@@ -84,7 +84,7 @@ export function ProjectNav({
         </form>
       )}
       <ul className="px-2">
-        {projects.length === 0 && !adding && <li className="px-2 py-1.5 text-aui-xs text-aui-muted">No projects yet.</li>}
+        {projects.length === 0 && !adding && <li className="px-2 py-1.5 text-aui-xs text-aui-muted">No areas yet.</li>}
         {projects.map((p) => (
           <li key={p.name}>
             <button type="button" className={row} aria-current={current === p.name ? "page" : undefined} onClick={() => onOpen(p.name)}>
@@ -136,13 +136,13 @@ function SharedMemory({ project, canWrite, onChanged }: { project: string; canWr
     <section className={section}>
       <h2 className={heading}>Shared memory</h2>
       <p className="max-w-xl text-aui-sm text-aui-muted">
-        Every agent answering in this project is sent these, in every conversation. Keep them few and lasting.
+        Every agent answering in this area is sent these, in every conversation. Keep them few and lasting.
       </p>
       <Problem message={problem} />
       {proposed.length > 0 && (
         <div className="flex flex-col gap-2 rounded-aui-lg border border-aui-border p-3">
           <h3 className="text-aui-sm font-medium text-aui-fg">Proposed ({proposed.length})</h3>
-          <p className="text-aui-xs text-aui-muted">Not in use yet. Tick what the project should keep.</p>
+          <p className="text-aui-xs text-aui-muted">Not in use yet. Tick what the area should keep.</p>
           <ul>
             {proposed.map((n) => (
               <li key={n.id} className="border-aui-border border-t py-2 first:border-t-0">
@@ -241,7 +241,7 @@ function SharedMemory({ project, canWrite, onChanged }: { project: string; canWr
           }}
         >
           <input
-            aria-label="Something everyone in this project should know"
+            aria-label="Something everyone in this area should know"
             className={field}
             value={text}
             maxLength={300}
@@ -301,19 +301,19 @@ export function ProjectPage({
   return (
     <Page
       title={project.name}
-      lede={project.description || "Conversations, shared memory and schedules that belong together."}
+      lede={project.description || "Tasks, shared memory and schedules that belong together."}
       actions={
         canWrite ? (
           <>
             <button
               type="button"
               className={button}
-              onClick={() => api.deleteProject(project.name).then(onDeleted).catch(fail("The project could not be deleted."))}
+              onClick={() => api.deleteProject(project.name).then(onDeleted).catch(fail("The area could not be deleted."))}
             >
               Delete Project
             </button>
             <button type="button" className={primary} onClick={onNewChat}>
-              New Chat
+              + New
             </button>
           </>
         ) : undefined
@@ -322,9 +322,9 @@ export function ProjectPage({
       <Problem message={problem} />
 
       <section className={section}>
-        <h2 className={heading}>Conversations ({mine.length})</h2>
+        <h2 className={heading}>Tasks ({mine.length})</h2>
         {mine.length === 0 ? (
-          <p className="text-aui-sm text-aui-muted">None yet. A chat started here is filed here, and is sent what the project knows.</p>
+          <p className="text-aui-sm text-aui-muted">Start a task here to keep its conversation, execution history and shared context in this area.</p>
         ) : (
           <ul>
             {mine.map((t) => (
@@ -342,7 +342,7 @@ export function ProjectPage({
                   <span className="min-w-0 flex-1 truncate text-aui-fg">{t.title}</span>
                   <span className="shrink-0 text-aui-xs text-aui-muted">
                     {t.origin === "cron" || t.origin === "manual" ? "Scheduled, " : ""}
-                    {t.agents.join(", ")}, {ago(t.updated_at)}
+                    {t.active > 0 ? "In progress" : t.failed > 0 ? "Needs attention" : "Finished"} · {ago(t.updated_at)}
                   </span>
                 </button>
               </li>
@@ -367,7 +367,7 @@ export function ProjectPage({
             </button>
           )}
         </div>
-        <p className="max-w-xl text-aui-sm text-aui-muted">Each time one fires, its run is filed in this project and is sent what the project knows.</p>
+        <p className="max-w-xl text-aui-sm text-aui-muted">Each time one fires, its run is filed in this area and is sent what the area knows.</p>
         {adding && (
           <form
             className="flex flex-col gap-3 rounded-aui-lg border border-aui-border p-3"

@@ -498,6 +498,29 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
           )}
           {view === "settings" && prefs && (
             <Settings
+              overview={
+                <div className="flex flex-col gap-3">
+                  <p className="text-aui-sm text-aui-muted">{agents.length} agents · {projects.length} areas · {threads.length} recent tasks</p>
+                  {([
+                    ["agents", "Agents", "agents:read"],
+                    ["knowledge", "Knowledge", "knowledge:read"],
+                    ["schedules", "Schedules", "schedules:read"],
+                    ["runs", "Execution history", "runs:read"],
+                    ["analytics", "Analytics", "runs:read"],
+                    ["alerts", "Alerts", "alerts:read"],
+                    ["storage", "Storage", "artifacts:read"],
+                  ] as const).filter(([, , permission]) => can(permission)).map(([target, label]) => (
+                    <button
+                      type="button"
+                      key={target}
+                      className="rounded-aui border border-aui-border px-4 py-3 text-left text-aui-sm hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent"
+                      onClick={() => setView(target)}
+                    >
+                      {label} →
+                    </button>
+                  ))}
+                </div>
+              }
               me={me}
               prefs={prefs}
               workspace={workspace}

@@ -72,13 +72,15 @@ func callKey(kind, target, text string) string {
 }
 
 type calledRun struct {
-	Run       string         `json:"run"`
-	Agent     string         `json:"agent"`
-	Lifecycle runs.Lifecycle `json:"lifecycle"`
+	ToolCallID string         `json:"tool_call_id,omitempty"`
+	Run        string         `json:"run"`
+	Agent      string         `json:"agent"`
+	Lifecycle  runs.Lifecycle `json:"lifecycle"`
 }
 
-func tell(report func(payload.Action) error, tool string, child runs.Run, summary string) {
-	data, _ := json.Marshal(calledRun{Run: child.ID, Agent: child.Agent, Lifecycle: child.Lifecycle})
+func tell(ctx context.Context, report func(payload.Action) error, tool string, child runs.Run, summary string) {
+	info, _ := saigetypes.ToolCallInfoFromContext(ctx)
+	data, _ := json.Marshal(calledRun{Run: child.ID, Agent: child.Agent, Lifecycle: child.Lifecycle, ToolCallID: info.ID})
 	// Saying which run was started is a courtesy to whoever is watching. The
 	// call stands whether or not it is heard.
 	_ = report(payload.Action{Name: tool, Summary: clip(summary, 200), Address: "run:" + child.ID, Data: data})
@@ -87,23 +89,24 @@ func tell(report func(payload.Action) error, tool string, child runs.Run, summar
 // attach is the runtime's Delegator: a turn tagged another agent and is
 // waiting for its answer. The agent runs as a run attached to the caller.
 func (p *Platform) attach(ctx context.Context, parent runtime.Request, target, text string, report func(payload.Action) error) (string, error) {
-	// Every run that waits holds one of the places runs execute in. If all
-	// of them were held by runs waiting, nothing could run to answer them.
-	// So one place is always kept for work that waits on nobody.
+	return p.waitForCall(ctx, parent, call.Request{
+		Key: callKey("attach", target, text), Agent: target, Text: text, Mode: call.Subagent,
+	}, runtime.DelegateToolName(target), report)
+}
+
+func (p *Platform) waitForCall(ctx context.Context, parent runtime.Request, req call.Request, tool string, report func(payload.Action) error) (string, error) {
+	// Keep one execution slot for work that can answer waiting callers.
 	if int(p.waiting.Add(1)) >= p.slots() {
 		p.waiting.Add(-1)
-		return "", fmt.Errorf("%w, so %s cannot be asked right now", ErrBusy, target)
+		return "", fmt.Errorf("%w, so %s cannot be asked right now", ErrBusy, req.Agent)
 	}
 	defer p.waiting.Add(-1)
-
-	child, err := p.Call(ctx, parent.Tenant, parent.RunID, call.Request{
-		Key: callKey("attach", target, text), Agent: target, Text: text, Mode: call.Subagent,
-	})
+	child, err := p.Call(ctx, parent.Tenant, parent.RunID, req)
 	if err != nil {
 		return "", err
 	}
-	tell(report, runtime.DelegateToolName(target), child, text)
-
+	tell(ctx, report, tool, child, "Helper started")
+	target := req.Agent
 	tick := time.NewTicker(20 * time.Millisecond)
 	defer tick.Stop()
 	for {
@@ -156,7 +159,7 @@ func (p *Platform) delegateTool(req runtime.Request, action func(payload.Action)
 			if err != nil {
 				return "", err
 			}
-			tell(action, ToolDelegate, child, text)
+			tell(ctx, action, ToolDelegate, child, text)
 			return fmt.Sprintf("%s has started on it as run %s and is working independently. Its answer will arrive in the inbox.", target, child.ID), nil
 		},
 	}

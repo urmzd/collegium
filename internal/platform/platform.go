@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -289,6 +290,7 @@ func (p *Platform) executor() (runtime.Executor, error) {
 	exec, err := runtime.NewSandbox(plane, tools, registry.NewSpecs(p.Agents),
 		runtime.WithCatalog(p.fileTools(p.connectorTools)),
 		runtime.WithDelegator(p.attach),
+		runtime.WithCallTool(ToolCallAgent),
 		// A run waiting on an attached run of the same agent holds one of
 		// that agent's nodes, so there are as many as there are places.
 		runtime.WithReplicas(p.slots()),
@@ -298,7 +300,7 @@ func (p *Platform) executor() (runtime.Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("platform: sandbox: %w", err)
 	}
-	return exec, nil
+	return callExecutor{inner: exec}, nil
 }
 
 // Invoke accepts a tag and starts its run. Routes are registered before the run
@@ -311,6 +313,9 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	// agent but carries no usable edge.
 	edge, err := call.EdgeOf(tag)
 	if err != nil {
+		return runs.Run{}, err
+	}
+	if _, err := call.InputOf(tag); err != nil {
 		return runs.Run{}, err
 	}
 	runID := runtime.RunID(tag.ID)
@@ -376,23 +381,37 @@ func (p *Platform) Call(ctx context.Context, tenant, runID string, req call.Requ
 		return runs.Run{}, fmt.Errorf("%w: %q may not call %q", ErrForbidden, parent.Agent, req.Agent)
 	}
 
+	input := req.Input
+	if input == nil {
+		input = &call.Input{Messages: []call.Message{{Role: "user", Content: []call.Part{call.TextPart{Text: req.Text}}}}, ResponseFormat: call.TextFormat{}}
+	}
+	if req.Input != nil && req.Text != "" {
+		return runs.Run{}, fmt.Errorf("%w: use input or text, not both", call.ErrInvalid)
+	}
+	if strings.TrimSpace(req.Key) != "" {
+		if existing, err := p.Runs.Get(tenant, runtime.RunID(call.TagID(parent.Tag().ID, req.Key))); err == nil {
+			if !sameCallInput(existing, req, *input) {
+				return runs.Run{}, fmt.Errorf("%w: call key already identifies a different call", call.ErrInvalid)
+			}
+			return existing, nil
+		}
+	}
+
 	tag, err := call.New(parent.Tag(), req, parent.State(), p.cfg.Limits, p.now())
 	if err != nil {
 		return runs.Run{}, err
 	}
-	// Policy is checked before liveness, so a refusal always names the rule
-	// that refused it.
 	if parent.Status.Terminal() {
-		if existing, err := p.Runs.Get(tenant, runtime.RunID(tag.ID)); err == nil {
-			return existing, nil
-		}
 		return runs.Run{}, fmt.Errorf("%w: run %q has ended and cannot make calls", call.ErrInvalid, runID)
 	}
-	// A replayed turn makes the same call again. It joins the run it already
-	// started and is not counted twice.
-	if existing, err := p.Runs.Get(tenant, runtime.RunID(tag.ID)); err == nil {
-		return existing, nil
+	prepared, err := p.prepareCall(ctx, tenant, *input)
+	if err != nil {
+		return runs.Run{}, err
 	}
+	if err := freezeInput(tag.Meta, prepared); err != nil {
+		return runs.Run{}, err
+	}
+	tag.Text = prepared.Messages[len(prepared.Messages)-1].Text
 	child, err := p.Invoke(ctx, tag)
 	if err != nil {
 		return runs.Run{}, err
@@ -562,8 +581,11 @@ func (p *Platform) Run(ctx context.Context) error {
 			case err != nil:
 				return err
 			}
+			p.admission.Lock()
 			p.Journal.Append(e)
-			if run, ended := p.Runs.Observe(e); ended {
+			run, ended := p.Runs.Observe(e)
+			p.admission.Unlock()
+			if ended {
 				p.ended(ctx, run)
 			}
 		}

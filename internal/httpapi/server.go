@@ -451,16 +451,17 @@ func (s *Server) runTree(w http.ResponseWriter, r *http.Request, who auth.Princi
 
 func (s *Server) createCall(w http.ResponseWriter, r *http.Request, who auth.Principal) {
 	var body struct {
-		Key   string    `json:"key"`
-		Agent string    `json:"agent"`
-		Text  string    `json:"text"`
-		Mode  call.Mode `json:"mode"`
-		Lease int64     `json:"lease"`
+		Key   string      `json:"key"`
+		Agent string      `json:"agent"`
+		Text  string      `json:"text"`
+		Mode  call.Mode   `json:"mode"`
+		Lease int64       `json:"lease"`
+		Input *call.Input `json:"input,omitempty"`
 	}
 	if !decode(w, r, &body) {
 		return
 	}
-	run, err := s.P.Call(r.Context(), who.Tenant, r.PathValue("id"), call.Request(body))
+	run, err := s.P.Call(r.Context(), who.Tenant, r.PathValue("id"), call.Request{Key: body.Key, Agent: body.Agent, Text: body.Text, Input: body.Input, Mode: body.Mode, Lease: body.Lease})
 	if err != nil {
 		s.problem(w, err)
 		return
