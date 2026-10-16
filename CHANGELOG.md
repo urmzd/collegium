@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 (2026-10-16)
+
+### Features
+
+- support seamless Okta and Tailscale console entry (#24) ([0908386](https://github.com/urmzd/collegium/commit/0908386f9bc333488b58a553e25d0ef288028cd2))
+
+[Full Changelog](https://github.com/urmzd/collegium/compare/v0.3.0...v0.4.0)
+
+
 ## 0.3.0 (2026-10-16)
 
 ### Features
