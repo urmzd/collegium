@@ -107,7 +107,9 @@ func TestTheLegacyEnvironmentYieldsOneWorkingDefaultClientPerSurface(t *testing.
 	go func() { done <- p.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	})
 	if _, err := p.Agents.Create(ctx, "trial", agentspec.AgentSpec{Name: "helper", Provider: "offline", Model: "offline", SystemPrompt: "Answer."}, "test"); err != nil {
 		t.Fatal(err)

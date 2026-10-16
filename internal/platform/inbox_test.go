@@ -38,7 +38,9 @@ func proposals(t *testing.T) (*platform.Platform, inbox.Message) {
 	go func() { done <- p.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	})
 	for _, name := range []string{"lead", "scribe"} {
 		spec := agentspec.AgentSpec{Name: name, Model: "offline", Provider: "offline", SystemPrompt: "x"}

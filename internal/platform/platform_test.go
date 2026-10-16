@@ -296,7 +296,9 @@ func TestHousekeepingTitlesAndRemembers(t *testing.T) {
 	go func() { done <- p.Run(ctx) }()
 	defer func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	}()
 	for _, name := range []string{"lead", "scribe"} {
 		spec := agentspec.AgentSpec{Name: name, Model: "offline", Provider: "offline", SystemPrompt: "x"}

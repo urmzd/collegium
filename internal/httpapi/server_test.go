@@ -69,7 +69,9 @@ func newFixtureWith(t *testing.T, cfg platform.Config) *fixture {
 	t.Cleanup(func() {
 		srv.Close()
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	})
 	return &fixture{srv: srv, iss: iss, p: p}
 }

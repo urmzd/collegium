@@ -215,7 +215,9 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 			c.release(name)
 		}
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	})
 	for name := range c.says {
 		if platform.IsBuiltin(name) {
