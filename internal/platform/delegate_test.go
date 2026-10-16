@@ -12,7 +12,6 @@ import (
 
 	"github.com/urmzd/mandatum/pkg/agentrt"
 	"github.com/urmzd/mandatum/pkg/agentspec"
-	"github.com/urmzd/mandatum/pkg/runtime"
 	"github.com/urmzd/saige/agent/agenttest"
 	saigetypes "github.com/urmzd/saige/agent/types"
 
@@ -42,11 +41,13 @@ func (g *gated) Stream(ctx context.Context, req saigetypes.Request) (<-chan saig
 // cast is the agents of one test: what each one's model says, turn by turn,
 // who it may call, which tools it holds, and which are held until released.
 type cast struct {
-	says  map[string][][]saigetypes.Delta
-	spawn map[string][]string
-	tools map[string][]string
-	gates map[string]chan struct{}
-	once  map[string]*sync.Once
+	models  sync.Map
+	talking sync.Map
+	says    map[string][][]saigetypes.Delta
+	spawn   map[string][]string
+	tools   map[string][]string
+	gates   map[string]chan struct{}
+	once    map[string]*sync.Once
 	// shape sets anything else on an agent's spec: what waits for approval,
 	// and who may answer.
 	shape map[string]func(*agentspec.AgentSpec)
@@ -112,11 +113,12 @@ func (r *recorded) Stream(ctx context.Context, req saigetypes.Request) (<-chan s
 // talker is a talk's model for one run.
 type talker struct {
 	*agenttest.ScriptedProvider
-	at    int
-	text  string
-	calls atomic.Int32
-	cut   chan struct{}
-	once  *sync.Once
+	at      int
+	text    string
+	calls   atomic.Int32
+	cut     chan struct{}
+	once    *sync.Once
+	started func()
 }
 
 func (t *talker) Stream(ctx context.Context, req saigetypes.Request) (<-chan saigetypes.Delta, error) {
@@ -137,6 +139,9 @@ func (t *talker) Stream(ctx context.Context, req saigetypes.Request) (<-chan sai
 				return
 			}
 		}
+		if t.started != nil {
+			t.started()
+		}
 		<-ctx.Done()
 		t.once.Do(func() { close(t.cut) })
 	}()
@@ -144,7 +149,7 @@ func (t *talker) Stream(ctx context.Context, req saigetypes.Request) (<-chan sai
 }
 
 func tagging(agent, text string) []saigetypes.Delta {
-	return agenttest.ToolCallResponse("call-"+agent, runtime.DelegateToolName(agent), map[string]any{"text": text})
+	return agenttest.ToolCallResponse("call-"+agent, platform.ToolCallAgent, map[string]any{"agent": agent, "messages": []any{map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": text}}}}, "response_format": map[string]any{"type": "text"}})
 }
 
 func say(text string) []saigetypes.Delta { return agenttest.TextResponse(text) }
@@ -177,6 +182,7 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 				return &recorded{c: c, agent: spec.Name, Provider: &talker{
 					ScriptedProvider: &agenttest.ScriptedProvider{Responses: says[:tk.after]},
 					at:               tk.after, text: tk.text, cut: c.cut[spec.Name], once: cutOnce[spec.Name],
+					started: func() { c.talking.Store(spec.Name, true) },
 				}}, nil
 			}
 			says = says[tk.after:]
@@ -190,6 +196,7 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 			scripted = c.scripts[spec.Name]
 			c.mu.Unlock()
 		}
+		c.models.Store(spec.Name, scripted)
 		if gate, held := c.gates[spec.Name]; held {
 			return &recorded{c: c, agent: spec.Name, Provider: &gated{ScriptedProvider: scripted, gate: gate}}, nil
 		}
@@ -208,7 +215,9 @@ func stage(t *testing.T, c *cast, cfg platform.Config) *platform.Platform {
 			c.release(name)
 		}
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	})
 	for name := range c.says {
 		if platform.IsBuiltin(name) {

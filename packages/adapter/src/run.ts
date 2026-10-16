@@ -23,6 +23,28 @@ export interface BusEvent {
   at: string;
 }
 
+export type ResponseFormat =
+  | { type: "text"; max_chars?: number }
+  | { type: "summary"; max_words?: number }
+  | { type: "json_schema"; schema: Record<string, unknown> | boolean };
+
+export type InputPart =
+  | { type: "text"; text: string }
+  | { type: "conversation_range"; thread: string; from: string; through: string }
+  | { type: "artifact"; id: string; version: number }
+  | { type: "run_result"; run: string };
+
+export interface AgentCallInput {
+  messages: { role: "user" | "assistant"; content: InputPart[] }[];
+  response_format: ResponseFormat;
+}
+
+export interface PreparedCallInput {
+  input: AgentCallInput;
+  messages: { role: "user" | "assistant"; text: string }[];
+}
+
+
 /** Money in integer millionths of a currency, from saige's price catalog. */
 export interface Cost {
   micros: number;
@@ -59,6 +81,7 @@ export interface Run {
   rev: number;
   origin: string;
   text: string;
+  input?: PreparedCallInput;
   actor?: { id: string; display?: string; bot?: boolean };
   root: string;
   parent?: string;
@@ -150,6 +173,7 @@ interface Published {
 const PUBLISH = "publish_artifact";
 /** The tool an agent hands work to another agent with, without waiting for it. */
 const HAND_ON = "delegate_task";
+const CALL_AGENT = "call_agent";
 /** mandatum names the tool that hands work to another agent after that agent. */
 const DELEGATE = /^tag_(.+)$/;
 
@@ -191,11 +215,11 @@ export function adapter(
   // follows fills in the same card rather than adding a second one.
   const publishing: string[] = [];
 
-  // A call to another agent is that agent doing a step, not a tool. The
-  // called agent runs inside this turn and has no run of its own to open.
+  // Helper calls link to their own run. Their complete result stays in
+  // execution history rather than becoming another answer preview.
   // The run each call to another agent started, by tool call. The platform
   // says which run it was on the caller's stream, after the call opens.
-  const started = new Map<string, { run: string; agent: string }>();
+  const started = new Map<string, { run: string; agent: string; lifecycle?: string }>();
   // Calls to another agent that have not been told their run yet, per tool.
   const calling = new Map<string, string[]>();
   // What each task last looked like, so a later fact adds to it.
@@ -216,7 +240,14 @@ export function adapter(
           status: "in_progress",
           tool: name,
           ...all,
-          subagent: { name: to, runId: run?.run, summary: all.output, hue: opts.hue?.(to) },
+          subagent: {
+            name: to,
+            runId: run?.run,
+            summary: all.status === "error" ? "Helper failed. Open execution history for details."
+              : run?.lifecycle === "delegated" ? "Background work. Open execution history."
+              : all.status === "complete" ? "Result returned to caller" : undefined,
+            hue: opts.hue?.(to),
+          },
         }
       : { id, title: title(name), status: "in_progress", tool: name, ...all };
   };
@@ -305,8 +336,9 @@ export function adapter(
           { type: "activity", activity: doing(t.name) },
           { type: "task.upserted", task: task(t.id, t.name, {}) },
         ];
-        if (t.name && (delegateOf(t.name) || t.name === HAND_ON)) {
-          calling.set(t.name, [...(calling.get(t.name) ?? []), t.id]);
+        if (t.name && (delegateOf(t.name) || t.name === HAND_ON || t.name === CALL_AGENT)) {
+          const pending = calling.get(t.name) ?? [];
+          if (!pending.includes(t.id) && !started.has(t.id)) calling.set(t.name, [...pending, t.id]);
         }
         if (t.name === PUBLISH) {
           publishing.push(t.id);
@@ -328,13 +360,15 @@ export function adapter(
       }
       case "action.taken": {
         const p = body<Published>(e);
-        const called = p.data as unknown as { run?: string; agent?: string } | undefined;
-        if (p.name && called?.run && (delegateOf(p.name) || p.name === HAND_ON)) {
+        const called = p.data as unknown as { run?: string; agent?: string; lifecycle?: string; tool_call_id?: string } | undefined;
+        if (p.name && called?.run && (delegateOf(p.name) || p.name === HAND_ON || p.name === CALL_AGENT)) {
           // Which run a call to another agent started. From here the step
           // can be opened as that run.
-          const id = calling.get(p.name)?.shift();
-          if (!id) return [];
-          started.set(id, { run: called.run, agent: called.agent ?? delegateOf(p.name) ?? "" });
+          const pending = calling.get(p.name) ?? [];
+          const id = called.tool_call_id ?? pending[0];
+          if (!id || tools.get(id) !== p.name) return [];
+          calling.set(p.name, pending.filter((candidate) => candidate !== id));
+          started.set(id, { run: called.run, agent: called.agent ?? delegateOf(p.name) ?? "", lifecycle: called.lifecycle });
           return [{ type: "task.upserted", task: task(id, p.name, {}) }];
         }
         if (p.name !== PUBLISH) return [];

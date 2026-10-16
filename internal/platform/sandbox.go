@@ -479,7 +479,8 @@ func (p *Platform) turnFileTools(req runtime.Request, action func(payload.Action
 		return &saigetypes.ToolFunc{Def: saigetypes.ToolDef{Name: name, Description: desc, Parameters: params}, Fn: fn}
 	}
 	return map[string]saigetypes.Tool{
-		ToolDelegate: p.delegateTool(req, action),
+		ToolDelegate:  p.delegateTool(req, action),
+		ToolCallAgent: p.callAgentTool(req, action),
 		ToolFileWrite: tool(ToolFileWrite,
 			"Write a text file in this conversation's working directory, replacing it if it exists. Files stay for later turns. Publish one with publish_artifact to give it to the person.",
 			schema([]string{"path", "content"}, map[string]string{"path": "Relative path, such as report.md or data/q3.csv", "content": "The whole content of the file"}),

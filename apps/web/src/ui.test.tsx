@@ -1089,3 +1089,31 @@ test("every custom property the console reads is one it defines", () => {
   assert.deepEqual(missing, [], "read but never defined");
   assert.doesNotMatch(code, /\boap-/, "the old prefix is gone");
 });
+
+
+test("Activity preserves a helper's constructed examples and resolved input", () => {
+  const trees = sampleTrees();
+  const selected = trees.flatMap((tree) => tree.runs).find((run) => run.id === "r2a");
+  assert.ok(selected);
+  selected.input = {
+    input: {
+      messages: [
+        { role: "user", content: [{ type: "text", text: "Example question" }] },
+        { role: "assistant", content: [{ type: "text", text: "Example answer" }] },
+        { role: "user", content: [{ type: "artifact", id: "art-1", version: 2 }] },
+      ],
+      response_format: { type: "summary", max_words: 80 },
+    },
+    messages: [
+      { role: "user", text: "Example question" },
+      { role: "assistant", text: "Example answer" },
+      { role: "user", text: "Frozen artifact contents" },
+    ],
+  };
+  const out = html(<ActivityPanel trees={trees} selected="r2a" onSelect={() => {}} onClose={() => {}} />);
+  assert.match(out, /Return format: summary/);
+  assert.match(out, /Example response/);
+  assert.match(out, /Example answer/);
+  assert.match(out, /Frozen artifact contents/);
+  assert.ok(out.indexOf("Example question") < out.indexOf("Example answer"));
+});

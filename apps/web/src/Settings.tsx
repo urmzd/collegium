@@ -5,7 +5,7 @@ import { BillingSettings } from "./Billing.tsx";
 import { ClientSettings } from "./Clients.tsx";
 import { agentOptions, button, card, field, Label, Menu, Problem, primary, Segmented, Switch } from "./ui.tsx";
 
-export type Section = "profile" | "appearance" | "workspace" | "limits" | "connections" | "access";
+export type Section = "configuration" | "routing" | "profile" | "appearance" | "workspace" | "limits" | "connections" | "access";
 
 const accents: { id: string; label: string }[] = [
   { id: "purple", label: "Purple" },
@@ -51,7 +51,9 @@ export function Settings({
   onExplain,
   onPrefs,
   onWorkspace,
+  overview,
 }: {
+  overview: React.ReactNode;
   me: Me;
   prefs: Preferences;
   workspace: Workspace | null;
@@ -92,6 +94,8 @@ export function Settings({
   };
 
   const sections: { id: Section; label: string }[] = [
+    { id: "configuration", label: "Configuration" },
+    { id: "routing", label: "Agent routing" },
     { id: "profile", label: "Profile" },
     { id: "appearance", label: "Appearance" },
     { id: "workspace", label: "Workspace" },
@@ -122,6 +126,53 @@ export function Settings({
       <div className="aui-scroll min-h-0 flex-1 overflow-y-auto">
         <div className="flex w-full max-w-2xl flex-col gap-4 px-5 pt-8 pb-6 md:px-10">
           <Problem message={problem} />
+
+          {section === "configuration" && (
+            <>
+              <header>
+                <h1 className="text-aui-xl font-semibold text-aui-fg">Configuration</h1>
+                <p className="text-aui-sm text-aui-muted">Your workspace overview and tools.</p>
+              </header>
+              {overview}
+            </>
+          )}
+          {section === "routing" && (
+            <>
+              <header>
+                <h1 className="text-aui-xl font-semibold text-aui-fg">Agent routing</h1>
+                <p className="text-aui-sm text-aui-muted">New requests use the automatic router. You can also choose an agent in the prompt.</p>
+              </header>
+              <section className={`${card} flex flex-col gap-3`}>
+                <h2 className="text-aui-sm font-medium text-aui-fg">Automatic router</h2>
+                <p className="text-aui-sm text-aui-muted">
+                  Matches requests to agent names, descriptions and instructions. Names and descriptions carry more weight.
+                  When agents tie or none match, the fallback answers.
+                </p>
+                {workspace && (
+                  <Label text="Fallback agent" hint="Set an available agent so unmatched requests can run.">
+                    <Menu
+                      label="Fallback agent"
+                      value={workspace.baseline}
+                      disabled={!canAdmin}
+                      options={agentOptions(agents.map((a) => a.spec.name), "None")}
+                      onChange={(baseline) => saveWorkspace({ baseline })}
+                    />
+                  </Label>
+                )}
+              </section>
+              <section className={`${card} flex flex-col gap-3`}>
+                <h2 className="text-aui-sm font-medium text-aui-fg">Agent capabilities</h2>
+                <p className="text-aui-xs text-aui-muted">Edit descriptions and instructions in Agents to change how requests are matched.</p>
+                {agents.length === 0 && <p className="text-aui-sm text-aui-muted">No agents configured.</p>}
+                {agents.map((a) => (
+                  <div key={a.spec.name}>
+                    <p className="text-aui-sm font-medium text-aui-fg">{a.spec.name}</p>
+                    <p className="text-aui-xs text-aui-muted">{a.spec.description || "Matches using its name and instructions."}</p>
+                  </div>
+                ))}
+              </section>
+            </>
+          )}
 
           {section === "profile" && (
             <>
@@ -229,21 +280,6 @@ export function Settings({
                 <>
                   <section className={`${card} flex flex-col gap-3`}>
                     <Label
-                      text="Baseline agent"
-                      hint="Answers when Auto finds no agent that fits a message, or more than one fits equally."
-                    >
-                      <Menu
-                        label="Baseline agent"
-                        value={workspace.baseline}
-                        disabled={!canAdmin}
-                        options={agentOptions(agents.map((a) => a.spec.name), "None")}
-                        onChange={(next) => saveWorkspace({ baseline: next })}
-                      />
-                    </Label>
-                  </section>
-
-                  <section className={`${card} flex flex-col gap-3`}>
-                    <Label
                       text="Title agent"
                       hint="After a conversation's first turn, this agent is asked to name it. It needs a real model: nothing happens on the offline provider."
                     >
@@ -306,10 +342,10 @@ export function Settings({
                   </section>
 
                   <section className={`${card} flex flex-col gap-3`}>
-                    <h3 className="text-aui-sm font-medium text-aui-fg">Projects</h3>
-                    <p className="text-aui-xs text-aui-muted">A project is a place to file conversations that belong together.</p>
+                    <h3 className="text-aui-sm font-medium text-aui-fg">Areas</h3>
+                    <p className="text-aui-xs text-aui-muted">An area groups tasks and their shared context.</p>
                     {workspace.projects.length === 0 ? (
-                      <p className="text-aui-sm text-aui-muted">No projects yet.</p>
+                      <p className="text-aui-sm text-aui-muted">No areas yet.</p>
                     ) : (
                       <ul>
                         {workspace.projects.map((p) => (

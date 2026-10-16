@@ -372,6 +372,7 @@ export function Chat({
       <section className="collegium-fade flex min-h-0 flex-1 flex-col justify-center">
         <div className="flex flex-col items-center gap-1 px-6 pb-8 text-center">
           <h1 className="text-[2rem] leading-tight font-semibold text-aui-fg">{greeting}</h1>
+          <p className="text-aui-sm text-aui-muted">What would you like to get done? The right agent will take it from here.</p>
           {agents.length === 0 && <p className="text-aui-sm text-aui-muted">Define an agent first, then start here.</p>}
         </div>
         {composer}
@@ -408,7 +409,7 @@ export function Chat({
           onClick={() => setActivity(activity ? null : { focus: null })}
           className="shrink-0 rounded-aui px-2 py-1 text-aui-xs text-aui-muted hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-expanded:text-aui-fg"
         >
-          Activity{running > 0 ? ` ${running}` : ""}
+          Execution history{running > 0 ? ` ${running}` : ""}
         </button>
       </header>
       <WebSurface onAction={onAction} className="flex min-h-0 flex-1 flex-col">

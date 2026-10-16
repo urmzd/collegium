@@ -366,7 +366,7 @@ func TestStoppingCascadesThroughAttachedRunsAtDepth(t *testing.T) {
 	if leaf.Parent != mid.ID || leaf.Depth != 2 || leaf.Root != first.ID || worker.Lifecycle != runs.Delegated {
 		t.Fatalf("leaf = %+v, worker = %+v", leaf, worker)
 	}
-	within(t, "the leaf is talking", func() bool { return streamed(p, leaf.ID, "Leaf was half") })
+	within(t, "the leaf is talking", func() bool { _, ok := c.talking.Load("leaf"); return ok })
 
 	if _, err := p.StopRun(ctx, admin, first.ID); err != nil {
 		t.Fatal(err)
@@ -467,7 +467,7 @@ func TestStoppingARunThatHasAnsweredCompletesIt(t *testing.T) {
 		r, _ := p.Runs.Get(tenant, first.ID)
 		return r.Finishing
 	})
-	within(t, "the helper is talking", func() bool { return streamed(p, child.ID, "Helping") })
+	within(t, "the helper is talking", func() bool { _, ok := c.talking.Load("helper"); return ok })
 
 	got, err := p.StopRun(ctx, admin, first.ID)
 	if err != nil || got.Status == runs.Stopped {

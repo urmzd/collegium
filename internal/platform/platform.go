@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -332,6 +333,7 @@ func (p *Platform) executor() (runtime.Executor, error) {
 	exec, err := runtime.NewSandbox(plane, tools, registry.NewSpecs(p.Agents),
 		runtime.WithCatalog(p.fileTools(p.connectorTools)),
 		runtime.WithDelegator(p.attach),
+		runtime.WithCallTool(ToolCallAgent),
 		// A run waiting on an attached run of the same agent holds one of
 		// that agent's nodes, so there are as many as there are places.
 		runtime.WithReplicas(p.slots()),
@@ -341,7 +343,7 @@ func (p *Platform) executor() (runtime.Executor, error) {
 	if err != nil {
 		return nil, fmt.Errorf("platform: sandbox: %w", err)
 	}
-	return exec, nil
+	return callExecutor{inner: exec}, nil
 }
 
 // Invoke accepts a tag and starts its run. Routes are registered before the run
@@ -354,6 +356,9 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	// agent but carries no usable edge.
 	edge, err := call.EdgeOf(tag)
 	if err != nil {
+		return runs.Run{}, err
+	}
+	if _, err := call.InputOf(tag); err != nil {
 		return runs.Run{}, err
 	}
 	// The run id is the runtime's, derived from the tenant and the tag id
@@ -432,6 +437,26 @@ func (p *Platform) call(ctx context.Context, tenant, runID string, req call.Requ
 		return runs.Run{}, fmt.Errorf("%w: %q may not call %q", ErrForbidden, parent.Agent, req.Agent)
 	}
 
+	input := req.Input
+	if input == nil {
+		input = &call.Input{Messages: []call.Message{{Role: "user", Content: []call.Part{call.TextPart{Text: req.Text}}}}, ResponseFormat: call.TextFormat{}}
+	}
+	if req.Input != nil && req.Text != "" {
+		return runs.Run{}, fmt.Errorf("%w: use input or text, not both", call.ErrInvalid)
+	}
+	if strings.TrimSpace(req.Key) != "" {
+		if existing, err := p.Runs.Get(tenant, runtime.RunID(tenant, call.TagID(parent.Tag().ID, req.Key))); err == nil {
+			compare := req
+			if grant && compare.Lease == 0 {
+				compare.Lease = existing.Lease
+			}
+			if !sameCallInput(existing, compare, *input) {
+				return runs.Run{}, fmt.Errorf("%w: call key already identifies a different call", call.ErrInvalid)
+			}
+			return existing, nil
+		}
+	}
+
 	if grant && req.Lease == 0 && parent.Lease > 0 {
 		left := parent.Left() / 2
 		if left <= 0 {
@@ -455,11 +480,14 @@ func (p *Platform) call(ctx context.Context, tenant, runID string, req call.Requ
 		}
 		return runs.Run{}, fmt.Errorf("%w: run %q has ended and cannot make calls", call.ErrInvalid, runID)
 	}
-	// A replayed turn makes the same call again. It joins the run it already
-	// started and is not counted twice.
-	if existing, err := p.Runs.Get(tenant, runtime.RunID(tenant, tag.ID)); err == nil {
-		return existing, nil
+	prepared, err := p.prepareCall(ctx, tenant, *input)
+	if err != nil {
+		return runs.Run{}, err
 	}
+	if err := freezeInput(tag.Meta, prepared); err != nil {
+		return runs.Run{}, err
+	}
+	tag.Text = prepared.Messages[len(prepared.Messages)-1].Text
 	child, err := p.Invoke(ctx, tag)
 	if err != nil {
 		return runs.Run{}, err
@@ -551,7 +579,9 @@ func (p *Platform) observe(ctx context.Context, e envelope.Event) {
 		p.observeUsage(ctx, e)
 		return
 	}
+	p.admission.Lock()
 	run, ended := p.Runs.Observe(e)
+	p.admission.Unlock()
 	p.observeQuestion(ctx, e)
 	if ended {
 		p.ended(ctx, run)

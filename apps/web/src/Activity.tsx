@@ -151,7 +151,17 @@ function Conversation({ run }: { run: Run }) {
   return (
     <div data-testid="activity-conversation" className="flex flex-col gap-3">
       <div className="flex flex-col items-end gap-1">
-        <p className="collegium-glass max-w-[90%] whitespace-pre-wrap rounded-aui-lg px-3.5 py-2 text-aui-sm text-aui-fg">{run.text || "No request text"}</p>
+        {run.input ? (
+          <div className="flex w-full flex-col gap-3" aria-label="Helper input">
+            <p className="text-aui-xs text-aui-muted">Return format: {run.input.input.response_format.type.replaceAll("_", " ")}</p>
+            {run.input.messages.map((message, index) => (
+              <div key={index} className="collegium-glass whitespace-pre-wrap rounded-aui-lg px-3.5 py-2 text-aui-sm text-aui-fg">
+                <p className="mb-1 text-aui-xs text-aui-muted">{message.role === "assistant" ? "Example response" : "Input message"}</p>
+                {message.text}
+              </div>
+            ))}
+          </div>
+        ) : <p className="collegium-glass max-w-[90%] whitespace-pre-wrap rounded-aui-lg px-3.5 py-2 text-aui-sm text-aui-fg">{run.text || "No request text"}</p>}
       </div>
       <AgentTint name={run.agent}>
         <WebSurface onAction={onAction}>

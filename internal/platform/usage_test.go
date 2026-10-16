@@ -117,7 +117,9 @@ func metered(t *testing.T, cfg platform.Config, agents map[string]agentModel) *p
 	go func() { done <- p.Run(ctx) }()
 	t.Cleanup(func() {
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	})
 	for _, tenantName := range []string{tenant, "globex"} {
 		for name, a := range agents {

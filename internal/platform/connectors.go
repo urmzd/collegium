@@ -161,10 +161,15 @@ func (s *surface) pump(ctx context.Context, st *seat, out chan<- envelope.Tag) {
 	tags := make(chan envelope.Tag)
 	failed := make(chan error, 1)
 	go func() { failed <- st.peer.Ingest(ctx, tags) }()
+	wait := func() {
+		if err := <-failed; err != nil && !errors.Is(err, context.Canceled) {
+			s.p.log.Error("platform: client trigger shutdown failed", "surface", s.name, "tenant", st.client.Tenant, "client", st.client.ID, "error", err)
+		}
+	}
 	for {
 		select {
 		case <-ctx.Done():
-			<-failed
+			wait()
 			return
 		case err := <-failed:
 			if err != nil && ctx.Err() == nil {
@@ -179,7 +184,7 @@ func (s *surface) pump(ctx context.Context, st *seat, out chan<- envelope.Tag) {
 			select {
 			case out <- tag:
 			case <-ctx.Done():
-				<-failed
+				wait()
 				return
 			}
 		}

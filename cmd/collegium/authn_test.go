@@ -70,7 +70,9 @@ func mockServer(t *testing.T, policyFile string) string {
 		_ = srv.Close()
 		stop()
 		cancel()
-		<-done
+		if err := <-done; err != nil {
+			t.Errorf("platform shutdown: %v", err)
+		}
 	})
 	return public
 }

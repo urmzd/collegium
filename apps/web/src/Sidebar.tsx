@@ -229,6 +229,15 @@ function Group({ label, entries, open }: { label?: string; entries: Entry[]; ope
  * The console's navigation. Open, it shows labels and recent conversations.
  * Closed, it is a rail of icons. The choice is the caller's to persist.
  */
+/** A group label when open, a hairline when the sidebar is a rail. */
+function Heading({ open, children }: { open: boolean; children: ReactNode }) {
+  return open ? (
+    <p className="px-2.5 pt-4 pb-1 text-aui-xs text-aui-muted">{children}</p>
+  ) : (
+    <span aria-hidden className="my-2 h-px w-5 bg-aui-border" />
+  );
+}
+
 export function Sidebar({
   open,
   onToggle,
@@ -371,11 +380,23 @@ export function Sidebar({
 
       {/* Everything between the top row and the account scrolls as one, so a short window never squeezes Recents into a sliver. */}
       <div className="aui-scroll flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
-      <nav aria-label="Main" className={`flex shrink-0 flex-col gap-0.5 ${open ? "px-2" : "items-center"}`}>
-        <Group open={open} entries={top} />
-        {groups.map((g) => (
-          <Group key={g.label} open={open} label={g.label} entries={g.entries} />
-        ))}
+      <nav aria-label="Sections" className={`flex shrink-0 flex-col gap-0.5 ${open ? "px-2" : "items-center"}`}>
+        {can("runs:write") && (
+          <Item href="/?view=chat" icon={open ? null : <PlusIcon />} label="+ New" open={open} active={view === "chat" && !selected} onClick={onNewChat} />
+        )}
+        {can("runs:read") && (
+          <>
+            <Item
+              icon={<InboxIcon />}
+              href="/?view=inbox" label="Inbox"
+              open={open}
+              active={view === "inbox"}
+              badge={inboxCount}
+              onClick={() => onView("inbox")}
+            />
+          </>
+        )}
+
       </nav>
 
       {projectsSlot}
@@ -384,11 +405,11 @@ export function Sidebar({
         <div className="flex shrink-0 flex-col pt-3">
           {/* The label stays in reach while the list scrolls under it. */}
           <div className="sticky top-0 z-10 flex items-center justify-between gap-1 bg-[var(--collegium-plane)] py-1 pr-2 pl-2">
-            <p className="px-2 text-aui-xs text-aui-muted">Recents</p>
+            <p className="px-2 text-aui-xs text-aui-muted">Tasks</p>
             <Popover
               narrow
               align="right"
-              label={filters > 0 ? `Filter conversations, ${filters} on` : "Filter conversations"}
+              label={filters > 0 ? `Filter tasks, ${filters} on` : "Filter tasks"}
               className="relative inline-flex size-6 items-center justify-center rounded-aui text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-expanded:bg-aui-hover aria-expanded:text-aui-fg"
               button={
                 <>
@@ -403,9 +424,9 @@ export function Sidebar({
                     title="Show"
                     value={standing}
                     options={[
-                      { value: "", label: "Every conversation" },
+                      { value: "", label: "Every task" },
                       { value: "running", label: "Running now" },
-                      { value: "failed", label: "With a failed reply" },
+                      { value: "failed", label: "Needs attention" },
                     ]}
                     onChange={setStanding}
                   />
@@ -433,7 +454,7 @@ export function Sidebar({
               )}
             </Popover>
           </div>
-          <ul className="px-2 pb-3" aria-label="Conversations" aria-busy={loading !== null}>
+          <ul className="px-2 pb-3" aria-label="Tasks" aria-busy={loading !== null}>
             {recents.length === 0 && loading === "first" && (
               <li className="px-2.5">
                 <SkeletonRows count={5} height="1.25rem" />
@@ -441,7 +462,7 @@ export function Sidebar({
             )}
             {recents.length === 0 && loading !== "first" && stalled && (
               <li className="flex flex-col items-start gap-1.5 px-2.5 py-1.5 text-aui-xs text-aui-muted">
-                Your conversations could not be loaded.
+                Your tasks could not be loaded.
                 <button
                   type="button"
                   onClick={retry}
@@ -454,8 +475,8 @@ export function Sidebar({
             {recents.length === 0 && loading !== "first" && !stalled && (
               <li className="px-2.5 py-1.5 text-aui-xs text-aui-muted">
                 {filters > 0
-                    ? "No conversation matches these filters."
-                    : "Your conversations appear here."}
+                    ? "No task matches these filters."
+                    : "Your tasks appear here. Start with + New."}
               </li>
             )}
             {recents.map((t) => (
@@ -464,7 +485,7 @@ export function Sidebar({
                   type="button"
                   onClick={() => onSelect(t.id)}
                   aria-current={view === "chat" && t.id === selected ? "page" : undefined}
-                  className="flex h-8 w-full items-center gap-2 rounded-aui px-2 text-left text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg"
+                  className="flex min-h-14 w-full items-center gap-2 rounded-aui px-2 py-2 text-left text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg"
                 >
                   {/* The orb of the agent that last answered: moving while it works, red when a reply failed. */}
                   <AgentMark
@@ -472,7 +493,10 @@ export function Sidebar({
                     size={12}
                     state={t.active > 0 ? "thinking" : t.failed > 0 ? "error" : "idle"}
                   />
-                  <span className="min-w-0 flex-1 truncate">{t.title}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block line-clamp-2 text-aui-fg">{t.title || "Untitled task"}</span>
+                    <span className="block text-aui-2xs text-aui-muted">{t.active > 0 ? "In progress" : t.failed > 0 ? "Needs attention" : "Finished"}{t.project ? ` · ${t.project}` : ""} · {t.turns} {t.turns === 1 ? "turn" : "turns"}</span>
+                  </span>
                   {t.active > 0 && <span className="sr-only">, running</span>}
                   {t.active === 0 && t.failed > 0 && <span className="sr-only">, a reply failed</span>}
                 </button>
@@ -494,6 +518,63 @@ export function Sidebar({
           </ul>
         </div>
       )}
+      <nav aria-label="Tools and configuration" className={`flex shrink-0 flex-col gap-0.5 pb-3 ${open ? "px-2" : "items-center"}`}>
+        <Heading open={open}>Tools</Heading>
+        {can("agents:read") && (
+          <Item
+            icon={<BotIcon />}
+            href="/?view=agents" label="Agents"
+            open={open}
+            active={view === "agents" || view === "agent"}
+            onClick={() => onView("agents")}
+          />
+        )}
+        {can("knowledge:read") && (
+          <Item
+            icon={<BookIcon />}
+            href="/?view=knowledge" label="Knowledge"
+            open={open}
+            active={view === "knowledge"}
+            onClick={() => onView("knowledge")}
+          />
+        )}
+        {can("artifacts:read") && (
+          <Item icon={<BoxIcon />} href="/?view=storage" label="Storage" open={open} active={view === "storage"} onClick={() => onView("storage")} />
+        )}
+        {can("schedules:read") && (
+          <Item
+            icon={<ClockIcon />}
+            href="/?view=schedules" label="Schedules"
+            open={open}
+            active={view === "schedules"}
+            onClick={() => onView("schedules")}
+          />
+        )}
+
+        {can("evals:read") && <Item icon={<CheckListIcon />} href="/?view=evals" label="Evals" open={open} active={view === "evals"} onClick={() => onView("evals")} />}
+
+        <Heading open={open}>Observe</Heading>
+        {can("runs:read") && <Item icon={<MessageIcon />} href="/?view=runs" label="Execution history" open={open} active={view === "runs"} onClick={() => onView("runs")} />}
+        {can("runs:read") && (
+          <Item
+            icon={<ChartIcon />}
+            href="/?view=analytics" label="Analytics"
+            open={open}
+            active={view === "analytics"}
+            onClick={() => onView("analytics")}
+          />
+        )}
+        {can("alerts:read") && (
+          <Item
+            icon={<BellIcon />}
+            href="/?view=alerts" label="Alerts"
+            open={open}
+            active={view === "alerts"}
+            badge={alertCount}
+            onClick={() => onView("alerts")}
+          />
+        )}
+      </nav>
       </div>
 
       {!live && open && <p className="px-4 pb-2 text-aui-2xs text-aui-muted">Reconnecting. What you see may be out of date.</p>}

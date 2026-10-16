@@ -188,6 +188,7 @@ turned back into it.
   origin: string;
   /** What the run was asked. */
   text: string;
+  input?: PreparedCallInput;
   actor?: Actor;
   /** The run at the top of the call tree. A run nobody called is its own root. */
   root: string;
@@ -270,11 +271,36 @@ export interface ActAs {
   user: string;
 }
 
+/** Explicit helper context and its return contract. Agent rules remain pinned. */
+export interface AgentCallInput {
+  messages: AgentCallMessage[];
+  response_format: AgentCallResponseFormat;
+}
+
+export interface AgentCallMessage {
+  role: "user" | "assistant";
+  content: AgentCallPart[];
+}
+
+/** Inline text or a reference resolved within the caller's workspace. */
+export type AgentCallPart = { type: "text"; text: string } | { type: "conversation_range"; thread: string; from: string; through: string } | { type: "artifact"; id: string; version: number } | { type: "run_result"; run: string };
+
+/** Validated helper output, independent of delivery and permissions. */
+export type AgentCallResponseFormat = { type: "text"; max_chars?: number } | { type: "summary"; max_words?: number } | { type: "json_schema"; schema: Record<string, unknown> | boolean };
+
+/** Original references plus the exact resolved messages used on replay. */
+export interface PreparedCallInput {
+  input: AgentCallInput;
+  messages: PreparedCallInputMessagesItem[];
+}
+
 export interface CreateCallRequest {
   /** Identifies the call within the caller's run. The same key joins the child it already started. */
   key: string;
   agent: string;
-  text: string;
+  /** Plain text shorthand. Supply text or input, never both. */
+  text?: string;
+  input?: AgentCallInput;
   mode: CallMode;
   /** The budget granted to the child, in micro-USD. */
   lease?: number;
@@ -1467,6 +1493,11 @@ export interface RefusalPolicy {
   scope: PolicyScope;
   version: number;
   period: PolicyPeriod;
+}
+
+export interface PreparedCallInputMessagesItem {
+  role: "user" | "assistant";
+  text: string;
 }
 
 export interface ClientInputCredentials {

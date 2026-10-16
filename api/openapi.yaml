@@ -2825,6 +2825,7 @@ components:
         text:
           description: What the run was asked.
           type: string
+        input: {$ref: "#/components/schemas/PreparedCallInput"}
         actor: {$ref: "#/components/schemas/Actor"}
         root:
           description: The run at the top of the call tree. A run nobody called is its own root.
@@ -2949,15 +2950,101 @@ components:
       properties:
         client: {type: string}
         user: {type: string}
+    AgentCallInput:
+      description: Explicit helper context and its return contract. Agent rules remain pinned.
+      type: object
+      required: [messages, response_format]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: {$ref: "#/components/schemas/AgentCallMessage"}
+        response_format: {$ref: "#/components/schemas/AgentCallResponseFormat"}
+    AgentCallMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: {type: string, enum: [user, assistant]}
+        content:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items: {$ref: "#/components/schemas/AgentCallPart"}
+    AgentCallPart:
+      description: Inline text or a reference resolved within the caller's workspace.
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties:
+            type: {type: string, enum: [text]}
+            text: {type: string}
+        - type: object
+          required: [type, thread, from, through]
+          properties:
+            type: {type: string, enum: [conversation_range]}
+            thread: {type: string}
+            from: {type: string}
+            through: {type: string}
+        - type: object
+          required: [type, id, version]
+          properties:
+            type: {type: string, enum: [artifact]}
+            id: {type: string}
+            version: {type: integer}
+        - type: object
+          required: [type, run]
+          properties:
+            type: {type: string, enum: [run_result]}
+            run: {type: string}
+    AgentCallResponseFormat:
+      description: Validated helper output, independent of delivery and permissions.
+      oneOf:
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, enum: [text]}
+            max_chars: {type: integer, minimum: 0, maximum: 64000}
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, enum: [summary]}
+            max_words: {type: integer, minimum: 0, maximum: 2000}
+        - type: object
+          required: [type, schema]
+          properties:
+            type: {type: string, enum: [json_schema]}
+            schema:
+              description: A JSON Schema object or boolean schema.
+              oneOf:
+                - {type: object, additionalProperties: true}
+                - {type: boolean}
+    PreparedCallInput:
+      description: Original references plus the exact resolved messages used on replay.
+      type: object
+      required: [input, messages]
+      properties:
+        input: {$ref: "#/components/schemas/AgentCallInput"}
+        messages:
+          type: array
+          items:
+            type: object
+            required: [role, text]
+            properties:
+              role: {type: string, enum: [user, assistant]}
+              text: {type: string}
     CreateCallRequest:
       type: object
-      required: [key, agent, text, mode]
+      required: [key, agent, mode]
       properties:
         key:
           description: Identifies the call within the caller's run. The same key joins the child it already started.
           type: string
         agent: {type: string}
-        text: {type: string}
+        text:
+          description: Plain text shorthand. Supply text or input, never both.
+          type: string
+        input: {$ref: "#/components/schemas/AgentCallInput"}
         mode: {$ref: "#/components/schemas/CallMode"}
         lease:
           description: The budget granted to the child, in micro-USD.
