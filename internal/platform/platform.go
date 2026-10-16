@@ -196,6 +196,10 @@ type Platform struct {
 	// calls serializes Call, so two calls from one run cannot both pass a
 	// fan-out or budget check that only one of them fits under.
 	calls sync.Mutex
+
+	// answers keeps a recorded decision and its surface provenance together
+	// before resumed or terminal events can settle the inbox question.
+	answers sync.Mutex
 }
 
 // New assembles a platform. Nothing runs until Run is called.
