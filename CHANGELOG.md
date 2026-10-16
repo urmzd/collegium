@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.0 (2026-10-16)
+
+### Features
+
+- organize tasks and add structured helper calls (#19) ([748f0d0](https://github.com/urmzd/collegium/commit/748f0d001c5d98377a6dc345eb09804931b0e088))
+
+### Bug Fixes
+
+- preserve answer attribution across resumed events (#20) ([9648bc1](https://github.com/urmzd/collegium/commit/9648bc16e1e4e57452e3a18544fe992021910a1e))
+
+[Full Changelog](https://github.com/urmzd/collegium/compare/v0.1.0...v0.2.0)
+
+
 ## 0.1.0 (2026-10-15)
 
 ### Breaking
