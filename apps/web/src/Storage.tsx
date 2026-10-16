@@ -22,7 +22,7 @@ export function StorageUsed({ use }: { use: StorageUse }) {
         <ul className="flex flex-col gap-2" aria-label="Storage by project">
           {top.map((p) => (
             <li key={p.name} className="flex items-baseline justify-between gap-3 text-aui-sm">
-              <span className="min-w-0 truncate text-aui-fg">{p.name || "No project"}</span>
+              <span className="min-w-0 truncate text-aui-fg">{p.name || "Projectless"}</span>
               <span className="shrink-0 text-aui-xs tabular-nums text-aui-muted">
                 {bytes(p.bytes)}, {p.count} {p.count === 1 ? "file" : "files"}
               </span>

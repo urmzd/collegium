@@ -7,11 +7,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Activity } from "./Activity.tsx";
 import type { Run } from "./adapter.ts";
 import { Composer } from "./Composer.tsx";
-import { ApiError, api, type Choice, type Revision, type Settings, type ThreadSummary } from "./api.ts";
+import { ApiError, api, type Choice, type Project, type Revision, type Settings, type ThreadSummary } from "./api.ts";
+import { HomePage } from "./HomePage.tsx";
+import { ProjectPicker } from "./ProjectPicker.tsx";
 import { useRunTurn } from "./Runs.tsx";
 import { itemActions } from "./itemActions.tsx";
 import { SessionGaugeFor } from "./SessionGauge.tsx";
-import { AgentMark, agentOptions, AgentTint, cause, Menu, Popover, Presence, Problem } from "./ui.tsx";
+import { AgentMark, AgentTint, cause, Popover, Presence, Problem } from "./ui.tsx";
 
 const AUTO = "auto";
 // Controls in the dock are text, not boxes: they sit under the composer and
@@ -136,6 +138,7 @@ export function Chat({
   greeting,
   onThread,
   onChanged,
+  onProjectCreated,
 }: {
   threadId: string | null;
   /** The project a new conversation starts in, when it was started from one. */
@@ -150,12 +153,13 @@ export function Chat({
   greeting: string;
   onThread: (id: string) => void;
   onChanged: () => void;
+  onProjectCreated: (project: Project) => void;
 }) {
   const [turns, setTurns] = useState<Run[]>([]);
   const [chosen, setChosen] = useState<Record<string, string>>({});
   const [auto, setAuto] = useState(true);
   const [agent, setAgent] = useState("");
-  const [project, setProject] = useState(startIn ?? "");
+  const [project, setProject] = useState<string | null>(startIn ?? null);
   const [preview, setPreview] = useState<Choice | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   // The drawer of every run in the conversation, open on one of them or on the list.
@@ -280,14 +284,13 @@ export function Chat({
         leading={
           <>
         {threadId ? (
-          tail?.project && <span className="px-1.5 text-aui-sm">In {tail.project}</span>
+          <span className="max-w-40 truncate px-1.5 text-aui-sm text-aui-muted" title={tail?.project || "Projectless"}>{tail?.project || "Projectless"}</span>
         ) : (
-          <Menu
-            quiet
-            label="Project"
+          <ProjectPicker
             value={project}
-            options={[{ value: "", label: "No project" }, ...(settings?.projects ?? []).map((p) => ({ value: p.name, label: p.name }))]}
+            projects={settings?.projects ?? null}
             onChange={setProject}
+            onCreated={onProjectCreated}
           />
         )}
           </>
@@ -306,8 +309,8 @@ export function Chat({
           button={
             <>
               {(!auto || preview) && <AgentMark name={auto ? (preview?.agent ?? "?") : named} size={16} />}
-              <span className="max-w-32 truncate">{auto ? (preview?.agent ?? "Auto") : named}</span>
-              {auto && preview && <span className="text-aui-xs text-aui-muted">Auto</span>}
+              <span className="max-w-16 truncate sm:max-w-32">{auto ? (preview?.agent ?? "Auto") : named}</span>
+              {auto && preview && <span className="hidden text-aui-xs text-aui-muted sm:inline">Auto</span>}
               <ChevronDownIcon size={14} className="text-aui-muted" />
             </>
           }
@@ -369,14 +372,9 @@ export function Chat({
 
   if (!threadId || path.length === 0) {
     return (
-      <section className="collegium-fade flex min-h-0 flex-1 flex-col justify-center">
-        <div className="flex flex-col items-center gap-1 px-6 pb-8 text-center">
-          <h1 className="text-[2rem] leading-tight font-semibold text-aui-fg">{greeting}</h1>
-          <p className="text-aui-sm text-aui-muted">What would you like to get done? The right agent will take it from here.</p>
-          {agents.length === 0 && <p className="text-aui-sm text-aui-muted">Define an agent first, then start here.</p>}
-        </div>
+      <HomePage greeting={greeting} canRun={canRun} hasAgents={agents.length > 0}>
         {composer}
-      </section>
+      </HomePage>
     );
   }
 

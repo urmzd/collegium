@@ -23,7 +23,6 @@ import {
 } from "./api.ts";
 import { Chat } from "./Chat.tsx";
 import { EvalsPage } from "./EvalsPage.tsx";
-import { HomePage } from "./HomePage.tsx";
 import { InboxPage } from "./InboxPage.tsx";
 import { Knowledge } from "./Knowledge.tsx";
 import { Onboarding } from "./Onboarding.tsx";
@@ -160,7 +159,7 @@ function address(view: View, section: Section, permission: string, alert: string
   try {
     const url = new URL(window.location.href);
     const named = view === "settings" && SECTIONS.includes(section) ? section : LINKABLE.includes(view) ? view : null;
-    if (named && named !== "chat") url.searchParams.set("view", named);
+    if (named && named !== "home") url.searchParams.set("view", named);
     else url.searchParams.delete("view");
     if (named === "access") url.searchParams.set("permission", permission);
     else url.searchParams.delete("permission");
@@ -176,7 +175,7 @@ function address(view: View, section: Section, permission: string, alert: string
 function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const can = useCallback((p: string) => me.permissions.includes(p), [me]);
   const [start] = useState(initial);
-  const [view, setView] = useState<View>(start?.view ?? "chat");
+  const [view, setView] = useState<View>(start?.view ?? "home");
   const [section, setSection] = useState<Section>(start?.section ?? "configuration");
   const [explain, setExplain] = useState(start?.permission ?? "runs:read");
   const [thread, setThread] = useState<string | null>(null);
@@ -359,18 +358,6 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     setSection(next);
     setView("settings");
   };
-  /** A view by the name a `?view=` link uses. */
-  const navigate = (name: string, params?: URLSearchParams) => {
-    const to = fromAddress(new URLSearchParams({ view: name }));
-    if (!to) return;
-    if (to.view === "chat") return newChat();
-    if (to.section) {
-      const permission = params?.get("permission");
-      if (permission) setExplain(permission);
-      return openSettings(to.section);
-    }
-    setView(to.view);
-  };
   useEffect(() => address(view, section, explain, alertId), [view, section, explain, alertId]);
   // An alert is open only on the Alerts page; leaving it closes the alert.
   useEffect(() => {
@@ -415,7 +402,13 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
         onToggle={toggle}
         view={view}
         section={section}
-        onView={setView}
+        onView={(next) => {
+          if (next === "home") {
+            setThread(null);
+            setStartIn(undefined);
+          }
+          setView(next);
+        }}
         onSettings={openSettings}
         onNewChat={() => newChat()}
         projectsSlot={
@@ -444,27 +437,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
         onSignOut={() => api.logout().then(onSignedOut).catch(onSignedOut)}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
-          {view === "home" && (
-            <HomePage
-              me={me}
-              name={shownName}
-              agents={agents}
-              runs={runs}
-              inboxCount={inboxCounts.open}
-              alerts={can("alerts:read") ? alerts : null}
-              signal={inboxTick}
-              onThread={(id) => {
-                openThread(id);
-                loadRuns();
-              }}
-              onReview={(id) => {
-                setInboxMessage(id);
-                setView("inbox");
-              }}
-              onNavigate={navigate}
-            />
-          )}
-          {view === "chat" && (
+          {(view === "home" || view === "chat") && (
             <Chat
               key={thread ?? `new:${startIn ?? ""}`}
               threadId={thread}
@@ -475,7 +448,12 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
               settings={workspace}
               canRun={can("runs:write")}
               greeting={greeting(shownName)}
-              onThread={setThread}
+              onProjectCreated={(project) => {
+                setWorkspace((current) => current ? { ...current, projects: [...current.projects.filter((p) => p.name !== project.name), project] } : current);
+                loadProjects();
+                loadAgents();
+              }}
+              onThread={openThread}
               onChanged={loadRuns}
             />
           )}
@@ -626,7 +604,7 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
             <Settings
               overview={
                 <div className="flex flex-col gap-3">
-                  <p className="text-aui-sm text-aui-muted">{agents.length} agents · {projects.length} areas · {threads.length} recent tasks</p>
+                  <p className="text-aui-sm text-aui-muted">{agents.length} agents · {projects.length} projects · {threads.length} recent tasks</p>
                   {([
                     ["agents", "Agents", "agents:read"],
                     ["knowledge", "Knowledge", "knowledge:read"],

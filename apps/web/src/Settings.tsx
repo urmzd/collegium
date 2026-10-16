@@ -342,10 +342,10 @@ export function Settings({
                   </section>
 
                   <section className={`${card} flex flex-col gap-3`}>
-                    <h3 className="text-aui-sm font-medium text-aui-fg">Areas</h3>
-                    <p className="text-aui-xs text-aui-muted">An area groups tasks and their shared context.</p>
+                    <h3 className="text-aui-sm font-medium text-aui-fg">Projects</h3>
+                    <p className="text-aui-xs text-aui-muted">A project groups tasks and their shared context.</p>
                     {workspace.projects.length === 0 ? (
-                      <p className="text-aui-sm text-aui-muted">No areas yet.</p>
+                      <p className="text-aui-sm text-aui-muted">No projects yet.</p>
                     ) : (
                       <ul>
                         {workspace.projects.map((p) => (
