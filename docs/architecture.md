@@ -354,6 +354,7 @@ and GitHub release from `main`, using the main-only `release` environment.
 | `internal/platform`: mandatum composed, `Invoke`, `Call` with the spawn allowlist | Built, tested |
 | Ledger reconciler: ends runs whose retries ran out with no final event | Built, tested |
 | `pkg/auth`: OIDC sign-in, machine tokens, roles and scopes | Built, tested against an in-process issuer |
+| Okta SSO and Tailscale Serve identity | Okta uses OIDC without forcing reauthentication. `-auth=tailscale` trusts Serve on loopback, maps namespaced subjects through the authorization policy, and needs no application sign-in |
 | `pkg/authz`: a policy language mapping claims to roles and roles to permissions, with Explain | Built. The built-in policy reproduces the three roles. `COLLEGIUM_AUTHZ_POLICY` loads a file |
 | `pkg/auth/mockidp`: a loopback-only development identity provider, `-auth=mock` | Built. Tokens go through the real verifier |
 | HTTP API, sessions, event stream | Built, tested |
@@ -384,7 +385,7 @@ and GitHub release from `main`, using the main-only `release` environment.
 | Unpriced calls and other currencies: counted apart, never as dollars, one lower-bound alert per scope, bounded by `max_tokens` | Built, tested |
 | Asking a person to approve a run at a limit | Not built. A run parks only at a tool call (`approvals`, `ask_person`): mandatum has no way for a host to park a run on a question of its own, so a mid-run limit can only stop it, and admission refuses before there is a run to park. It needs a runtime call that raises a question on a run from outside its turn (or parks it at its next model call), with a `budget` question kind |
 | Limits set by a project's owner | Not built. Only an admin sets limits, because projects have no owners |
-| First-run setup: the first admin names themselves and the workspace | Built. `first_admin`, `onboarded_at` and the workspace's setup fields |
+| Direct entry after sign-in, with optional personal preferences | Built. Everyone opens the console directly, including first admins. Profile and Appearance settings hold optional preferences |
 | Recents: conversations paged by an opaque keyset cursor, 200 a page | Built |
 | Project membership and per-project access | Not built. Everyone in the workspace sees every project |
 | Web console on vultus: chat, inbox, agent editor with revisions, evals, knowledge, schedules, analytics, alerts, settings | Built |
@@ -392,7 +393,7 @@ and GitHub release from `main`, using the main-only `release` environment.
 | Console landing: a prompt-first Home page using the conversation composer, with optional attachments, project selection and agent selection before sending. The former overview is removed. The root opens Home; chat has its own explicit address | Built. Home and new conversation share the same submission flow; sending opens the conversation. Run permissions are enforced |
 | Console menu: Home, New conversation, Inbox, then Work, Build, Watch and Workspace. An entry is hidden from someone who may not read what it opens | Built. Connections, Access and Limits open their Settings sections |
 | "Why can I do this?": `GET /api/access/explain` and the Access panel. A sign-in keeps the grant behind each role, not the claims or the token | Built, tested. Sessions are in memory, so a restart signs everyone out |
-| Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC the modes are loopback dev auth and the loopback mock provider |
+| Local accounts with a first-user admin, for running without an identity provider | Not built. Without OIDC, use Tailscale Serve identity, loopback dev auth or the loopback mock provider |
 | Model parameters on an agent (temperature, token and step limits) | Not built. mandatum's agent spec has no fields for them |
 | A stop control in the console's composer | Not built. The API stops a run in flight and the console's event adapter ends a turn on `lifecycle.stopped`, but the composer has no stop button and its queue still waits for the run to end |
 | Skill consolidation | Not built |

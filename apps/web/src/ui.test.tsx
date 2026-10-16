@@ -53,8 +53,7 @@ test("project selection: an empty workspace still offers projectless work and cr
   const projectless = renderToStaticMarkup(<ProjectPicker projects={[]} value="" {...actions} />);
   assert.match(projectless, /aria-label="Select project: Projectless"/);
 });
-import type { Alert, AlertRule, Me, Preferences, Settings } from "./api.ts";
-import { Onboarding, welcome } from "./Onboarding.tsx";
+import type { Alert, AlertRule } from "./api.ts";
 import { ActionId, messageState, partTarget, type UiAction } from "@vultus/core";
 import { after, merge } from "./inbox.ts";
 import { edgeOf, MailboxView } from "./InboxPage.tsx";
@@ -262,67 +261,6 @@ test("PolicyBadge: says the scope and what happens at the limit", () => {
   const approve = html(<PolicyBadge scope="Workspace" action="approve" />);
   assert.equal(attr(approve, "data-action"), "approve");
   assert.match(approve, /asks for approval/);
-});
-
-const person: Me = { principal: { subject: "u1", tenant: "default", kind: "user", name: "Ada Lovelace", email: "ada@example.com" }, permissions: [] };
-const fresh: Preferences = { display_name: "", theme: "system", accent: "purple", has_photo: false, photo_version: 0 };
-const space = { baseline: "", history: "recent", history_limit: 10, projects: [], title_agent: "", memory_agent: "", memory_auto_approve: false } as Settings;
-const onboarding = (over: Partial<Parameters<typeof Onboarding>[0]> = {}) =>
-  html(
-    <Onboarding me={person} prefs={fresh} workspace={space} firstAdmin={false} onPrefs={() => {}} onWorkspace={() => {}} onDone={() => {}} {...over} />,
-  );
-
-test("welcome: greets by first name, and by time of day", () => {
-  assert.equal(welcome("Ada Lovelace", 9), "Good morning, Ada");
-  assert.equal(welcome("  Ada  ", 13), "Good afternoon, Ada");
-  assert.equal(welcome("", 20), "Good evening");
-});
-
-test("Onboarding: the name is asked for, labelled, required and prefilled from sign-in", () => {
-  const out = onboarding();
-  assert.match(out, /<label[^>]*>What should we call you\?<\/label>/);
-  assert.match(out, /<input[^>]*required[^>]*value="Ada Lovelace"|<input[^>]*value="Ada Lovelace"[^>]*required/);
-  assert.match(out, /Good (morning|afternoon|evening), Ada/);
-});
-
-test("Onboarding: with no name from sign-in, the email's first part is offered", () => {
-  const out = onboarding({ me: { ...person, principal: { ...person.principal, name: undefined } } });
-  assert.match(out, /value="ada"/);
-});
-
-test("Onboarding: a name already chosen wins over sign-in", () => {
-  assert.match(onboarding({ prefs: { ...fresh, display_name: "Countess" } }), /value="Countess"/);
-});
-
-test("Onboarding: everyone gets the personal part, with one main action and a way to skip", () => {
-  const out = onboarding();
-  assert.equal(attr(out, "data-first-admin"), "false");
-  assert.match(out, /Upload Picture/);
-  assert.match(out, /aria-pressed="true"[^>]*>System</);
-  assert.equal(out.match(/type="submit"/g)?.length, 1);
-  assert.match(out, />Get Started</);
-  assert.match(out, />Skip for Now</);
-  assert.doesNotMatch(out, /onboarding-workspace|Workspace name|first admin/);
-});
-
-test("Onboarding: the first admin also names the workspace and is told what an admin is", () => {
-  const out = onboarding({ firstAdmin: true });
-  assert.equal(attr(out, "data-first-admin"), "true");
-  assert.match(out, /data-testid="onboarding-workspace"/);
-  assert.match(out, /You are the first admin of this workspace/);
-  assert.match(out, /<label[^>]*>Workspace name<\/label>/);
-  assert.match(out, /<label[^>]*>First project<\/label>/);
-  assert.match(out, /limits are set in Settings/);
-  assert.doesNotMatch(out, /usage-meter|limit-field/);
-});
-
-test("Onboarding: every input has a label", () => {
-  const out = onboarding({ firstAdmin: true });
-  const labelled = new Set([...out.matchAll(/<label[^>]*for="([^"]+)"/g)].map((m) => m[1]));
-  for (const [tag] of out.matchAll(/<input[^>]*>/g)) {
-    const id = tag.match(/ id="([^"]+)"/)?.[1];
-    assert.ok((id && labelled.has(id)) || /aria-label="/.test(tag), `unlabelled input: ${tag}`);
-  }
 });
 
 const mailOf = (id: string): PlatformMessage => {

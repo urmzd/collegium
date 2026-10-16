@@ -8,6 +8,7 @@ Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
 | Caller | How it authenticates | What it gets |
 |--------|----------------------|--------------|
 | A person in a browser | OpenID Connect authorization code flow with PKCE, run by the server. The browser holds an opaque session cookie and never a token. | Roles, from the policy's grants |
+| A person through Tailscale Serve | Serve identity headers from a loopback peer at the configured HTTPS host | Roles, from subject or anyone grants |
 | A person in a CLI | An access token as `Authorization: Bearer` | Roles, from the policy's grants |
 | A machine | A client-credentials access token as `Authorization: Bearer` | Exactly the scopes on the token |
 
@@ -179,6 +180,54 @@ collegium serve -public-url https://collegium.example.com
 Any OpenID Connect provider works the same way. Group names, the groups claim
 and a per-caller tenant claim are flags: see `serve -h`.
 
+`-auth=okta` is an alias for `-auth=oidc` and uses the same environment variables.
+Opening the console automatically starts sign-in. Collegium does not send
+`prompt=login` or `max_age`, so an existing Okta session can satisfy the flow
+without another password prompt, subject to the organization's Okta policy.
+See [Okta session cookies](https://developer.okta.com/docs/guides/session-cookie/main/).
+
+## Tailscale: no application sign-in
+
+Run Collegium behind [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve).
+Serve authenticates the tailnet user on every request. No OIDC application or
+Collegium session cookie is needed.
+
+Create `/etc/collegium/tailnet.authz`, granting specific login names:
+
+```text
+role viewer { allow read on * }
+role admin { allow * on * }
+grant viewer to subject "tailscale:alice@example.com"
+grant admin to subject "tailscale:operator@example.com"
+```
+
+```sh
+export COLLEGIUM_AUTHZ_POLICY=/etc/collegium/tailnet.authz
+collegium serve -auth=tailscale -addr 127.0.0.1:8080 \
+  -public-url https://collegium.your-tailnet.ts.net -tenant acme \
+  -web apps/web/dist
+# In another terminal on the same host:
+tailscale serve --bg http://127.0.0.1:8080
+```
+
+Use the HTTPS hostname reported by Serve as `-public-url`. The server refuses
+a non-loopback listener, a non-HTTPS public URL or `-tenant-claim` in this mode.
+Tenant always comes from `-tenant`. The policy receives the subject
+`tailscale:<login>`; groups, email verification and arbitrary claims are not
+inferred from headers. No role is granted by default. A shared-device visitor
+also needs an explicit policy grant unless you grant a role to `anyone`.
+
+Trust all local processes on the Serve host: they can forge loopback identity
+headers. Never expose the backend through another proxy. Requests from remote
+peers, to another host, with bearer credentials, or without a user identity
+are refused. Funnel traffic and tagged devices carry no Serve user identity
+and cannot sign in. Display names support Serve's RFC 2047 encoding.
+
+Signing out clears Collegium cookies but cannot end the device's Tailscale
+identity. Reloading the console signs the user in again. Remove the policy
+grant or tailnet access to revoke access. This mode does not accept OIDC
+machine tokens; use OIDC mode for those deployments.
+
 ## Files agents make
 
 - An agent has the file tools only if its spec names them. They act on one
@@ -254,8 +303,8 @@ that kind.
 - No token revocation check beyond expiry, and no refresh. A session lasts 8
   hours.
 - No rate limiting.
-- No local accounts. Without an identity provider the only modes are dev auth
-  and the mock provider, both on loopback.
+- No local accounts. Deployments can use Tailscale Serve identity or the
+  loopback development modes without configuring an OIDC application.
 - The audit trail is the server log, not a store.
 - A call cannot yet narrow the callee's access to the caller's grant.
 - Sign-in has been tested against in-process issuers, not a live Okta org.

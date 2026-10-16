@@ -95,7 +95,14 @@ func newAuthn(ctx context.Context, c authConfig) (authn *httpapi.Authn, stop fun
 		}.WithPolicy(c.policy)
 		return &httpapi.Authn{Dev: &dev}, stop, nil
 
-	case "oidc":
+	case "tailscale":
+		if c.tenantClaim != "" {
+			return nil, stop, errors.New("-auth=tailscale uses -tenant, not -tenant-claim")
+		}
+		authn, err := httpapi.NewTailscaleAuthn(c.addr, c.publicURL, c.tenant, c.policy)
+		return authn, stop, err
+
+	case "oidc", "okta":
 		v, err := auth.NewVerifier(ctx, auth.OIDCConfig{
 			Issuer:      c.getenv("COLLEGIUM_OIDC_ISSUER"),
 			ClientID:    c.getenv("COLLEGIUM_OIDC_CLIENT_ID"),
@@ -116,7 +123,7 @@ func newAuthn(ctx context.Context, c authConfig) (authn *httpapi.Authn, stop fun
 	case "mock":
 		return mockAuthn(ctx, c)
 	}
-	return nil, stop, fmt.Errorf("-auth must be oidc, mock or dev, not %q", c.mode)
+	return nil, stop, fmt.Errorf("-auth must be oidc, okta, tailscale, mock or dev, not %q", c.mode)
 }
 
 // mockAuthn starts the development identity provider on loopback and signs in
