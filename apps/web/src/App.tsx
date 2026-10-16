@@ -22,18 +22,25 @@ import {
   type ThreadSummary,
 } from "./api.ts";
 import { Chat } from "./Chat.tsx";
+import { EvalsPage } from "./EvalsPage.tsx";
+import { HomePage } from "./HomePage.tsx";
 import { InboxPage } from "./InboxPage.tsx";
 import { Knowledge } from "./Knowledge.tsx";
 import { Onboarding } from "./Onboarding.tsx";
 import { ProjectNav, ProjectPage } from "./Projects.tsx";
 import { RunList } from "./Runs.tsx";
 import { Schedules } from "./Schedules.tsx";
-import { Settings } from "./Settings.tsx";
+import { type Section, Settings } from "./Settings.tsx";
 import { Storage } from "./Storage.tsx";
 import { Sidebar, type View } from "./Sidebar.tsx";
 import { primary } from "./ui.tsx";
 
 type Session = { state: "loading" } | { state: "signed-out" } | { state: "error"; message: string } | { state: "ready"; me: Me };
+
+/** Where sign-in starts, coming back to this page after. */
+function signInUrl(): string {
+  return `/auth/login?return_to=${encodeURIComponent(window.location.pathname + window.location.search)}`;
+}
 
 export function App() {
   const [session, setSession] = useState<Session>({ state: "loading" });
@@ -41,25 +48,28 @@ export function App() {
   useEffect(() => {
     api
       .me()
-      .then((me) => setSession({ state: "ready", me }))
-      .catch((e) =>
-        setSession(
-          e instanceof ApiError && e.status === 401
-            ? { state: "signed-out" }
-            : { state: "error", message: "The platform is not reachable. Is the server running?" },
-        ),
-      );
+      // A caller with no permission at all is sent null, not an empty list.
+      .then((me) => setSession({ state: "ready", me: { ...me, permissions: me.permissions ?? [] } }))
+      .catch((e) => {
+        if (e instanceof ApiError && e.status === 401) {
+          // Arriving signed out goes straight to sign-in. Signing out, below,
+          // does not, or a provider that remembers the person would sign them
+          // straight back in.
+          window.location.assign(signInUrl());
+          return;
+        }
+        setSession({ state: "error", message: "The platform is not reachable. Is the server running?" });
+      });
   }, []);
 
   if (session.state === "loading") return <Centered>Loading</Centered>;
   if (session.state === "error") return <Centered>{session.message}</Centered>;
   if (session.state === "signed-out") {
-    const back = encodeURIComponent(window.location.pathname + window.location.search);
     return (
       <Centered>
         <h1 className="text-aui-lg font-medium text-aui-fg">Collegium</h1>
-        <p className="text-aui-sm text-aui-muted">Sign in with your organization's account to continue.</p>
-        <a className={primary} href={`/auth/login?return_to=${back}`}>
+        <p className="text-aui-sm text-aui-muted">You are signed out.</p>
+        <a className={primary} href={signInUrl()}>
           Sign In
         </a>
       </Centered>
@@ -110,12 +120,68 @@ function useAppearance(prefs: Preferences | null) {
   }, [prefs?.theme, prefs?.accent]);
 }
 
+// The views a link can name with `?view=`. Connections, Access and Limits
+// are sections of Settings, named on their own so the menu can link to them.
+const SECTIONS: Section[] = ["connections", "access", "limits"];
+const LINKABLE: View[] = ["home", "chat", "inbox", "runs", "schedules", "agents", "knowledge", "evals", "analytics", "alerts", "storage", "settings"];
+
+/** The view, Settings section and explained permission a console address names. */
+function fromAddress(params: URLSearchParams): { view: View; section?: Section; permission?: string } | null {
+  const v = params.get("view") ?? "";
+  if ((SECTIONS as string[]).includes(v)) {
+    return { view: "settings", section: v as Section, permission: params.get("permission") ?? undefined };
+  }
+  return (LINKABLE as string[]).includes(v) ? { view: v as View } : null;
+}
+
+function initial(): ReturnType<typeof fromAddress> {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    // A link to one message, from before views were in the address.
+    if (!params.has("view") && params.has("message")) return { view: "inbox" };
+    return fromAddress(params);
+  } catch {
+    return null;
+  }
+}
+
+/** The alert an address names, as `?view=alerts&alert=<id>`. */
+function linkedAlert(): string | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("view") === "alerts" ? params.get("alert") : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep the address naming the view on screen, so a reload or a copied link comes back to it. */
+function address(view: View, section: Section, permission: string, alert: string | null) {
+  try {
+    const url = new URL(window.location.href);
+    const named = view === "settings" && SECTIONS.includes(section) ? section : LINKABLE.includes(view) ? view : null;
+    if (named && named !== "chat") url.searchParams.set("view", named);
+    else url.searchParams.delete("view");
+    if (named === "access") url.searchParams.set("permission", permission);
+    else url.searchParams.delete("permission");
+    if (view !== "inbox") url.searchParams.delete("message");
+    if (view === "alerts" && alert) url.searchParams.set("alert", alert);
+    else url.searchParams.delete("alert");
+    if (url.href !== window.location.href) window.history.replaceState(null, "", url);
+  } catch {
+    // The address just does not follow.
+  }
+}
+
 function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const can = useCallback((p: string) => me.permissions.includes(p), [me]);
-  const [view, setView] = useState<View>(can("runs:read") ? "chat" : "agents");
+  const [start] = useState(initial);
+  const [view, setView] = useState<View>(start?.view ?? "chat");
+  const [section, setSection] = useState<Section>(start?.section ?? "configuration");
+  const [explain, setExplain] = useState(start?.permission ?? "runs:read");
   const [thread, setThread] = useState<string | null>(null);
   const [agentName, setAgentName] = useState<string | null>(null);
-  const [agentTab, setAgentTab] = useState<"memory" | undefined>(undefined);
+  const [agentTab, setAgentTab] = useState<"memory" | "evals" | undefined>(undefined);
   // The inbox is the server's. This holds only its totals for the badge, a
   // counter that tells the page to look again, and a message to open first.
   const [inboxCounts, setInboxCounts] = useState({ open: 0, unread: 0 });
@@ -133,6 +199,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
   const [builtin, setBuiltin] = useState<string[]>([]);
   const [schedules, setSchedules] = useState<ScheduleView[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
+  // Set once the first list of alerts is in, so a linked alert that is not in it can be called missing.
+  const [alertsLoaded, setAlertsLoaded] = useState(false);
+  const [alertId, setAlertId] = useState<string | null>(linkedAlert);
   const [rules, setRules] = useState<AlertRule[]>([]);
   const [sources, setSources] = useState<Source[]>([]);
   const [suites, setSuites] = useState<SuiteView[]>([]);
@@ -186,8 +255,12 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     if (can("evals:read")) api.suites().then(setSuites).catch(() => {});
   }, [can]);
   const loadAlerts = useCallback(() => {
-    if (!can("alerts:read")) return;
-    api.alerts().then(setAlerts).catch(() => {});
+    if (!can("alerts:read")) return setAlertsLoaded(true);
+    api
+      .alerts()
+      .then(setAlerts)
+      .catch(() => {})
+      .finally(() => setAlertsLoaded(true));
     api.alertRules().then(setRules).catch(() => {});
   }, [can]);
   const loadSchedules = useCallback(() => {
@@ -277,11 +350,32 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
     setProjectName(name);
     setView("project");
   };
-  const openAgent = (name: string | null, tab?: "memory") => {
+  const openAgent = (name: string | null, tab?: "memory" | "evals") => {
     setAgentName(name);
     setAgentTab(tab);
     setView("agent");
   };
+  const openSettings = (next: Section) => {
+    setSection(next);
+    setView("settings");
+  };
+  /** A view by the name a `?view=` link uses. */
+  const navigate = (name: string, params?: URLSearchParams) => {
+    const to = fromAddress(new URLSearchParams({ view: name }));
+    if (!to) return;
+    if (to.view === "chat") return newChat();
+    if (to.section) {
+      const permission = params?.get("permission");
+      if (permission) setExplain(permission);
+      return openSettings(to.section);
+    }
+    setView(to.view);
+  };
+  useEffect(() => address(view, section, explain, alertId), [view, section, explain, alertId]);
+  // An alert is open only on the Alerts page; leaving it closes the alert.
+  useEffect(() => {
+    if (view !== "alerts") setAlertId(null);
+  }, [view]);
   const openAlerts = alerts.filter((a) => !a.acked_by).length;
   const stats = useMemo(() => new Map((day?.by_agent ?? []).map((g) => [g.name, g])), [day]);
   const editing = agents.find((a) => a.spec.name === agentName) ?? null;
@@ -320,7 +414,9 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
         open={open}
         onToggle={toggle}
         view={view}
+        section={section}
         onView={setView}
+        onSettings={openSettings}
         onNewChat={() => newChat()}
         projectsSlot={
           <ProjectNav
@@ -348,6 +444,26 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
         onSignOut={() => api.logout().then(onSignedOut).catch(onSignedOut)}
       />
       <main className="flex min-h-0 min-w-0 flex-1 flex-col">
+          {view === "home" && (
+            <HomePage
+              me={me}
+              name={shownName}
+              agents={agents}
+              runs={runs}
+              inboxCount={inboxCounts.open}
+              alerts={can("alerts:read") ? alerts : null}
+              signal={inboxTick}
+              onThread={(id) => {
+                openThread(id);
+                loadRuns();
+              }}
+              onReview={(id) => {
+                setInboxMessage(id);
+                setView("inbox");
+              }}
+              onNavigate={navigate}
+            />
+          )}
           {view === "chat" && (
             <Chat
               key={thread ?? `new:${startIn ?? ""}`}
@@ -480,10 +596,20 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
               onOpenRun={openRun}
             />
           )}
+          {view === "evals" && (
+            <EvalsPage
+              suites={suites}
+              onOpen={(suite) => (suite.target === "agent" ? openAgent(suite.subject, "evals") : setView("knowledge"))}
+            />
+          )}
           {view === "analytics" && <Analytics agents={agents} openAlerts={openAlerts} tick={tick} onOpenRun={openRun} />}
           {view === "alerts" && (
             <Alerts
               alerts={alerts}
+              // Someone who may not read alerts has none to wait for.
+              loaded={alertsLoaded || !can("alerts:read")}
+              selected={alertId}
+              onSelect={setAlertId}
               rules={rules}
               agents={agents}
               canWrite={can("alerts:write")}
@@ -526,6 +652,10 @@ function Console({ me, onSignedOut }: { me: Me; onSignedOut: () => void }) {
               workspace={workspace}
               agents={agents}
               canAdmin={can("agents:write")}
+              section={section}
+              onSection={setSection}
+              explain={explain}
+              onExplain={setExplain}
               onPrefs={setPrefs}
               onWorkspace={setWorkspace}
             />

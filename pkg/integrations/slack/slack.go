@@ -51,7 +51,7 @@ func New(cfg Config) (*Connector, error) {
 	}
 	cfg.Commands = append([]transport.Command(nil), cfg.Commands...)
 	c := &Connector{cfg: cfg, offered: offered{seen: map[string]bool{}}, statusSeq: map[string]uint64{}}
-	c.live.open, c.live.stopped = map[string]session{}, map[string]bool{}
+	c.live.open, c.live.asked = map[string]session{}, map[string]bool{}
 	base := transport.Config{API: cfg.API, Verifier: cfg.Verifier, Team: cfg.Team, Bots: cfg.Bots, Agents: cfg.Agents, DefaultAgent: cfg.DefaultAgent, Deliver: cfg.Deliver, Interval: cfg.Interval, Clock: cfg.Clock, MaxBody: cfg.MaxBody}
 	base.Prepare = func(_ context.Context, tag *envelope.Tag) error {
 		if tag.Meta["slack_event"] != "slash_command" {
@@ -70,15 +70,23 @@ func New(cfg Config) (*Connector, error) {
 	return c, err
 }
 func (c *Connector) Deliver(ctx context.Context, to address.Address, e envelope.Event) error {
-	// A run stopped from Slack is over for the surface even while the runtime
-	// finishes the model call it cannot cancel.
-	if to.Connector == transport.Name && len(to.Path) == 1 && c.live.track(to, e) {
-		return nil
+	// Everything a run publishes is rendered, a stopped run's last event
+	// included: the sink shows what the agent had said, marked stopped.
+	stopping := false
+	if to.Connector == transport.Name && len(to.Path) == 1 {
+		stopping = c.live.track(to, e)
 	}
 	if err := c.Connector.Deliver(ctx, to, e); err != nil {
 		return err
 	}
-	if _, ok := statusFor(e.Kind); !ok {
+	status, ok := statusFor(e.Kind)
+	if !ok {
+		return nil
+	}
+	// A run someone stopped from Slack has had its session set to active.
+	// Until it ends, a lifecycle event it was still publishing does not set
+	// the session back to working.
+	if stopping && status != StatusActive {
 		return nil
 	}
 	// Keep replayed lifecycle events from regressing a completed session.
@@ -104,6 +112,7 @@ type Command = transport.Command
 type Status = transport.Status
 type Session = transport.Session
 type Fake = transport.Fake
+type FakeMessage = transport.FakeMessage
 type Error = transport.Error
 
 const (

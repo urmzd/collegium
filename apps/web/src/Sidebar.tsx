@@ -1,11 +1,12 @@
 import { BotIcon, CheckIcon, ClockIcon, MessageIcon } from "@vultus/render-web";
-import { type ReactNode, type SVGProps, useState } from "react";
+import { type MouseEvent, type ReactNode, type SVGProps, useId, useState } from "react";
 import type { Me, Preferences, ThreadSummary } from "./api.ts";
-import { Avatar } from "./Settings.tsx";
+import { Avatar, type Section } from "./Settings.tsx";
 import { type Standing, useRecents } from "./recents.ts";
 import { AgentMark, Popover, SkeletonRows } from "./ui.tsx";
 
 export type View =
+  | "home"
   | "chat"
   | "inbox"
   | "runs"
@@ -17,6 +18,7 @@ export type View =
   | "alerts"
   | "project"
   | "storage"
+  | "evals"
   | "settings";
 
 // Glyphs vultus does not ship. Same grid and stroke as its set.
@@ -70,6 +72,25 @@ const BoxIcon = glyph(
   </>,
 );
 const FilterIcon = glyph(<path d="M3 5h18M7 12h10M10 19h4" />);
+const HomeIcon = glyph(
+  <>
+    <path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z" />
+  </>,
+);
+const CheckListIcon = glyph(<path d="m3 7 2 2 4-4M3 17l2 2 4-4M13 6h8M13 12h8M13 18h8" />);
+const PlugIcon = glyph(
+  <>
+    <path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0z" />
+    <path d="M12 18v4" />
+  </>,
+);
+const KeyIcon = glyph(
+  <>
+    <circle cx="7.5" cy="15.5" r="4.5" />
+    <path d="m10.7 12.3 9.3-9.3M17 6l3 3M14 9l2 2" />
+  </>,
+);
+const GaugeIcon = glyph(<path d="M12 14l4-4M3.3 19a10 10 0 1 1 17.4 0" />);
 const LogOutIcon = glyph(
   <>
     <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
@@ -77,9 +98,11 @@ const LogOutIcon = glyph(
   </>,
 );
 
+/** A link to a view. A plain click opens it in place; a modified one, in a new tab. */
 function Item({
   icon,
   label,
+  href,
   active,
   open,
   badge,
@@ -87,20 +110,26 @@ function Item({
 }: {
   icon: ReactNode;
   label: string;
+  href: string;
   active: boolean;
   open: boolean;
   badge?: number;
   onClick: () => void;
 }) {
   const count = badge && badge > 0 ? badge : 0;
+  const go = (e: MouseEvent<HTMLAnchorElement>) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    onClick();
+  };
   return (
-    <button
-      type="button"
-      onClick={onClick}
+    <a
+      href={href}
+      onClick={go}
       aria-current={active ? "page" : undefined}
-      aria-label={count ? `${label}, ${count} need you` : label}
+      aria-label={count ? `${label}, ${count} need you` : open ? undefined : label}
       title={open ? undefined : label}
-      className={`relative flex h-8 items-center gap-2.5 rounded-aui text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:text-aui-fg ${
+      className={`relative flex h-8 items-center gap-2.5 rounded-aui text-aui-sm text-aui-muted transition-colors hover:bg-aui-hover hover:text-aui-fg focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover aria-[current=page]:font-medium aria-[current=page]:text-aui-fg ${
         open ? "px-2.5" : "w-8 justify-center"
       }`}
     >
@@ -108,11 +137,13 @@ function Item({
       {open && <span className="flex-1 truncate text-left">{label}</span>}
       {count > 0 &&
         (open ? (
-          <span className="rounded-full bg-aui-accent-soft px-1.5 text-aui-2xs font-medium text-aui-fg">{count}</span>
+          <span aria-hidden className="rounded-full bg-aui-accent-soft px-1.5 text-aui-2xs font-medium text-aui-fg">
+            {count}
+          </span>
         ) : (
           <span aria-hidden className="absolute top-1 right-1 size-1.5 rounded-full bg-aui-accent" />
         ))}
-    </button>
+    </a>
   );
 }
 
@@ -148,6 +179,56 @@ function Choices<T extends string>({
   );
 }
 
+/** One entry of the menu. Hidden entries are ones the person may not read. */
+interface Entry {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  href: string;
+  active: boolean;
+  badge?: number;
+  show: boolean;
+  go: () => void;
+}
+
+/** A labelled group of entries. The label is small text when open, a hairline (and still read out) as a rail. */
+function Group({ label, entries, open }: { label?: string; entries: Entry[]; open: boolean }) {
+  const id = useId();
+  const shown = entries.filter((e) => e.show);
+  if (shown.length === 0) return null;
+  const list = (
+    <ul className={`flex flex-col gap-0.5 ${open ? "" : "items-center"}`} aria-labelledby={label ? id : undefined}>
+      {shown.map((e) => (
+        <li key={e.key}>
+          <Item icon={e.icon} label={e.label} href={e.href} open={open} active={e.active} badge={e.badge} onClick={e.go} />
+        </li>
+      ))}
+    </ul>
+  );
+  if (!label) return list;
+  return (
+    <div className={`flex flex-col ${open ? "" : "items-center"}`}>
+      {open ? (
+        <p id={id} className="px-2.5 pt-4 pb-1 text-aui-xs text-aui-muted">
+          {label}
+        </p>
+      ) : (
+        <>
+          <span id={id} className="sr-only">
+            {label}
+          </span>
+          <span aria-hidden className="my-2 h-px w-5 bg-aui-border" />
+        </>
+      )}
+      {list}
+    </div>
+  );
+}
+
+/**
+ * The console's navigation. Open, it shows labels and recent conversations.
+ * Closed, it is a rail of icons. The choice is the caller's to persist.
+ */
 /** A group label when open, a hairline when the sidebar is a rail. */
 function Heading({ open, children }: { open: boolean; children: ReactNode }) {
   return open ? (
@@ -157,15 +238,13 @@ function Heading({ open, children }: { open: boolean; children: ReactNode }) {
   );
 }
 
-/**
- * The console's navigation. Open, it shows labels and recent conversations.
- * Closed, it is a rail of icons. The choice is the caller's to persist.
- */
 export function Sidebar({
   open,
   onToggle,
   view,
+  section,
   onView,
+  onSettings,
   onNewChat,
   me,
   prefs,
@@ -182,7 +261,10 @@ export function Sidebar({
   open: boolean;
   onToggle: () => void;
   view: View;
+  /** The Settings section on screen, for the menu entries that open one. */
+  section: Section;
   onView: (v: View) => void;
+  onSettings: (s: Section) => void;
   onNewChat: () => void;
   me: Me;
   prefs: Preferences | null;
@@ -210,6 +292,67 @@ export function Sidebar({
   // ends, which is the signal to fetch the first page again.
   const { threads: recents, hasMore, loading, failed, stalled, retry, more } = useRecents(agent, standing, threads);
   const filters = (agent ? 1 : 0) + (standing ? 1 : 0);
+  const inSettings = (s: Section) => view === "settings" && section === s;
+  const to = (v: View, label: string, icon: ReactNode, show: boolean, extra: Partial<Entry> = {}): Entry => ({
+    key: v,
+    label,
+    icon,
+    href: `/?view=${v}`,
+    active: view === v,
+    show,
+    go: () => onView(v),
+    ...extra,
+  });
+  const setting = (s: Section, label: string, icon: ReactNode, show: boolean): Entry => ({
+    key: s,
+    label,
+    icon,
+    href: `/?view=${s}`,
+    active: inSettings(s),
+    show,
+    go: () => onSettings(s),
+  });
+  // Every entry is hidden from someone who may not read what it opens, so
+  // nothing in the menu answers with a refusal.
+  const top: Entry[] = [
+    to("home", "Home", <HomeIcon />, true),
+    to("chat", "New conversation", <PlusIcon />, can("runs:write"), { active: view === "chat" && !selected, go: onNewChat }),
+    to("inbox", "Inbox", <InboxIcon />, can("runs:read"), { badge: inboxCount }),
+  ];
+  const groups: { label: string; entries: Entry[] }[] = [
+    {
+      label: "Work",
+      entries: [
+        to("runs", "Runs", <MessageIcon />, can("runs:read")),
+        to("schedules", "Schedules", <ClockIcon />, can("schedules:read")),
+      ],
+    },
+    {
+      label: "Build",
+      entries: [
+        to("agents", "Agents", <BotIcon />, can("agents:read"), { active: view === "agents" || view === "agent" }),
+        to("knowledge", "Knowledge", <BookIcon />, can("knowledge:read")),
+        to("evals", "Evals", <CheckListIcon />, can("evals:read")),
+      ],
+    },
+    {
+      label: "Watch",
+      entries: [
+        to("analytics", "Analytics", <ChartIcon />, can("runs:read")),
+        to("alerts", "Alerts", <BellIcon />, can("alerts:read"), { badge: alertCount }),
+      ],
+    },
+    {
+      label: "Workspace",
+      entries: [
+        setting("connections", "Connections", <PlugIcon />, can("clients:read")),
+        // Anyone signed in may see their own access.
+        setting("access", "Access", <KeyIcon />, true),
+        setting("limits", "Limits and billing", <GaugeIcon />, can("billing:read")),
+        to("storage", "Storage", <BoxIcon />, can("artifacts:read")),
+      ],
+    },
+  ];
   const clear = () => {
     setStanding("");
     setAgent("");
@@ -239,13 +382,13 @@ export function Sidebar({
       <div className="aui-scroll flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto">
       <nav aria-label="Sections" className={`flex shrink-0 flex-col gap-0.5 ${open ? "px-2" : "items-center"}`}>
         {can("runs:write") && (
-          <Item icon={open ? null : <PlusIcon />} label="+ New" open={open} active={view === "chat" && !selected} onClick={onNewChat} />
+          <Item href="/?view=chat" icon={open ? null : <PlusIcon />} label="+ New" open={open} active={view === "chat" && !selected} onClick={onNewChat} />
         )}
         {can("runs:read") && (
           <>
             <Item
               icon={<InboxIcon />}
-              label="Inbox"
+              href="/?view=inbox" label="Inbox"
               open={open}
               active={view === "inbox"}
               badge={inboxCount}
@@ -380,7 +523,7 @@ export function Sidebar({
         {can("agents:read") && (
           <Item
             icon={<BotIcon />}
-            label="Agents"
+            href="/?view=agents" label="Agents"
             open={open}
             active={view === "agents" || view === "agent"}
             onClick={() => onView("agents")}
@@ -389,31 +532,33 @@ export function Sidebar({
         {can("knowledge:read") && (
           <Item
             icon={<BookIcon />}
-            label="Knowledge"
+            href="/?view=knowledge" label="Knowledge"
             open={open}
             active={view === "knowledge"}
             onClick={() => onView("knowledge")}
           />
         )}
         {can("artifacts:read") && (
-          <Item icon={<BoxIcon />} label="Storage" open={open} active={view === "storage"} onClick={() => onView("storage")} />
+          <Item icon={<BoxIcon />} href="/?view=storage" label="Storage" open={open} active={view === "storage"} onClick={() => onView("storage")} />
         )}
         {can("schedules:read") && (
           <Item
             icon={<ClockIcon />}
-            label="Schedules"
+            href="/?view=schedules" label="Schedules"
             open={open}
             active={view === "schedules"}
             onClick={() => onView("schedules")}
           />
         )}
 
+        {can("evals:read") && <Item icon={<CheckListIcon />} href="/?view=evals" label="Evals" open={open} active={view === "evals"} onClick={() => onView("evals")} />}
+
         <Heading open={open}>Observe</Heading>
-        {can("runs:read") && <Item icon={<MessageIcon />} label="Execution history" open={open} active={view === "runs"} onClick={() => onView("runs")} />}
+        {can("runs:read") && <Item icon={<MessageIcon />} href="/?view=runs" label="Execution history" open={open} active={view === "runs"} onClick={() => onView("runs")} />}
         {can("runs:read") && (
           <Item
             icon={<ChartIcon />}
-            label="Analytics"
+            href="/?view=analytics" label="Analytics"
             open={open}
             active={view === "analytics"}
             onClick={() => onView("analytics")}
@@ -422,7 +567,7 @@ export function Sidebar({
         {can("alerts:read") && (
           <Item
             icon={<BellIcon />}
-            label="Alerts"
+            href="/?view=alerts" label="Alerts"
             open={open}
             active={view === "alerts"}
             badge={alertCount}
@@ -436,8 +581,8 @@ export function Sidebar({
       <div className={`flex items-center gap-1 border-aui-border border-t p-1.5 ${open ? "" : "flex-col"}`}>
         <button
           type="button"
-          onClick={() => onView("settings")}
-          aria-current={view === "settings" ? "page" : undefined}
+          onClick={() => onSettings("profile")}
+          aria-current={view === "settings" && !["connections", "access", "limits"].includes(section) ? "page" : undefined}
           aria-label={`Settings for ${name}`}
           title={open ? undefined : "Settings"}
           className={`flex min-w-0 items-center gap-2 rounded-aui p-1 text-left transition-colors hover:bg-aui-hover focus-visible:outline-2 focus-visible:outline-aui-accent aria-[current=page]:bg-aui-hover ${

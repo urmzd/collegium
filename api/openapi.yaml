@@ -1,0 +1,4993 @@
+openapi: 3.2.0
+info:
+  title: Collegium API
+  version: 0.1.0
+  summary: The HTTP contract of the collegium agent platform.
+  license:
+    name: Apache-2.0
+    identifier: Apache-2.0
+  description: |
+    The JSON API, the event stream and the sign-in routes served by
+    `internal/httpapi`. This file is the contract every surface codes against.
+    `internal/httpapi/openapi_test.go` fails when it and the server disagree,
+    and `packages/client` is generated from it. See `docs/api.md`.
+
+    ## Rules that hold for every `/api` route
+
+    - The tenant comes from the caller's credential. No request names one, and
+      another tenant's object answers 404, never 403.
+    - Every route checks one permission, recorded here as `x-permission`.
+      `authenticated` means any signed-in caller. `public` means no credential.
+    - A request body is JSON, at most 1 MiB, and must not carry a field the
+      route does not know: an unknown field answers 400.
+    - An error is `{"error": "..."}` with the status saying what kind. A run a
+      limit refused answers 429 or 402 with a larger body, see `Refusal`.
+    - A state-changing request that a browser sends from another origin is
+      refused with a plain-text 403 before it reaches a handler. Bearer
+      callers are not browsers and are unaffected.
+
+    ## Not part of this contract
+
+    `POST /connectors/github`, `POST /connectors/slack` and
+    `POST /connectors/slack/commands` are signed webhook ingress. Slack and
+    GitHub call them, authenticated by a client's signing secret, and no API
+    client should. They are described in `docs/clients.md`.
+servers:
+  - url: http://127.0.0.1:8080
+    description: A local server started with `make dev`.
+tags:
+  - name: health
+    description: Liveness.
+  - name: auth
+    description: Browser sign-in and sign-out.
+  - name: session
+    description: Who the caller is.
+  - name: agents
+    description: Agent definitions, their revisions and what they remember.
+  - name: runs
+    description: Runs, the calls between them, and what each recorded.
+  - name: threads
+    description: Conversations, which are trees of runs.
+  - name: events
+    description: The live event stream.
+  - name: inbox
+    description: Messages that want a person's attention, and resolving them.
+  - name: schedules
+    description: Cron schedules that raise runs.
+  - name: projects
+    description: Conversations filed together, with shared memory.
+  - name: settings
+    description: Workspace settings.
+  - name: preferences
+    description: The caller's own settings and picture.
+  - name: artifacts
+    description: Files agents published, and how much is stored.
+  - name: observe
+    description: Analytics and the journal.
+  - name: alerts
+    description: Alert rules and the alerts they fired.
+  - name: evals
+    description: Deterministic eval suites and their runs.
+  - name: knowledge
+    description: Knowledge sources, documents and search.
+  - name: billing
+    description: Limits (policies) and usage against them.
+  - name: clients
+    description: The Slack apps and GitHub installations a workspace answers through.
+security:
+  - bearerToken: []
+  - sessionCookie: []
+paths:
+  /healthz:
+    get:
+      operationId: getHealth
+      tags: [health]
+      summary: Liveness probe
+      x-permission: public
+      security: []
+      responses:
+        "200":
+          description: The server is up. The body is the text `ok`.
+          content:
+            text/plain:
+              schema: {type: string}
+
+  /auth/login:
+    get:
+      operationId: startLogin
+      tags: [auth]
+      summary: Start a browser sign-in
+      description: |
+        Redirects to the identity provider (authorization code flow with
+        PKCE) and sets a short-lived `collegium_login` cookie. Under
+        development auth it redirects straight to `/`. A browser navigates
+        here; a script has no use for it.
+      x-permission: public
+      security: []
+      parameters:
+        - name: return_to
+          in: query
+          description: A local path to land on after sign-in. Anything else becomes `/`.
+          schema: {type: string}
+      responses:
+        "302":
+          description: Redirect to the identity provider.
+  /auth/callback:
+    get:
+      operationId: finishLogin
+      tags: [auth]
+      summary: Finish a browser sign-in
+      description: |
+        The identity provider redirects here. On success it sets the
+        `collegium_session` cookie (`__Host-collegium_session` over https),
+        HttpOnly, SameSite=Lax, valid for 8 hours, and redirects to the
+        `return_to` path. Errors are plain text, not JSON.
+      x-permission: public
+      security: []
+      parameters:
+        - {name: state, in: query, schema: {type: string}}
+        - {name: code, in: query, schema: {type: string}}
+        - {name: error, in: query, schema: {type: string}}
+      responses:
+        "302":
+          description: Signed in. Redirect to where sign-in started.
+        "400":
+          description: The sign-in was not started from this browser, or expired.
+          content:
+            text/plain:
+              schema: {type: string}
+        "403":
+          description: The identity provider refused, or the sign-in could not be verified.
+          content:
+            text/plain:
+              schema: {type: string}
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: End the browser session
+      description: Forgets the session and clears the cookie. Succeeds without a session too.
+      x-permission: public
+      security: []
+      responses:
+        "204":
+          description: Signed out.
+
+  /api/me:
+    get:
+      operationId: getMe
+      tags: [session]
+      summary: The caller and what they may do
+      x-permission: authenticated
+      responses:
+        "200":
+          description: The caller.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Me"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/access/explain:
+    get:
+      operationId: explainAccess
+      tags: [session]
+      summary: Why the caller may or may not do one thing
+      description: >-
+        Decides one permission for the caller and says why: the rule that
+        decided, the role it reached them through, and the grant that gave
+        that role when the sign-in kept it. It is only ever about the caller;
+        there is no way to name another person.
+      x-permission: authenticated
+      parameters:
+        - {name: permission, in: query, required: true, description: "The permission to explain, one of Permission, such as runs:read.", schema: {type: string}}
+      responses:
+        "200":
+          description: The decision.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AccessDecision"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/agents:
+    get:
+      operationId: listAgents
+      tags: [agents]
+      summary: List agents
+      description: The latest revision of every agent in the workspace. Not paged.
+      x-permission: agents:read
+      responses:
+        "200":
+          description: The agents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [agents, builtin]
+                properties:
+                  agents:
+                    type: array
+                    items: {$ref: "#/components/schemas/Revision"}
+                  builtin:
+                    description: Names of the agents the platform provides, which cannot be edited.
+                    type: array
+                    items: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createAgent
+      tags: [agents]
+      summary: Create an agent
+      x-permission: agents:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AgentSpec"}
+      responses:
+        "201":
+          description: The agent's first revision.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Revision"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/agents/{name}:
+    put:
+      operationId: reviseAgent
+      tags: [agents]
+      summary: Revise an agent
+      description: |
+        Writes a new revision. `expected_rev` is the revision the caller
+        edited from: if someone else revised the agent since, the answer is 409.
+      x-permission: agents:write
+      parameters:
+        - {$ref: "#/components/parameters/AgentName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [spec, expected_rev]
+              properties:
+                spec: {$ref: "#/components/schemas/AgentSpec"}
+                expected_rev: {type: integer}
+      responses:
+        "200":
+          description: The new revision.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Revision"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/agents/{name}/history:
+    get:
+      operationId: listAgentRevisions
+      tags: [agents]
+      summary: List an agent's revisions, newest first
+      x-permission: agents:read
+      parameters:
+        - {$ref: "#/components/parameters/AgentName"}
+      responses:
+        "200":
+          description: Every revision.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [revisions]
+                properties:
+                  revisions:
+                    type: array
+                    items: {$ref: "#/components/schemas/Revision"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/agents/{name}/memory:
+    get:
+      operationId: listAgentMemory
+      tags: [agents]
+      summary: List what an agent remembers
+      x-permission: agents:read
+      parameters:
+        - {$ref: "#/components/parameters/AgentName"}
+      responses:
+        "200":
+          description: The agent's notes, approved and pending.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/NoteList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: addAgentMemory
+      tags: [agents]
+      summary: Write a note an agent is sent with every turn
+      description: A note a person writes is approved at once. A note carrying personal data is refused with 400.
+      x-permission: agents:write
+      parameters:
+        - {$ref: "#/components/parameters/AgentName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NoteInput"}
+      responses:
+        "201":
+          description: The note.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Note"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/agents/{name}/memory/approve:
+    post:
+      operationId: approveAgentMemory
+      tags: [agents]
+      summary: Approve proposed notes
+      description: Keeps the proposals named. The rest stay pending.
+      x-permission: agents:write
+      parameters:
+        - {$ref: "#/components/parameters/AgentName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NoteSelection"}
+      responses:
+        "200":
+          description: How many were approved.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Approved"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/agents/{name}/memory/{id}:
+    delete:
+      operationId: removeAgentMemory
+      tags: [agents]
+      summary: Remove a note
+      x-permission: agents:write
+      parameters:
+        - {$ref: "#/components/parameters/AgentName"}
+        - {name: id, in: path, required: true, description: The note's id., schema: {type: string}}
+      responses:
+        "204":
+          description: Removed.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/memory/pending:
+    get:
+      operationId: listPendingMemory
+      tags: [agents]
+      summary: List every proposed note waiting for approval
+      x-permission: agents:read
+      responses:
+        "200":
+          description: The proposals. Each is for an agent or for a project.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [proposals]
+                properties:
+                  proposals:
+                    type: array
+                    items: {$ref: "#/components/schemas/MemoryProposal"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/pick:
+    get:
+      operationId: pickAgent
+      tags: [agents]
+      summary: Preview which agent would answer a message
+      x-permission: agents:read
+      parameters:
+        - {name: q, in: query, required: true, description: The message., schema: {type: string}}
+      responses:
+        "200":
+          description: The agent and why.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Choice"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/runs:
+    get:
+      operationId: listRuns
+      tags: [runs]
+      summary: List recent runs
+      description: The 200 most recent runs in the workspace, newest first. Not paged.
+      x-permission: runs:read
+      responses:
+        "200":
+          description: The runs.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createRun
+      tags: [runs]
+      summary: Send a message and start the run that answers it
+      description: |
+        Starts a conversation, or continues one when `after` names a turn.
+        The run is accepted, not finished: follow it on the event stream at
+        topic `agent:<agent>:<id>`, or poll `getRun`.
+
+        Send `Idempotency-Key` to make a retry safe. The run's `tag_id` is
+        then `api-<length of subject in bytes>-<subject>-<key>`, its `id` is
+        derived from that and the workspace (`r` and 32 hex digits, as
+        mandatum's `runtime.RunID`), and a second request with the same key
+        from the same caller joins the run the first one started instead of
+        starting another. Without it the ids are random.
+
+        The body takes no metadata: an unknown field answers 400.
+      x-permission: runs:write
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          description: A caller-chosen key. The same key from the same caller joins the same run.
+          schema: {type: string}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateRunRequest"}
+      responses:
+        "202":
+          description: The run, accepted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "402": {$ref: "#/components/responses/Refused"}
+        "429": {$ref: "#/components/responses/Refused"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/runs/{id}:
+    get:
+      operationId: getRun
+      tags: [runs]
+      summary: Get a run
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+      responses:
+        "200":
+          description: The run.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/runs/{id}/tree:
+    get:
+      operationId: getRunTree
+      tags: [runs]
+      summary: Get a run and every run under the same root
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+      responses:
+        "200":
+          description: The tree, flattened. `parent` and `depth` give its shape.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RunList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/runs/{id}/calls:
+    post:
+      operationId: createCall
+      tags: [runs]
+      summary: Call another agent from a run
+      description: |
+        Starts a child run of the run in the path. The caller's agent must be
+        allowed to spawn the target, and depth, fan-out and lease limits apply.
+        `key` is the call's idempotency key within the run.
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateCallRequest"}
+      responses:
+        "202":
+          description: The child run, accepted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "402": {$ref: "#/components/responses/Refused"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "429": {$ref: "#/components/responses/Refused"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/runs/{id}/stop:
+    post:
+      operationId: stopRun
+      tags: [runs]
+      summary: Ask a run, and everything attached to it, to stop
+      description: |
+        The request goes to the runtime, which cancels the model call in
+        flight and ends the run with `lifecycle.stopped`. Runs attached to it
+        are asked too. Runs it delegated keep going.
+
+        It does not wait for the run. From the moment it is asked, the run is
+        `stopping` and starts no further calls. It then ends `stopped`, with
+        `answer` holding what it had said and `cause` why, or `completed` or
+        `failed` if its turn finished before the request took effect. A run is
+        never reported stopped and then completed.
+
+        Asking a run that has ended changes nothing and answers 200 with the
+        run as it stands, so asking twice is safe. Another workspace's run
+        answers 404.
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+      responses:
+        "200":
+          description: The run has ended, and is returned as it stands.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "202":
+          description: The run was asked to stop and has not ended yet. `stopping` is true.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+        "503":
+          description: |
+            The runtime cannot interrupt a run. The run is still marked
+            `stopping`, so it starts nothing more, and it ends as its own
+            events say.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ErrorBody"}
+  /api/runs/{id}/questions/{question}/answer:
+    post:
+      operationId: answerQuestion
+      tags: [runs]
+      summary: Answer the question a run is waiting on
+      description: |
+        A run parks on a person to approve a tool call (`approve` or `deny`,
+        optionally with edited `arguments` for an approval), to choose one of
+        some options (`choose` with `choice`), or to reply in words (`reply`
+        with `text`). The question is on the run as `question`, on its stream
+        as `lifecycle.parked`, and in the inbox as a message addressed to the
+        people who may answer it. Answering here is the same as resolving that
+        message's part, and returns the message.
+
+        Who may answer is decided from the run's pinned revision: the spec's
+        `approvers` or `answerers` when it names them, else anyone in the
+        workspace, and never the person whose request raised a call they are
+        asked to approve, unless the spec sets `self_approval`. Anyone else is
+        403 and nothing changes. A surface that authenticated a person itself
+        answers for them with `act_as`: only the credential its client names,
+        and only for a person its client maps.
+
+        The first answer recorded is the answer. An answer after it, or after
+        the question expired or its run was stopped, answers 200 with the
+        message showing what was recorded. Another workspace's run is 404.
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+        - {name: question, in: path, required: true, description: "The question's id: `question.id` on the run.", schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/QuestionAnswer"}
+      responses:
+        "200":
+          description: The question's message, settled with the answer that was recorded.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InboxMessage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/runs/{id}/trace:
+    get:
+      operationId: getRunTrace
+      tags: [runs]
+      summary: Get a run's tree with the spans inside each run
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+      responses:
+        "200":
+          description: The runs and their spans, rebuilt from the journal.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs, spans]
+                properties:
+                  runs:
+                    type: array
+                    items: {$ref: "#/components/schemas/Run"}
+                  spans:
+                    type: array
+                    items: {$ref: "#/components/schemas/Span"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/runs/{id}/events:
+    get:
+      operationId: listRunEvents
+      tags: [runs]
+      summary: List a run's events as they were published
+      description: |
+        Oldest first, in the same shape the event stream sends, for showing a
+        run that is no longer streaming. `complete` is false when the journal
+        no longer holds the run's first event.
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+      responses:
+        "200":
+          description: The events the journal still holds.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events, complete]
+                properties:
+                  events:
+                    type: array
+                    items: {$ref: "#/components/schemas/RunEvent"}
+                  complete: {type: boolean}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/runs/{id}/manifest:
+    get:
+      operationId: getRunManifest
+      tags: [runs]
+      summary: Export everything recorded about a run and the runs under it
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/RunID"}
+      responses:
+        "200":
+          description: One document, with every event's body decoded.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Manifest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/threads:
+    get:
+      operationId: listThreads
+      tags: [threads]
+      summary: Page conversations, most recently active first
+      description: |
+        `next` is the cursor for the page after this one, or null at the end.
+        Pass it back as `before`. A cursor is opaque and belongs to the server
+        that issued it.
+      x-permission: runs:read
+      parameters:
+        - name: limit
+          in: query
+          description: Page size. Defaults to 200, and is capped at 200.
+          schema: {type: integer, minimum: 1}
+        - name: before
+          in: query
+          description: The `next` cursor of the previous page.
+          schema: {type: string}
+        - name: agent
+          in: query
+          description: Only conversations this agent took part in.
+          schema: {type: string}
+        - name: origin
+          in: query
+          description: Only conversations raised by this trigger, such as `api`, `slack` or `cron`.
+          schema: {type: string}
+        - name: standing
+          in: query
+          description: Only conversations with a run in flight, or with a failed run.
+          schema: {type: string, enum: [running, failed]}
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [threads, next]
+                properties:
+                  threads:
+                    type: array
+                    items: {$ref: "#/components/schemas/ThreadSummary"}
+                  next: {type: [string, "null"]}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/threads/{id}:
+    get:
+      operationId: getThread
+      tags: [threads]
+      summary: Get every turn of a conversation
+      description: |
+        A conversation's id is the id of the run that started it. Turns are
+        runs: `prev` links each to the turn it follows, and two turns with the
+        same `prev` are branches.
+      x-permission: runs:read
+      parameters:
+        - {name: id, in: path, required: true, description: The conversation's id., schema: {type: string}}
+      responses:
+        "200":
+          description: The turns, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [turns]
+                properties:
+                  turns:
+                    type: array
+                    items: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/events:
+    get:
+      operationId: streamEvents
+      tags: [events]
+      summary: Stream the workspace's events as server-sent events
+      description: |
+        A long-lived `text/event-stream`. Two kinds of message arrive on it:
+
+        - A message with no `event:` field carries one `RunEvent` as JSON.
+        - A message with `event: inbox` carries one `InboxNotice` as JSON. It
+          names a message and nothing more: fetch it to see what changed. A
+          caller is only sent notices for kinds of message they may read.
+
+        A comment line (`: keep-alive`) is sent every 15 seconds. Messages
+        carry no `id:` field, so `Last-Event-ID` is not used: to resume, pass
+        the last `seq` processed as `from`. `seq` orders events within one
+        run, so `from` is only meaningful with a topic that names one run.
+
+        The stream first replays what the bus still holds for the topic, then
+        follows it live. The server ends the stream when the consumer falls
+        behind, rather than feed it a gap: reconnect and resume. A run's end is
+        not the stream's end, and the ledger (`getRun`) decides whether a run
+        is over, not silence on the stream.
+
+        There is no topic for one conversation. To follow a conversation,
+        subscribe to `agent` and keep the events whose `run_id` is one of its
+        turns.
+
+        Note for generators: the schema below describes the JSON carried in
+        each message's `data` field, which is how the oag generator reads
+        `itemSchema`.
+      x-permission: runs:read
+      parameters:
+        - name: topic
+          in: query
+          description: |
+            What to listen to. `agent` is every agent (the default),
+            `agent:<name>` one agent, `agent:<name>:<run>` one run.
+          schema: {type: string}
+        - name: from
+          in: query
+          description: Resume after this sequence number within each run.
+          schema: {type: integer, format: int64, minimum: 0}
+      responses:
+        "200":
+          description: The stream.
+          content:
+            text/event-stream:
+              itemSchema:
+                oneOf:
+                  - $ref: "#/components/schemas/RunEvent"
+                  - $ref: "#/components/schemas/InboxNotice"
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/settings:
+    get:
+      operationId: getSettings
+      tags: [settings]
+      summary: Get workspace settings
+      x-permission: agents:read
+      responses:
+        "200":
+          description: The settings.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Settings"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    put:
+      operationId: updateSettings
+      tags: [settings]
+      summary: Replace workspace settings
+      description: The first save records the caller as the one who set the workspace up.
+      x-permission: agents:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Settings"}
+      responses:
+        "200":
+          description: The settings as saved.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Settings"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/schedules:
+    get:
+      operationId: listSchedules
+      tags: [schedules]
+      summary: List schedules
+      x-permission: schedules:read
+      responses:
+        "200":
+          description: Every schedule, with its next fires and recent runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [schedules]
+                properties:
+                  schedules:
+                    type: array
+                    items: {$ref: "#/components/schemas/ScheduleView"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createSchedule
+      tags: [schedules]
+      summary: Create a schedule
+      description: The agent, and the project if one is named, must exist now.
+      x-permission: schedules:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Schedule"}
+      responses:
+        "201":
+          description: The schedule.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ScheduleView"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/schedules/{name}:
+    delete:
+      operationId: deleteSchedule
+      tags: [schedules]
+      summary: Delete a schedule
+      x-permission: schedules:write
+      parameters:
+        - {$ref: "#/components/parameters/ScheduleName"}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/schedules/{name}/pause:
+    post:
+      operationId: pauseSchedule
+      tags: [schedules]
+      summary: Pause a schedule
+      x-permission: schedules:write
+      parameters:
+        - {$ref: "#/components/parameters/ScheduleName"}
+      responses:
+        "200":
+          description: The schedule, paused.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ScheduleView"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/schedules/{name}/resume:
+    post:
+      operationId: resumeSchedule
+      tags: [schedules]
+      summary: Resume a paused schedule
+      x-permission: schedules:write
+      parameters:
+        - {$ref: "#/components/parameters/ScheduleName"}
+      responses:
+        "200":
+          description: The schedule, running.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ScheduleView"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/schedules/{name}/run:
+    post:
+      operationId: runSchedule
+      tags: [schedules]
+      summary: Fire a schedule once, now
+      description: The run is attributed to the caller, not to the clock, and works while the schedule is paused.
+      x-permission: schedules:write
+      parameters:
+        - {$ref: "#/components/parameters/ScheduleName"}
+      responses:
+        "202":
+          description: The run, accepted.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Run"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "402": {$ref: "#/components/responses/Refused"}
+        "429": {$ref: "#/components/responses/Refused"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/inbox:
+    get:
+      operationId: listInbox
+      tags: [inbox]
+      summary: Page the caller's inbox, newest first
+      description: |
+        The route asks only for `runs:read`. What a caller sees, and what they
+        may do with each part, is decided per message: a memory proposal needs
+        `agents:read`, a failure `runs:read`, an alert or a reached limit
+        `alerts:read`. `next` is the cursor for the page after this one, or
+        null at the end.
+      x-permission: runs:read
+      parameters:
+        - name: state
+          in: query
+          description: Defaults to `open`, or to `all` when `alert` is given.
+          schema: {type: string, enum: [open, resolved, dismissed, snoozed, all]}
+        - name: kind
+          in: query
+          description: Only messages of this kind. An unknown kind matches nothing.
+          schema: {type: string, enum: [alert, failure, memory, budget, approval, clarification, result]}
+        - name: unread
+          in: query
+          description: Only `true` narrows to messages the caller has not read.
+          schema: {type: string, enum: ["true"]}
+        - name: alert
+          in: query
+          description: The message about this alert, in any state.
+          schema: {type: string}
+        - name: limit
+          in: query
+          description: Page size. Defaults to 50, and is capped at 200.
+          schema: {type: integer, minimum: 1}
+        - name: before
+          in: query
+          description: The `next` cursor of the previous page.
+          schema: {type: string}
+      responses:
+        "200":
+          description: One page, with the caller's open and unread counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messages, next, open, unread]
+                properties:
+                  messages:
+                    type: array
+                    items: {$ref: "#/components/schemas/InboxMessage"}
+                  next: {type: [string, "null"]}
+                  open: {type: integer}
+                  unread: {type: integer}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/inbox/count:
+    get:
+      operationId: getInboxCount
+      tags: [inbox]
+      summary: Count the caller's open and unread messages
+      x-permission: runs:read
+      responses:
+        "200":
+          description: The counts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [open, unread]
+                properties:
+                  open: {type: integer}
+                  unread: {type: integer}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/inbox/{id}:
+    get:
+      operationId: getInboxMessage
+      tags: [inbox]
+      summary: Get a message and the record of what was done to it
+      description: A message of a kind the caller may not read answers 404.
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/MessageID"}
+      responses:
+        "200":
+          description: The message and its history.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [message, history]
+                properties:
+                  message: {$ref: "#/components/schemas/InboxMessage"}
+                  history:
+                    type: array
+                    items: {$ref: "#/components/schemas/InboxChange"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/inbox/{id}/read:
+    post:
+      operationId: markInboxRead
+      tags: [inbox]
+      summary: Mark a message read or unread, for the caller only
+      description: The body is required. `{}` marks the message read.
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/MessageID"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                read:
+                  description: Defaults to true.
+                  type: [boolean, "null"]
+      responses:
+        "200":
+          description: The message.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InboxMessage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/inbox/{id}/dismiss:
+    post:
+      operationId: dismissInboxMessage
+      tags: [inbox]
+      summary: Set a message aside without resolving it
+      description: Needs the write permission for the message's kind, checked per message.
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/MessageID"}
+      responses:
+        "200":
+          description: The message, dismissed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InboxMessage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/inbox/{id}/snooze:
+    post:
+      operationId: snoozeInboxMessage
+      tags: [inbox]
+      summary: Hide a message until a time
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/MessageID"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [until]
+              properties:
+                until: {type: string, format: date-time}
+      responses:
+        "200":
+          description: The message, snoozed.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InboxMessage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/inbox/{id}/parts/{part}/resolve:
+    post:
+      operationId: resolveInboxPart
+      tags: [inbox]
+      summary: Act on one part of a message
+      description: |
+        A part lists the actions the caller may take in `actions`. Each needs
+        the permission for the thing it does, not the permission to open an
+        inbox, and an action the caller lacks the permission for answers 403:
+
+        | Part | Action | Needs |
+        |------|--------|-------|
+        | `alert` | `acknowledge` | `alerts:write` |
+        | `failure` | `retry`, `acknowledge` | `runs:write` |
+        | `memory` | `keep` (with `ids`), `discard` | `agents:write` |
+        | `budget` | `raise_limit` (with `limits`) | `billing:write` |
+        | `budget` | `acknowledge` | `alerts:write` |
+        | `approval` | `approve` (optionally with `arguments`), `deny` | `runs:write` |
+        | `choice` | `choose` (with `choice`) | `runs:write` |
+        | `reply` | `reply` (with `text`) | `runs:write` |
+
+        Answering a question is `answerQuestion` by another route, with the
+        same rules: a person the question is not addressed to does not see
+        it, and one the runtime refuses is 403. `act_as` answers for a person
+        a surface authenticated. Resolving a part that is already resolved
+        returns the first outcome. `retry` starts a new run, so it can be
+        refused by a limit with 429 or 402.
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/MessageID"}
+        - {name: part, in: path, required: true, description: The part's id within the message., schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Resolution"}
+      responses:
+        "200":
+          description: The message after the action.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/InboxMessage"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "402": {$ref: "#/components/responses/Refused"}
+        "429": {$ref: "#/components/responses/Refused"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/artifacts:
+    get:
+      operationId: listArtifacts
+      tags: [artifacts]
+      summary: Page published files, newest first
+      description: The latest version of each. `next` is the cursor for the page after this one, or null at the end.
+      x-permission: artifacts:read
+      parameters:
+        - {name: thread, in: query, description: Only files published in this conversation., schema: {type: string}}
+        - {name: run, in: query, description: Only files this run published., schema: {type: string}}
+        - {name: agent, in: query, schema: {type: string}}
+        - {name: project, in: query, schema: {type: string}}
+        - name: kind
+          in: query
+          schema: {type: string, enum: [document, spreadsheet, presentation, image, pdf, html, code, data, archive]}
+        - {name: q, in: query, description: Matches part of a title., schema: {type: string}}
+        - name: limit
+          in: query
+          description: Page size. Defaults to 50, and is capped at 200.
+          schema: {type: integer, minimum: 1}
+        - {name: before, in: query, description: The `next` cursor of the previous page., schema: {type: string}}
+      responses:
+        "200":
+          description: One page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [artifacts, next]
+                properties:
+                  artifacts:
+                    type: array
+                    items: {$ref: "#/components/schemas/Artifact"}
+                  next: {type: [string, "null"]}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/artifacts/{id}:
+    get:
+      operationId: getArtifact
+      tags: [artifacts]
+      summary: Get a published file's record
+      x-permission: artifacts:read
+      parameters:
+        - {$ref: "#/components/parameters/ArtifactID"}
+      responses:
+        "200":
+          description: The record.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Artifact"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    delete:
+      operationId: deleteArtifact
+      tags: [artifacts]
+      summary: Delete a published file
+      x-permission: artifacts:write
+      parameters:
+        - {$ref: "#/components/parameters/ArtifactID"}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/artifacts/{id}/versions:
+    get:
+      operationId: listArtifactVersions
+      tags: [artifacts]
+      summary: List every version published under the same title in the same conversation
+      x-permission: artifacts:read
+      parameters:
+        - {$ref: "#/components/parameters/ArtifactID"}
+      responses:
+        "200":
+          description: The versions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [versions]
+                properties:
+                  versions:
+                    type: array
+                    items: {$ref: "#/components/schemas/Artifact"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/artifacts/{id}/content:
+    get:
+      operationId: getArtifactContent
+      tags: [artifacts]
+      summary: Download a published file's bytes
+      description: |
+        Always an attachment served as `application/octet-stream`, unless
+        `inline=1` is asked for and the file is one of the inert types
+        (`text/plain`, PNG, JPEG, GIF, WebP, PDF), which is then served inline
+        with its own type. HTML and SVG are never served inline. The `ETag` is
+        the file's SHA-256.
+      x-permission: artifacts:read
+      parameters:
+        - {$ref: "#/components/parameters/ArtifactID"}
+        - name: inline
+          in: query
+          description: Ask for the file's own type, inline, when it is an inert type.
+          schema: {type: string, enum: ["1"]}
+      responses:
+        "200":
+          description: The bytes.
+          headers:
+            Content-Disposition: {schema: {type: string}}
+            ETag: {schema: {type: string}}
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/storage:
+    get:
+      operationId: getStorage
+      tags: [artifacts]
+      summary: Report what the workspace has published against its storage limit
+      x-permission: artifacts:read
+      responses:
+        "200":
+          description: Bytes and files stored, in total and by project and agent.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/StorageUsage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/analytics:
+    get:
+      operationId: getAnalytics
+      tags: [observe]
+      summary: Summarize runs over a window ending now
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/Window"}
+        - name: bucket
+          in: query
+          description: A Go duration, such as `1m`. Defaults to a sixtieth of the window. At most 240 buckets are returned.
+          schema: {type: string}
+      responses:
+        "200":
+          description: The summary.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Summary"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/journal:
+    get:
+      operationId: queryJournal
+      tags: [observe]
+      summary: Query what happened, newest first
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/Window"}
+        - {name: agent, in: query, schema: {type: string}}
+        - {name: run, in: query, schema: {type: string}}
+        - {name: kind, in: query, description: "An event kind, or a family such as `delta` or `lifecycle`.", schema: {type: string}}
+        - {name: origin, in: query, schema: {type: string}}
+        - {name: q, in: query, description: Matches part of an entry's detail., schema: {type: string}}
+        - name: limit
+          in: query
+          description: Defaults to 200, and is capped at 2000. A value that is not a number is read as the default.
+          schema: {type: integer}
+      responses:
+        "200":
+          description: The entries.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [entries]
+                properties:
+                  entries:
+                    type: array
+                    items: {$ref: "#/components/schemas/JournalEntry"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/alerts:
+    get:
+      operationId: listAlerts
+      tags: [alerts]
+      summary: List fired alerts
+      x-permission: alerts:read
+      responses:
+        "200":
+          description: The alerts.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [alerts]
+                properties:
+                  alerts:
+                    type: array
+                    items: {$ref: "#/components/schemas/Alert"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/alerts/{id}/ack:
+    post:
+      operationId: acknowledgeAlert
+      tags: [alerts]
+      summary: Acknowledge an alert
+      description: Settles the alert's inbox message too. They are one state.
+      x-permission: alerts:write
+      parameters:
+        - {name: id, in: path, required: true, description: The alert's id., schema: {type: string}}
+      responses:
+        "200":
+          description: The alert, acknowledged.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Alert"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/alert-rules:
+    get:
+      operationId: listAlertRules
+      tags: [alerts]
+      summary: List alert rules
+      x-permission: alerts:read
+      responses:
+        "200":
+          description: The rules.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [rules]
+                properties:
+                  rules:
+                    type: array
+                    items: {$ref: "#/components/schemas/AlertRule"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createAlertRule
+      tags: [alerts]
+      summary: Create an alert rule
+      description: "`created_by` is set by the server, whatever the body says."
+      x-permission: alerts:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AlertRule"}
+      responses:
+        "201":
+          description: The rule.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/AlertRule"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/alert-rules/{name}:
+    delete:
+      operationId: deleteAlertRule
+      tags: [alerts]
+      summary: Delete an alert rule
+      x-permission: alerts:write
+      parameters:
+        - {name: name, in: path, required: true, description: The rule's name., schema: {type: string}}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/evals:
+    get:
+      operationId: listEvalSuites
+      tags: [evals]
+      summary: List eval suites with their recent runs
+      description: Up to 20 runs per suite, newest first. Results are kept on the latest run only.
+      x-permission: evals:read
+      responses:
+        "200":
+          description: The suites.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [suites]
+                properties:
+                  suites:
+                    type: array
+                    items: {$ref: "#/components/schemas/EvalSuiteView"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createEvalSuite
+      tags: [evals]
+      summary: Create an eval suite
+      description: What the suite tests must exist now. `created_by` and `updated_at` are set by the server.
+      x-permission: evals:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EvalSuite"}
+      responses:
+        "201":
+          description: The suite.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EvalSuite"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/evals/{name}:
+    put:
+      operationId: updateEvalSuite
+      tags: [evals]
+      summary: Replace an eval suite
+      x-permission: evals:write
+      parameters:
+        - {$ref: "#/components/parameters/SuiteName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/EvalSuite"}
+      responses:
+        "200":
+          description: The suite.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EvalSuite"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    delete:
+      operationId: deleteEvalSuite
+      tags: [evals]
+      summary: Delete an eval suite
+      x-permission: evals:write
+      parameters:
+        - {$ref: "#/components/parameters/SuiteName"}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/evals/{name}/run:
+    post:
+      operationId: runEvalSuite
+      tags: [evals]
+      summary: Start a run of an eval suite
+      description: A suite that is already running answers 409.
+      x-permission: evals:write
+      parameters:
+        - {$ref: "#/components/parameters/SuiteName"}
+      responses:
+        "202":
+          description: The eval run, started.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/EvalRun"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/evals/{name}/runs:
+    get:
+      operationId: listEvalRuns
+      tags: [evals]
+      summary: List an eval suite's runs, newest first
+      x-permission: evals:read
+      parameters:
+        - {$ref: "#/components/parameters/SuiteName"}
+      responses:
+        "200":
+          description: The runs.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [runs]
+                properties:
+                  runs:
+                    type: array
+                    items: {$ref: "#/components/schemas/EvalRun"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/knowledge:
+    get:
+      operationId: listKnowledgeSources
+      tags: [knowledge]
+      summary: List knowledge sources
+      x-permission: knowledge:read
+      responses:
+        "200":
+          description: The sources.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sources]
+                properties:
+                  sources:
+                    type: array
+                    items: {$ref: "#/components/schemas/KnowledgeSource"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createKnowledgeSource
+      tags: [knowledge]
+      summary: Create a knowledge source
+      x-permission: knowledge:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                description: {type: string}
+      responses:
+        "201":
+          description: The source.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/KnowledgeSource"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/knowledge/search:
+    get:
+      operationId: searchKnowledge
+      tags: [knowledge]
+      summary: Search knowledge (lexical, BM25)
+      x-permission: knowledge:read
+      parameters:
+        - {name: q, in: query, required: true, description: The query. An empty one answers 400., schema: {type: string}}
+        - name: source
+          in: query
+          description: Source names, comma-separated. Empty searches every source.
+          schema: {type: string}
+        - {name: variant, in: query, description: Search a saved view instead of the current one., schema: {type: string}}
+      responses:
+        "200":
+          description: The passages that matched, best first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [hits]
+                properties:
+                  hits:
+                    type: array
+                    items: {$ref: "#/components/schemas/KnowledgeHit"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/knowledge/{name}:
+    delete:
+      operationId: deleteKnowledgeSource
+      tags: [knowledge]
+      summary: Delete a knowledge source and its documents
+      x-permission: knowledge:write
+      parameters:
+        - {$ref: "#/components/parameters/SourceName"}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/knowledge/{name}/documents:
+    get:
+      operationId: listKnowledgeDocuments
+      tags: [knowledge]
+      summary: List a source's documents
+      x-permission: knowledge:read
+      parameters:
+        - {$ref: "#/components/parameters/SourceName"}
+      responses:
+        "200":
+          description: The documents.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [documents]
+                properties:
+                  documents:
+                    type: array
+                    items: {$ref: "#/components/schemas/KnowledgeDocument"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: addKnowledgeDocument
+      tags: [knowledge]
+      summary: Add a document to a source
+      description: The text is sent as a string. Binary uploads are not built.
+      x-permission: knowledge:write
+      parameters:
+        - {$ref: "#/components/parameters/SourceName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, text]
+              properties:
+                title: {type: string}
+                uri: {type: string}
+                text: {type: string}
+      responses:
+        "201":
+          description: The document.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/KnowledgeDocument"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/knowledge/{name}/documents/{id}:
+    put:
+      operationId: setKnowledgeDocumentExcluded
+      tags: [knowledge]
+      summary: Leave a document out of search, or put it back
+      x-permission: knowledge:write
+      parameters:
+        - {$ref: "#/components/parameters/SourceName"}
+        - {$ref: "#/components/parameters/DocumentID"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [excluded]
+              properties:
+                excluded: {type: boolean}
+      responses:
+        "200":
+          description: The document.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/KnowledgeDocument"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    delete:
+      operationId: removeKnowledgeDocument
+      tags: [knowledge]
+      summary: Remove a document from a source
+      x-permission: knowledge:write
+      parameters:
+        - {$ref: "#/components/parameters/SourceName"}
+        - {$ref: "#/components/parameters/DocumentID"}
+      responses:
+        "204":
+          description: Removed.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/knowledge/{name}/variants:
+    post:
+      operationId: saveKnowledgeVariant
+      tags: [knowledge]
+      summary: Save the source's current exclusions as a named view
+      x-permission: knowledge:write
+      parameters:
+        - {$ref: "#/components/parameters/SourceName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+      responses:
+        "201":
+          description: The view.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/KnowledgeVariant"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/knowledge/{name}/variants/{variant}:
+    delete:
+      operationId: deleteKnowledgeVariant
+      tags: [knowledge]
+      summary: Delete a saved view
+      x-permission: knowledge:write
+      parameters:
+        - {$ref: "#/components/parameters/SourceName"}
+        - {name: variant, in: path, required: true, description: The view's name., schema: {type: string}}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/preferences:
+    get:
+      operationId: getPreferences
+      tags: [preferences]
+      summary: Get the caller's own preferences
+      x-permission: authenticated
+      responses:
+        "200":
+          description: The preferences.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Preferences"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    put:
+      operationId: updatePreferences
+      tags: [preferences]
+      summary: Replace the caller's own preferences
+      x-permission: authenticated
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: {type: string}
+                theme: {$ref: "#/components/schemas/Theme"}
+                accent: {type: string}
+                onboarded:
+                  description: Marks the first-run questions as done. It can be set and never unset.
+                  type: boolean
+      responses:
+        "200":
+          description: The preferences as saved.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Preferences"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/preferences/photo:
+    get:
+      operationId: getPreferencesPhoto
+      tags: [preferences]
+      summary: Get the caller's own picture
+      description: Served inline with the image type the server determined from the bytes.
+      x-permission: authenticated
+      responses:
+        "200":
+          description: The picture.
+          content:
+            image/*:
+              schema: {type: string, format: binary}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    put:
+      operationId: uploadPreferencesPhoto
+      tags: [preferences]
+      summary: Set the caller's own picture
+      description: The body is the image's own bytes, at most 512 KiB. The server decides what it is.
+      x-permission: authenticated
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        "200":
+          description: The preferences, with the new picture's version.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Preferences"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    delete:
+      operationId: deletePreferencesPhoto
+      tags: [preferences]
+      summary: Remove the caller's own picture
+      x-permission: authenticated
+      responses:
+        "200":
+          description: The preferences, without a picture.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Preferences"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/projects:
+    get:
+      operationId: listProjects
+      tags: [projects]
+      summary: List projects and what is in each
+      x-permission: runs:read
+      responses:
+        "200":
+          description: The projects.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [projects]
+                properties:
+                  projects:
+                    type: array
+                    items: {$ref: "#/components/schemas/ProjectView"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createProject
+      tags: [projects]
+      summary: Create a project
+      x-permission: runs:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/Project"}
+      responses:
+        "201":
+          description: The project, as it was sent.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Project"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/projects/{name}:
+    delete:
+      operationId: deleteProject
+      tags: [projects]
+      summary: Delete a project
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/ProjectName"}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/projects/{name}/memory:
+    get:
+      operationId: listProjectMemory
+      tags: [projects]
+      summary: List the notes every agent in a project is sent
+      x-permission: runs:read
+      parameters:
+        - {$ref: "#/components/parameters/ProjectName"}
+      responses:
+        "200":
+          description: The project's notes, approved and pending.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/NoteList"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: addProjectMemory
+      tags: [projects]
+      summary: Write a note shared by every agent in a project
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/ProjectName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NoteInput"}
+      responses:
+        "201":
+          description: The note.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Note"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/projects/{name}/memory/approve:
+    post:
+      operationId: approveProjectMemory
+      tags: [projects]
+      summary: Approve notes proposed for a project
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/ProjectName"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/NoteSelection"}
+      responses:
+        "200":
+          description: How many were approved.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Approved"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/projects/{name}/memory/{id}:
+    delete:
+      operationId: removeProjectMemory
+      tags: [projects]
+      summary: Remove a project note
+      x-permission: runs:write
+      parameters:
+        - {$ref: "#/components/parameters/ProjectName"}
+        - {name: id, in: path, required: true, description: The note's id., schema: {type: string}}
+      responses:
+        "204":
+          description: Removed.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/policies:
+    get:
+      operationId: listPolicies
+      tags: [billing]
+      summary: List the workspace's limits
+      x-permission: billing:read
+      responses:
+        "200":
+          description: One policy per scope that has one.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [policies]
+                properties:
+                  policies:
+                    type: array
+                    items: {$ref: "#/components/schemas/Policy"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    put:
+      operationId: putPolicy
+      tags: [billing]
+      summary: Set the limits for one scope
+      description: |
+        Creates the scope's policy or writes its next version. The project,
+        agent or client the scope names must exist. A narrower scope can only
+        tighten what a wider one allows.
+      x-permission: billing:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/PolicyInput"}
+      responses:
+        "200":
+          description: The policy as saved, with its new version.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Policy"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    delete:
+      operationId: deletePolicy
+      tags: [billing]
+      summary: Remove the limits for one scope
+      description: The scope is named in the query, not in a body.
+      x-permission: billing:write
+      parameters:
+        - name: kind
+          in: query
+          required: true
+          schema: {type: string, enum: [tenant, project, agent, client]}
+        - name: name
+          in: query
+          description: The project, agent or client. Empty for the tenant scope.
+          schema: {type: string}
+      responses:
+        "204":
+          description: Removed.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/policies/history:
+    get:
+      operationId: listPolicyHistory
+      tags: [billing]
+      summary: List every change made to the workspace's limits
+      x-permission: billing:read
+      responses:
+        "200":
+          description: The changes.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [changes]
+                properties:
+                  changes:
+                    type: array
+                    items: {$ref: "#/components/schemas/PolicyChange"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/usage:
+    get:
+      operationId: getUsage
+      tags: [billing]
+      summary: Report usage against every limit, for the current period
+      description: |
+        One entry per policy. A workspace with no policies has no entries.
+        `state` is the worst of the enforced limits (runs and concurrency).
+        Spend is recorded and not enforced, and `spend.metered` is false,
+        because the runtime reports no cost.
+      x-permission: billing:read
+      responses:
+        "200":
+          description: Where each scope stands.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [scopes]
+                properties:
+                  scopes:
+                    type: array
+                    items: {$ref: "#/components/schemas/ScopeUsage"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/usage/notices:
+    get:
+      operationId: listUsageNotices
+      tags: [billing]
+      summary: List recent refusals and warnings from the usage ledger
+      description: The 200 most recent.
+      x-permission: billing:read
+      responses:
+        "200":
+          description: The notices.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [notices]
+                properties:
+                  notices:
+                    type: array
+                    items: {$ref: "#/components/schemas/UsageEntry"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+  /api/clients:
+    get:
+      operationId: listClients
+      tags: [clients]
+      summary: List the workspace's clients and how many it may have
+      x-permission: clients:read
+      responses:
+        "200":
+          description: The clients. No response ever carries a secret.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [clients, caps]
+                properties:
+                  clients:
+                    type: array
+                    items: {$ref: "#/components/schemas/ClientView"}
+                  caps: {$ref: "#/components/schemas/ClientCaps"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    post:
+      operationId: createClient
+      tags: [clients]
+      summary: Create a client
+      description: A workspace at its cap of clients answers 429 with a plain error body.
+      x-permission: clients:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ClientInput"}
+      responses:
+        "201":
+          description: The client.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClientView"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "429": {$ref: "#/components/responses/TooMany"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+  /api/clients/{id}:
+    get:
+      operationId: getClient
+      tags: [clients]
+      summary: Get a client
+      x-permission: clients:read
+      parameters:
+        - {$ref: "#/components/parameters/ClientID"}
+      responses:
+        "200":
+          description: The client.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClientView"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    put:
+      operationId: updateClient
+      tags: [clients]
+      summary: Replace a client's record
+      description: |
+        A secret left out is kept. A client the server's configuration owns
+        cannot be changed here and answers 409.
+      x-permission: clients:write
+      parameters:
+        - {$ref: "#/components/parameters/ClientID"}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/ClientInput"}
+      responses:
+        "200":
+          description: The client.
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/ClientView"}
+        "400": {$ref: "#/components/responses/BadRequest"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "413": {$ref: "#/components/responses/TooLarge"}
+        "500": {$ref: "#/components/responses/ServerError"}
+    delete:
+      operationId: deleteClient
+      tags: [clients]
+      summary: Delete a client
+      x-permission: clients:write
+      parameters:
+        - {$ref: "#/components/parameters/ClientID"}
+      responses:
+        "204":
+          description: Deleted.
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {$ref: "#/components/responses/NotFound"}
+        "409": {$ref: "#/components/responses/Conflict"}
+        "500": {$ref: "#/components/responses/ServerError"}
+
+components:
+  securitySchemes:
+    bearerToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        An OIDC access token issued for the API audience, sent as
+        `Authorization: Bearer <token>`. A machine uses a client-credentials
+        token and is granted exactly the scopes on it that are named
+        `collegium:<permission>`, for example `collegium:runs:write`. A person
+        using a CLI sends an access token too, and gets roles from its groups
+        claim. An ID token is not an API credential and is refused. There is
+        no revocation check beyond expiry.
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: collegium_session
+      description: |
+        The opaque, HttpOnly cookie a browser is given by `/auth/callback`. It
+        is named `__Host-collegium_session` when the server is reached over
+        https. A browser never holds a token. Under development auth
+        (`-auth=dev`, loopback only) every request is the same admin and no
+        credential is needed.
+  parameters:
+    AgentName:
+      name: name
+      in: path
+      required: true
+      description: The agent's name.
+      schema: {type: string}
+    RunID:
+      name: id
+      in: path
+      required: true
+      description: The run's id, as the platform returned it. It is derived from the workspace and the trigger's id, `r` and 32 hex digits, and is not the trigger's id.
+      schema: {type: string}
+    ScheduleName:
+      name: name
+      in: path
+      required: true
+      description: The schedule's name.
+      schema: {type: string}
+    MessageID:
+      name: id
+      in: path
+      required: true
+      description: The inbox message's id.
+      schema: {type: string}
+    ArtifactID:
+      name: id
+      in: path
+      required: true
+      description: The artifact's id.
+      schema: {type: string}
+    SuiteName:
+      name: name
+      in: path
+      required: true
+      description: The eval suite's name.
+      schema: {type: string}
+    SourceName:
+      name: name
+      in: path
+      required: true
+      description: The knowledge source's name.
+      schema: {type: string}
+    DocumentID:
+      name: id
+      in: path
+      required: true
+      description: The document's id.
+      schema: {type: string}
+    ProjectName:
+      name: name
+      in: path
+      required: true
+      description: The project's name.
+      schema: {type: string}
+    ClientID:
+      name: id
+      in: path
+      required: true
+      description: The client's id.
+      schema: {type: string}
+    Window:
+      name: window
+      in: query
+      description: How far back to look, as a Go duration up to `720h`, such as `1h` or `24h`. Defaults to `1h`.
+      schema: {type: string}
+  responses:
+    ServerError:
+      description: An error on the server's side. It is logged and reported without detail.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    TooLarge:
+      description: The request body is over 1 MiB.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    BadRequest:
+      description: The request is not valid. The message says why.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    Unauthorized:
+      description: No credential, or one that does not verify.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    Forbidden:
+      description: The caller lacks the permission, or a rule refuses the action. The message names what is needed.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    NotFound:
+      description: No such object in the caller's workspace. Another workspace's object answers the same.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    Conflict:
+      description: The object already exists, was changed by someone else, is busy, or is managed by the server.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    TooMany:
+      description: A cap on how many may exist was reached.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/ErrorBody"}
+    Refused:
+      description: |
+        A limit refused the run. 429 for a count limit (runs in the period,
+        runs in flight, or tokens in the period), 402 for a money limit (spend
+        in the period, which is enforced, or a call's lease). A scope whose
+        spend has reached its limit, to the micro-dollar, refuses every new
+        run. The body names the limit, what was left, the policy and its
+        version that set it, and when the count starts again.
+      content:
+        application/json:
+          schema: {$ref: "#/components/schemas/Refusal"}
+  schemas:
+    ErrorBody:
+      description: What every failure answers with.
+      type: object
+      required: [error]
+      properties:
+        error:
+          description: What went wrong, in words a person can be shown.
+          type: string
+    Refusal:
+      description: Why a limit refused a run.
+      type: object
+      required: [error, limit, remaining]
+      properties:
+        error: {type: string}
+        limit: {$ref: "#/components/schemas/PolicyLimit"}
+        remaining:
+          description: What was left of the limit when the run was refused.
+          type: integer
+          format: int64
+        policy:
+          description: The policy that refused, when one did.
+          type: object
+          required: [scope, version, period]
+          properties:
+            scope: {$ref: "#/components/schemas/PolicyScope"}
+            version: {type: integer}
+            period: {$ref: "#/components/schemas/PolicyPeriod"}
+        resets_at:
+          description: When the count starts again. Present for the `runs`, `spend` and `tokens` limits, which count over a period.
+          type: string
+          format: date-time
+
+    Permission:
+      type: string
+      enum:
+        - agents:read
+        - agents:write
+        - runs:read
+        - runs:write
+        - schedules:read
+        - schedules:write
+        - alerts:read
+        - alerts:write
+        - knowledge:read
+        - knowledge:write
+        - evals:read
+        - evals:write
+        - billing:read
+        - billing:write
+        - artifacts:read
+        - artifacts:write
+        - clients:read
+        - clients:write
+    Principal:
+      description: An authenticated caller. The tenant is the workspace everything they touch is confined to.
+      type: object
+      required: [subject, tenant, kind]
+      properties:
+        subject: {type: string}
+        tenant: {type: string}
+        kind: {type: string, enum: [user, machine]}
+        name: {type: string}
+        email: {type: string}
+        roles:
+          type: array
+          items: {type: string, enum: [viewer, operator, admin]}
+        scopes:
+          description: A machine's permissions, from its token.
+          type: array
+          items: {$ref: "#/components/schemas/Permission"}
+    AccessDecision:
+      description: Why the caller may or may not do one thing.
+      type: object
+      required: [permission, allowed, outcome, held]
+      properties:
+        permission: {$ref: "#/components/schemas/Permission"}
+        allowed: {type: boolean}
+        outcome:
+          description: >-
+            allowed; denied, when a rule denies it, which beats every allow;
+            no match, when no rule in the roles held mentions it and the
+            default is deny; scope, when a machine's token scope decided.
+          type: string
+          enum: [allowed, denied, no match, scope]
+        role:
+          description: The held role the deciding rule reached the caller through.
+          type: string
+        path:
+          description: From role to the role that declares the rule.
+          type: array
+          items: {type: string}
+        rule:
+          description: The deciding rule, as the policy writes it.
+          type: string
+        grant:
+          description: The grant that gave the role, when the sign-in kept it.
+          type: string
+        held:
+          description: Every role the decision considered.
+          type: array
+          items: {$ref: "#/components/schemas/AccessHeldRole"}
+        unknown:
+          description: Roles the caller holds that the policy does not declare. They grant nothing.
+          type: array
+          items: {type: string}
+    AccessHeldRole:
+      type: object
+      required: [role]
+      properties:
+        role: {type: string}
+        grant:
+          description: The grant that gave the role, as the policy writes it, when known.
+          type: string
+        group:
+          description: The group the grant names, when it names one.
+          type: string
+    Me:
+      type: object
+      required: [principal, permissions, first_admin]
+      properties:
+        principal: {$ref: "#/components/schemas/Principal"}
+        permissions:
+          description: Everything the caller may do. Null, not an empty list, for a caller with no permission at all.
+          type: [array, "null"]
+          items: {$ref: "#/components/schemas/Permission"}
+        first_admin:
+          description: The caller is an admin in a workspace nobody has set up yet.
+          type: boolean
+
+    AgentSource:
+      type: object
+      required: [name, uri]
+      properties:
+        name: {type: string}
+        uri: {type: string}
+        options:
+          type: object
+          additionalProperties: {type: string}
+    AgentAccess:
+      type: object
+      properties:
+        spawn:
+          description: The agents this one may call.
+          type: array
+          items: {type: string}
+        workspace_areas:
+          type: array
+          items: {type: string}
+    AgentSpec:
+      description: An agent's definition.
+      type: object
+      required: [name, model, provider, system_prompt]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        model: {type: string}
+        provider: {type: string}
+        system_prompt: {type: string}
+        tools:
+          type: array
+          items: {type: string}
+        sources:
+          type: array
+          items: {$ref: "#/components/schemas/AgentSource"}
+        access: {$ref: "#/components/schemas/AgentAccess"}
+        approvals:
+          description: |
+            Tools whose every call waits for a person to approve it. Each is a
+            tool the agent is granted. `ask_person` in `tools` lets the agent
+            ask a person to choose or reply.
+          type: array
+          items: {type: string}
+        approvers:
+          description: |
+            When set, the only people who may answer an approval: principals by
+            subject, or this workspace's roles as `role:<name>`. Empty lets
+            anyone in the workspace approve, except the person who asked.
+          type: array
+          items: {type: string}
+        self_approval:
+          description: Lets the person whose request raised a call approve it. Off by default.
+          type: boolean
+        answerers:
+          description: When set, the only people who may answer a choice or a reply, named as approvers are.
+          type: array
+          items: {type: string}
+    Revision:
+      description: One immutable revision of an agent.
+      type: object
+      required: [spec, rev, hash, created_at, created_by]
+      properties:
+        spec: {$ref: "#/components/schemas/AgentSpec"}
+        rev: {type: integer}
+        hash: {type: string}
+        created_at: {type: string, format: date-time}
+        created_by: {type: string}
+    Choice:
+      description: Which agent would answer a message, and why.
+      type: object
+      required: [agent, reason]
+      properties:
+        agent: {type: string}
+        reason: {type: string}
+        matched:
+          type: array
+          items: {type: string}
+
+    Note:
+      description: One thing an agent or a project remembers.
+      type: object
+      required: [id, text, source, status, at]
+      properties:
+        id: {type: string}
+        text: {type: string}
+        source: {type: string, enum: [person, consolidated]}
+        status:
+          description: A pending note is a proposal, not used until a person approves it.
+          type: string
+          enum: [approved, pending]
+        by: {type: string}
+        at: {type: string, format: date-time}
+    NoteList:
+      type: object
+      required: [notes]
+      properties:
+        notes:
+          type: array
+          items: {$ref: "#/components/schemas/Note"}
+    NoteInput:
+      type: object
+      required: [text]
+      properties:
+        text: {type: string}
+    NoteSelection:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          items: {type: string}
+    Approved:
+      type: object
+      required: [approved]
+      properties:
+        approved: {type: integer}
+    MemoryProposal:
+      description: A proposed note, for an agent or for a project.
+      type: object
+      required: [note]
+      properties:
+        agent: {type: string}
+        project: {type: string}
+        note: {$ref: "#/components/schemas/Note"}
+
+    Actor:
+      description: The person or system that raised a run.
+      type: object
+      required: [id]
+      properties:
+        id: {type: string}
+        display: {type: string}
+        bot: {type: boolean}
+    RunStatus:
+      description: Where a run stands. `completed`, `failed` and `stopped` are final.
+      type: string
+      enum: [accepted, running, parked, completed, failed, stopped]
+    CallMode:
+      description: How one agent calls another. A subagent is attached to its caller. A handoff or a delegate is independent.
+      type: string
+      enum: [subagent, handoff, delegate]
+    Run:
+      description: One run and its place in the call tree and in its conversation.
+      type: object
+      required: [id, tag_id, tenant, agent, rev, origin, text, root, depth, thread, lease, granted, spent, calls, status, created_at, updated_at]
+      properties:
+        id:
+          description: The run's id, `r` and 32 hex digits, derived from the workspace and the trigger's id.
+          type: string
+        tag_id:
+          description: |
+            The trigger's id the run was accepted with: an event id, or for a
+            run started through the API with an `Idempotency-Key`,
+            `api-<length of subject in bytes>-<subject>-<key>`, which is
+            unambiguous. A run started without a key has `api-r-<random>`.
+            The run's `id` is derived from it and the workspace, and cannot be
+            turned back into it.
+          type: string
+        tenant: {type: string}
+        agent: {type: string}
+        rev:
+          description: The agent revision the run is pinned to.
+          type: integer
+        origin:
+          description: The trigger that raised the run, such as `api`, `slack`, `github`, `cron`, `manual`, `agent` or `system`.
+          type: string
+        text:
+          description: What the run was asked.
+          type: string
+        input: {$ref: "#/components/schemas/PreparedCallInput"}
+        actor: {$ref: "#/components/schemas/Actor"}
+        root:
+          description: The run at the top of the call tree. A run nobody called is its own root.
+          type: string
+        parent: {type: string}
+        depth: {type: integer}
+        mode: {$ref: "#/components/schemas/CallMode"}
+        lifecycle:
+          description: Set on a run another run called. An attached run ends with its caller. A delegated one does not.
+          type: string
+          enum: [attached, delegated]
+        schedule:
+          description: The schedule that raised the run, if one did.
+          type: string
+        thread:
+          description: The conversation the run belongs to. A run that starts a conversation is its own thread.
+          type: string
+        prev:
+          description: The turn this one follows. Two runs with the same `prev` are branches.
+          type: string
+        picked:
+          description: Why the agent was chosen, when the caller left it to the platform.
+          type: string
+        project: {type: string}
+        client:
+          description: The Slack app or GitHub installation that raised the run.
+          type: string
+        lease:
+          description: The run's budget in micro-USD. Zero means unmetered.
+          type: integer
+          format: int64
+        granted:
+          description: |
+            The budget the run has leased to calls that have not ended, in
+            micro-USD. When a call ends its lease is released here and what it
+            spent is added to `spent`.
+          type: integer
+          format: int64
+        spent:
+          description: |
+            What the run has spent, in micro-USD priced in US dollars: its own
+            model calls as they are reported, and the whole spend of each call
+            it made once that call has ended. Its lease is held against this
+            plus `granted`. Calls with no price, or priced in another currency,
+            add nothing here; `usage` counts them.
+          type: integer
+          format: int64
+        usage:
+          description: |
+            What the run used, as the runtime counts it: its own model calls,
+            the attached runs it rolled up, and how full its context was at its
+            latest model call. While the run works it is the calls reported so
+            far; once it has ended it is the runtime's record. Absent until the
+            first model call. A delegated run is not in its caller's usage.
+          $ref: "#/components/schemas/RunUsage"
+        calls: {type: integer}
+        status: {$ref: "#/components/schemas/RunStatus"}
+        answer:
+          description: |
+            The final text of a completed run. On a stopped run it is the
+            partial answer, what the agent had said when it stopped, which may
+            be empty. It is never the whole answer when `status` is `stopped`.
+          type: string
+        error: {type: string}
+        reason:
+          description: What a parked run is waiting for.
+          type: string
+        question:
+          description: What a parked run is waiting on a person for. Absent once it resumes or ends.
+          $ref: "#/components/schemas/Question"
+        cause:
+          description: Why a stopped run was stopped, as the runtime reported it, such as `Stopped by ada`.
+          type: string
+        stopping:
+          description: The run was asked to stop and has not ended yet. It starts no further calls. Absent once the run has ended, however it ended.
+          type: boolean
+        stop_requested_at:
+          description: When the run was first asked to stop. Absent once the run has ended.
+          type: string
+          format: date-time
+        finishing:
+          description: The run has its answer and is held open by attached runs still working.
+          type: boolean
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    RunList:
+      type: object
+      required: [runs]
+      properties:
+        runs:
+          type: array
+          items: {$ref: "#/components/schemas/Run"}
+    CreateRunRequest:
+      type: object
+      required: [text]
+      properties:
+        agent:
+          description: Who should answer. Empty or `auto` lets the platform pick.
+          type: string
+        text:
+          description: The message. It must not be blank.
+          type: string
+        after:
+          description: |
+            The id of the turn this message follows. Empty starts a
+            conversation. Naming a turn that already has a reply starts a
+            branch from that point.
+          type: string
+        project:
+          description: Files a new conversation under a project. A follow-up keeps its conversation's project.
+          type: string
+        act_as:
+          description: |
+            The person a surface asks for, such as a Slack user its client
+            maps. The run's actor is that person, so they do not approve its
+            calls. Only the credential the client names may send it.
+          $ref: "#/components/schemas/ActAs"
+    ActAs:
+      description: A person a surface authenticated itself, named by the surface's client and the surface's own user id.
+      type: object
+      required: [client, user]
+      properties:
+        client: {type: string}
+        user: {type: string}
+    AgentCallInput:
+      description: Explicit helper context and its return contract. Agent rules remain pinned.
+      type: object
+      required: [messages, response_format]
+      properties:
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 64
+          items: {$ref: "#/components/schemas/AgentCallMessage"}
+        response_format: {$ref: "#/components/schemas/AgentCallResponseFormat"}
+    AgentCallMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role: {type: string, enum: [user, assistant]}
+        content:
+          type: array
+          minItems: 1
+          maxItems: 128
+          items: {$ref: "#/components/schemas/AgentCallPart"}
+    AgentCallPart:
+      description: Inline text or a reference resolved within the caller's workspace.
+      oneOf:
+        - type: object
+          required: [type, text]
+          properties:
+            type: {type: string, enum: [text]}
+            text: {type: string}
+        - type: object
+          required: [type, thread, from, through]
+          properties:
+            type: {type: string, enum: [conversation_range]}
+            thread: {type: string}
+            from: {type: string}
+            through: {type: string}
+        - type: object
+          required: [type, id, version]
+          properties:
+            type: {type: string, enum: [artifact]}
+            id: {type: string}
+            version: {type: integer}
+        - type: object
+          required: [type, run]
+          properties:
+            type: {type: string, enum: [run_result]}
+            run: {type: string}
+    AgentCallResponseFormat:
+      description: Validated helper output, independent of delivery and permissions.
+      oneOf:
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, enum: [text]}
+            max_chars: {type: integer, minimum: 0, maximum: 64000}
+        - type: object
+          required: [type]
+          properties:
+            type: {type: string, enum: [summary]}
+            max_words: {type: integer, minimum: 0, maximum: 2000}
+        - type: object
+          required: [type, schema]
+          properties:
+            type: {type: string, enum: [json_schema]}
+            schema:
+              description: A JSON Schema object or boolean schema.
+              oneOf:
+                - {type: object, additionalProperties: true}
+                - {type: boolean}
+    PreparedCallInput:
+      description: Original references plus the exact resolved messages used on replay.
+      type: object
+      required: [input, messages]
+      properties:
+        input: {$ref: "#/components/schemas/AgentCallInput"}
+        messages:
+          type: array
+          items:
+            type: object
+            required: [role, text]
+            properties:
+              role: {type: string, enum: [user, assistant]}
+              text: {type: string}
+    CreateCallRequest:
+      type: object
+      required: [key, agent, mode]
+      properties:
+        key:
+          description: Identifies the call within the caller's run. The same key joins the child it already started.
+          type: string
+        agent: {type: string}
+        text:
+          description: Plain text shorthand. Supply text or input, never both.
+          type: string
+        input: {$ref: "#/components/schemas/AgentCallInput"}
+        mode: {$ref: "#/components/schemas/CallMode"}
+        lease:
+          description: The budget granted to the child, in micro-USD.
+          type: integer
+          format: int64
+    ThreadSummary:
+      description: One conversation.
+      type: object
+      required: [id, title, named, origin, agents, turns, branches, active, failed, created_at, updated_at]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        named:
+          description: The title is a name, not just the first message.
+          type: boolean
+        origin: {type: string}
+        project: {type: string}
+        agents:
+          type: array
+          items: {type: string}
+        turns: {type: integer}
+        branches: {type: integer}
+        active:
+          description: How many of its runs are in flight.
+          type: integer
+        failed: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+
+    Project:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        description: {type: string}
+    ProjectView:
+      description: A project and what is in it.
+      type: object
+      required: [name, conversations, active, schedules, notes, proposed]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        conversations: {type: integer}
+        active: {type: integer}
+        schedules: {type: integer}
+        notes:
+          description: How many shared notes are in use.
+          type: integer
+        proposed:
+          description: How many notes wait for someone to approve them.
+          type: integer
+        updated_at: {type: string, format: date-time}
+    Settings:
+      description: Workspace settings.
+      type: object
+      required: [baseline, history, history_limit, projects, title_agent, memory_agent, memory_auto_approve, workspace_name]
+      properties:
+        baseline:
+          description: The agent that answers when the picker matches none.
+          type: string
+        history:
+          description: Whether an agent is sent the conversation so far.
+          type: string
+          enum: [recent, none]
+        history_limit: {type: integer}
+        projects:
+          type: array
+          items: {$ref: "#/components/schemas/Project"}
+        title_agent: {type: string}
+        memory_agent: {type: string}
+        memory_auto_approve: {type: boolean}
+        workspace_name: {type: string}
+        setup_at:
+          description: Set once by the server when an admin first saves settings.
+          type: string
+          format: date-time
+        setup_by: {type: string}
+    Theme:
+      type: string
+      enum: [system, light, dark]
+    Preferences:
+      description: A person's own settings.
+      type: object
+      required: [display_name, theme, accent, has_photo, photo_version]
+      properties:
+        display_name: {type: string}
+        theme: {$ref: "#/components/schemas/Theme"}
+        accent: {type: string}
+        has_photo: {type: boolean}
+        photo_version: {type: integer}
+        onboarded_at:
+          description: When the person finished or skipped the first-run questions.
+          type: string
+          format: date-time
+
+    Schedule:
+      description: A cron schedule as a caller writes it.
+      type: object
+      required: [name, expression, agent, text]
+      properties:
+        name: {type: string}
+        expression:
+          description: A cron expression.
+          type: string
+        agent: {type: string}
+        text: {type: string}
+        project:
+          description: Files every run the schedule raises under a project.
+          type: string
+    ScheduleView:
+      description: A schedule with whether it is running, when it fires next, and how its recent occurrences went.
+      type: object
+      required: [name, expression, agent, text, paused, next, recent]
+      properties:
+        name: {type: string}
+        expression: {type: string}
+        agent: {type: string}
+        text: {type: string}
+        project: {type: string}
+        paused: {type: boolean}
+        created_by: {type: string}
+        next:
+          description: The next three fires. Empty while paused.
+          type: array
+          items: {type: string, format: date-time}
+        recent:
+          description: Up to 20 recent runs.
+          type: array
+          items: {$ref: "#/components/schemas/Run"}
+
+    InboxKind:
+      description: What a message is about. `approval` and `clarification` are questions a run is waiting on.
+      type: string
+      enum: [alert, failure, memory, budget, approval, clarification, result]
+    InboxState:
+      type: string
+      enum: [open, resolved, dismissed, snoozed]
+    InboxSeverity:
+      type: string
+      enum: [info, warning, critical]
+    InboxNotice:
+      description: Says that an inbox message changed, and nothing about what is in it.
+      type: object
+      required: [id, kind, state, updated_at]
+      properties:
+        id: {type: string}
+        kind: {$ref: "#/components/schemas/InboxKind"}
+        state: {$ref: "#/components/schemas/InboxState"}
+        updated_at: {type: string, format: date-time}
+    InboxFrom:
+      type: object
+      required: [kind, name]
+      properties:
+        kind:
+          description: What sent the message, such as `agent`, `rule` or `system`.
+          type: string
+        name: {type: string}
+    InboxSource:
+      description: What the message is about, as ids a reader can follow.
+      type: object
+      properties:
+        alert: {type: string}
+        rule: {type: string}
+        run: {type: string}
+        thread: {type: string}
+        agent: {type: string}
+        project: {type: string}
+    InboxOutcome:
+      type: object
+      required: [action, by, at]
+      properties:
+        action: {type: string}
+        by: {type: string}
+        at: {type: string, format: date-time}
+        note: {type: string}
+    InboxLimits:
+      description: New numbers for a limit. Zero or absent leaves a limit as it is.
+      type: object
+      properties:
+        max_runs: {type: integer}
+        max_concurrent: {type: integer}
+        spend_limit: {type: integer, format: int64}
+        max_tokens: {type: integer, format: int64}
+    InboxAlertPart:
+      type: object
+      required: [id, rule, kind, severity, title]
+      properties:
+        id: {type: string}
+        rule: {type: string}
+        kind: {type: string}
+        severity: {type: string}
+        title: {type: string}
+        body: {type: string}
+    InboxFailurePart:
+      type: object
+      required: [run, agent, error, retryable]
+      properties:
+        run: {type: string}
+        agent: {type: string}
+        error: {type: string}
+        retryable:
+          description: Only a turn a person asked can be started again.
+          type: boolean
+    InboxNoteRef:
+      type: object
+      required: [id, text]
+      properties:
+        id: {type: string}
+        text: {type: string}
+    InboxMemoryPart:
+      type: object
+      required: [owner, notes]
+      properties:
+        owner: {type: string}
+        agent: {type: string}
+        project: {type: string}
+        notes:
+          type: array
+          items: {$ref: "#/components/schemas/InboxNoteRef"}
+    InboxBudgetPart:
+      type: object
+      required: [scope_kind, limit, period, version, used, refused, max, current]
+      properties:
+        scope_kind: {type: string}
+        scope_name: {type: string}
+        limit: {type: string}
+        period: {type: string}
+        version: {type: integer}
+        used: {type: integer, format: int64}
+        refused: {type: boolean}
+        max: {type: integer, format: int64}
+        current: {$ref: "#/components/schemas/InboxLimits"}
+    InboxQuestionTool:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        arguments:
+          description: What the model asked to call the tool with, as a JSON object.
+          type: object
+        schema:
+          description: The tool's parameter schema. Edited arguments must satisfy it.
+          type: object
+    InboxQuestionPart:
+      description: A question a run is parked on.
+      type: object
+      required: [run, id, kind, prompt]
+      properties:
+        run: {type: string}
+        id: {type: string}
+        kind:
+          type: string
+          enum: [approval, choice, reply]
+        agent: {type: string}
+        prompt: {type: string}
+        options:
+          type: array
+          items: {type: string}
+        tool: {$ref: "#/components/schemas/InboxQuestionTool"}
+        asked_of:
+          description: Who the agent asked, as a hint. It admits nobody.
+          type: string
+        expires_at:
+          description: When the question takes its default if nobody answers.
+          type: string
+          format: date-time
+        default:
+          description: What the run carries on with if it expires. `deny` for an approval; empty when the agent is told nobody answered.
+          type: string
+        asked_at: {type: string, format: date-time}
+        via:
+          description: The run whose stream showed the question, when that is a run waiting on the one that asked.
+          type: string
+    InboxPart:
+      description: |
+        One typed part of a message. `type` says which of `text`, `alert`,
+        `failure`, `memory`, `budget` or `question` carries the body:
+        `approval`, `choice` and `reply` parts carry `question`. A settled
+        question's `outcome` is `approve`, `deny`, `choose` (the option in
+        `note`), `reply` (the words in `note`), `expired`, `stopped` or
+        `closed`.
+      type: object
+      required: [id, type, state, actions]
+      properties:
+        id: {type: string}
+        type:
+          type: string
+          enum: [text, alert, failure, memory, budget, approval, choice, reply]
+        state:
+          type: string
+          enum: [open, resolved, info]
+        actions:
+          description: What this caller may do with the part now. Empty once it is resolved, or when the caller has no permission for any action.
+          type: array
+          items:
+            type: string
+            enum: [acknowledge, retry, keep, discard, raise_limit, approve, deny, choose, reply]
+        outcome: {$ref: "#/components/schemas/InboxOutcome"}
+        text: {type: string}
+        alert: {$ref: "#/components/schemas/InboxAlertPart"}
+        failure: {$ref: "#/components/schemas/InboxFailurePart"}
+        memory: {$ref: "#/components/schemas/InboxMemoryPart"}
+        budget: {$ref: "#/components/schemas/InboxBudgetPart"}
+        question: {$ref: "#/components/schemas/InboxQuestionPart"}
+    InboxMessage:
+      description: One message in the inbox.
+      type: object
+      required: [id, kind, subject, from, at, updated_at, severity, state, unread, source, parts]
+      properties:
+        id: {type: string}
+        to: {type: string}
+        kind: {$ref: "#/components/schemas/InboxKind"}
+        subject: {type: string}
+        from: {$ref: "#/components/schemas/InboxFrom"}
+        at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        severity: {$ref: "#/components/schemas/InboxSeverity"}
+        state: {$ref: "#/components/schemas/InboxState"}
+        snoozed_until: {type: string, format: date-time}
+        unread:
+          description: Whether this caller has read it. Read state is per person.
+          type: boolean
+        source: {$ref: "#/components/schemas/InboxSource"}
+        parts:
+          type: array
+          items: {$ref: "#/components/schemas/InboxPart"}
+    InboxChange:
+      description: One thing that happened to a message.
+      type: object
+      required: [message, at, what]
+      properties:
+        message: {type: string}
+        at: {type: string, format: date-time}
+        by: {type: string}
+        what:
+          type: string
+          enum: [raised, read, unread, resolved, dismissed, snoozed, withdrawn]
+        part: {type: string}
+        action: {type: string}
+        note: {type: string}
+        until: {type: string, format: date-time}
+    Resolution:
+      description: What a person decided about a part.
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [acknowledge, retry, keep, discard, raise_limit, approve, deny, choose, reply]
+        ids:
+          description: The proposed notes to keep, with `keep`.
+          type: array
+          items: {type: string}
+        note:
+          description: At most 500 characters. On a denial the model is shown it.
+          type: string
+          maxLength: 500
+        limits: {$ref: "#/components/schemas/InboxLimits"}
+        arguments:
+          description: Edited arguments for `approve`, as a JSON object that satisfies the tool's schema. Left out keeps the model's.
+          type: object
+        choice:
+          description: The option chosen, with `choose`.
+          type: string
+          maxLength: 4000
+        text:
+          description: The reply, with `reply`. A reply part also takes its words as `note`.
+          type: string
+          maxLength: 4000
+        act_as: {$ref: "#/components/schemas/ActAs"}
+    QuestionAnswer:
+      description: An answer to the question a run is waiting on.
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [approve, deny, choose, reply]
+        arguments:
+          description: Edited arguments for `approve`, as a JSON object that satisfies the tool's schema.
+          type: object
+        choice:
+          type: string
+          maxLength: 4000
+        text:
+          type: string
+          maxLength: 4000
+        note:
+          description: At most 500 characters. On a denial the model is shown it.
+          type: string
+          maxLength: 500
+        act_as: {$ref: "#/components/schemas/ActAs"}
+
+    ArtifactKind:
+      type: string
+      enum: [document, spreadsheet, presentation, image, pdf, html, code, data, archive]
+    Artifact:
+      description: The record of one published file. Its bytes are served by `getArtifactContent`.
+      type: object
+      required: [id, title, kind, mime, size, sha256, version, run, thread, agent, created_by, created_at]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        kind: {$ref: "#/components/schemas/ArtifactKind"}
+        mime:
+          description: The type the server sniffed from the bytes.
+          type: string
+        size: {type: integer, format: int64}
+        sha256: {type: string}
+        version:
+          description: Publishing a title again in the same conversation makes the next version.
+          type: integer
+        run: {type: string}
+        thread: {type: string}
+        agent: {type: string}
+        project: {type: string}
+        description: {type: string}
+        preview:
+          description: The start of a text file.
+          type: string
+        created_by: {type: string}
+        created_at: {type: string, format: date-time}
+    StorageShare:
+      type: object
+      required: [name, bytes, count]
+      properties:
+        name: {type: string}
+        bytes: {type: integer, format: int64}
+        count: {type: integer}
+    StorageUsage:
+      description: What the workspace has published, against what it is allowed.
+      type: object
+      required: [used_bytes, count, limit_bytes, by_project, by_agent]
+      properties:
+        used_bytes: {type: integer, format: int64}
+        count: {type: integer}
+        limit_bytes:
+          description: The workspace's storage limit, or null when it has none.
+          type: [integer, "null"]
+          format: int64
+        by_project:
+          type: array
+          items: {$ref: "#/components/schemas/StorageShare"}
+        by_agent:
+          type: array
+          items: {$ref: "#/components/schemas/StorageShare"}
+
+    AnalyticsGroup:
+      type: object
+      required: [name, runs, completed, failed, stopped, active, p50_ms, p95_ms, usage]
+      properties:
+        name: {type: string}
+        runs: {type: integer}
+        completed: {type: integer}
+        failed: {type: integer}
+        stopped:
+          description: Runs that were stopped. They are neither completed, failed nor active.
+          type: integer
+        active: {type: integer}
+        p50_ms: {type: integer, format: int64}
+        p95_ms: {type: integer, format: int64}
+        usage: {$ref: "#/components/schemas/AnalyticsUsage"}
+    AnalyticsUsage:
+      description: |
+        What the runs' own model calls used. Each run counts only its own
+        calls, so a tree of runs is not counted twice.
+      type: object
+      required: [model_calls, tokens, spend, unpriced_calls, other_currency_runs]
+      properties:
+        model_calls: {type: integer}
+        tokens:
+          description: Prompt and completion tokens.
+          type: integer
+          format: int64
+        spend:
+          description: Micro-USD priced in US dollars. A lower bound when `unpriced_calls` or `other_currency_runs` is not zero.
+          type: integer
+          format: int64
+        unpriced_calls:
+          description: Calls with no price.
+          type: integer
+        other_currency_runs:
+          description: Runs with costs in a currency other than US dollars, which are not added to `spend`.
+          type: integer
+    AnalyticsBucket:
+      type: object
+      required: [start, completed, failed, stopped, active]
+      properties:
+        start: {type: string, format: date-time}
+        completed: {type: integer}
+        failed: {type: integer}
+        stopped: {type: integer}
+        active: {type: integer}
+    Summary:
+      description: Run statistics over a window.
+      type: object
+      required: [since, until, bucket_ns, total, buckets, by_agent, by_origin, slowest, delegated]
+      properties:
+        since: {type: string, format: date-time}
+        until: {type: string, format: date-time}
+        bucket_ns:
+          description: The width of one bucket, in nanoseconds.
+          type: integer
+          format: int64
+        total: {$ref: "#/components/schemas/AnalyticsGroup"}
+        buckets:
+          type: array
+          items: {$ref: "#/components/schemas/AnalyticsBucket"}
+        by_agent:
+          type: array
+          items: {$ref: "#/components/schemas/AnalyticsGroup"}
+        by_origin:
+          type: array
+          items: {$ref: "#/components/schemas/AnalyticsGroup"}
+        slowest:
+          type: [array, "null"]
+          items: {$ref: "#/components/schemas/Run"}
+        delegated: {type: integer}
+    JournalEntry:
+      description: One event, summarized in a line.
+      type: object
+      required: [seq, run_id, agent, rev, origin, kind, at]
+      properties:
+        seq: {type: integer, format: int64}
+        run_id: {type: string}
+        agent: {type: string}
+        rev: {type: integer}
+        origin: {type: string}
+        kind: {$ref: "#/components/schemas/EventKind"}
+        at: {type: string, format: date-time}
+        detail: {type: string}
+    Span:
+      description: One stretch of a run's time, rebuilt from the journal.
+      type: object
+      required: [run_id, agent, kind, name, start]
+      properties:
+        run_id: {type: string}
+        agent: {type: string}
+        kind: {type: string, enum: [run, attempt, tool, output, parked]}
+        name: {type: string}
+        start: {type: string, format: date-time}
+        end: {type: string, format: date-time}
+        error: {type: string}
+
+    AlertKind:
+      type: string
+      enum: [run_failed, failure_rate, slow_run, eval_below, budget]
+    AlertSeverity:
+      type: string
+      enum: [warning, critical]
+    AlertRule:
+      type: object
+      required: [name, kind, severity]
+      properties:
+        name: {type: string}
+        kind: {$ref: "#/components/schemas/AlertKind"}
+        agent:
+          description: Only this agent's runs. Empty means every agent.
+          type: string
+        severity: {$ref: "#/components/schemas/AlertSeverity"}
+        threshold: {type: number}
+        window_seconds: {type: integer}
+        min_runs: {type: integer}
+        created_by: {type: string}
+    Alert:
+      type: object
+      required: [id, rule, kind, severity, title, at]
+      properties:
+        id: {type: string}
+        rule: {type: string}
+        kind: {$ref: "#/components/schemas/AlertKind"}
+        severity: {$ref: "#/components/schemas/AlertSeverity"}
+        agent: {type: string}
+        run_id: {type: string}
+        suite: {type: string}
+        title: {type: string}
+        body: {type: string}
+        at: {type: string, format: date-time}
+        acked_by: {type: string}
+        acked_at: {type: string, format: date-time}
+
+    EvalTarget:
+      type: string
+      enum: [agent, knowledge]
+    EvalCheck:
+      description: A deterministic check on an agent's output.
+      type: object
+      required: [kind, value]
+      properties:
+        kind: {type: string, enum: [contains, not_contains, matches, equals, within_ms]}
+        value: {type: string}
+    EvalCase:
+      type: object
+      required: [id, input]
+      properties:
+        id: {type: string}
+        input: {type: string}
+        checks:
+          type: array
+          items: {$ref: "#/components/schemas/EvalCheck"}
+        expect:
+          description: For a knowledge suite, the titles a search should return.
+          type: array
+          items: {type: string}
+    EvalSuite:
+      type: object
+      required: [name, target, subject, cases]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        target: {$ref: "#/components/schemas/EvalTarget"}
+        subject:
+          description: The agent or knowledge source the suite tests.
+          type: string
+        cases:
+          type: array
+          items: {$ref: "#/components/schemas/EvalCase"}
+        k: {type: integer}
+        pass_rate: {type: number}
+        created_by:
+          description: Set by the server.
+          type: string
+        updated_at:
+          description: Set by the server.
+          type: string
+          format: date-time
+    EvalVerdict:
+      type: object
+      required: [check, passed]
+      properties:
+        check: {type: string}
+        passed: {type: boolean}
+        reason: {type: string}
+    EvalHit:
+      type: object
+      required: [title, score, expected]
+      properties:
+        title: {type: string}
+        score: {type: number}
+        expected: {type: boolean}
+    EvalResult:
+      type: object
+      required: [case_id, input, passed, duration_ms]
+      properties:
+        case_id: {type: string}
+        input: {type: string}
+        passed: {type: boolean}
+        output: {type: string}
+        verdicts:
+          type: array
+          items: {$ref: "#/components/schemas/EvalVerdict"}
+        hits:
+          type: array
+          items: {$ref: "#/components/schemas/EvalHit"}
+        rank: {type: integer}
+        run_id: {type: string}
+        duration_ms: {type: integer, format: int64}
+        error: {type: string}
+    EvalRun:
+      type: object
+      required: [id, suite, target, subject, status, passed, total, pass_rate, threshold, results, started_at]
+      properties:
+        id: {type: string}
+        suite: {type: string}
+        target: {$ref: "#/components/schemas/EvalTarget"}
+        subject: {type: string}
+        rev: {type: integer}
+        status: {type: string, enum: [running, passed, failed, errored]}
+        passed: {type: integer}
+        total: {type: integer}
+        pass_rate: {type: number}
+        threshold: {type: number}
+        metrics:
+          type: object
+          additionalProperties: {type: number}
+        results:
+          type: [array, "null"]
+          items: {$ref: "#/components/schemas/EvalResult"}
+        error: {type: string}
+        started_by: {type: string}
+        started_at: {type: string, format: date-time}
+        ended_at: {type: string, format: date-time}
+    EvalSuiteView:
+      description: A suite with its most recent runs, newest first.
+      allOf:
+        - $ref: "#/components/schemas/EvalSuite"
+        - type: object
+          required: [runs]
+          properties:
+            runs:
+              type: array
+              items: {$ref: "#/components/schemas/EvalRun"}
+
+    KnowledgeVariant:
+      description: A saved view of a source, which leaves some documents out.
+      type: object
+      required: [name, excluded]
+      properties:
+        name: {type: string}
+        excluded:
+          type: array
+          items: {type: string}
+    KnowledgeSource:
+      type: object
+      required: [name, documents, passages, excluded, variants, updated_at]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        documents: {type: integer}
+        passages: {type: integer}
+        excluded:
+          description: Documents held but left out of search.
+          type: integer
+        variants:
+          type: array
+          items: {$ref: "#/components/schemas/KnowledgeVariant"}
+        created_by: {type: string}
+        updated_at: {type: string, format: date-time}
+    KnowledgeDocument:
+      type: object
+      required: [id, title, bytes, passages, excluded, added_at]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        uri: {type: string}
+        bytes: {type: integer}
+        passages: {type: integer}
+        excluded: {type: boolean}
+        added_by: {type: string}
+        added_at: {type: string, format: date-time}
+    KnowledgeHit:
+      type: object
+      required: [source, document_id, title, index, text, score]
+      properties:
+        source: {type: string}
+        document_id: {type: string}
+        title: {type: string}
+        uri: {type: string}
+        index: {type: integer}
+        text: {type: string}
+        score: {type: number}
+
+    PolicyScopeKind:
+      type: string
+      enum: [tenant, project, agent, client]
+    PolicyPeriod:
+      type: string
+      enum: [day, month]
+    PolicyAction:
+      description: What happens at a limit. Only `block` is acted on today.
+      type: string
+      enum: [block, approve]
+    PolicyLimit:
+      type: string
+      enum: [runs, concurrent, spend, lease, tokens]
+    PolicyScope:
+      type: object
+      required: [kind]
+      properties:
+        kind: {$ref: "#/components/schemas/PolicyScopeKind"}
+        name:
+          description: The project, agent or client. Absent for the tenant scope.
+          type: string
+    PolicyInput:
+      description: The limits for one scope, as a caller writes them. Zero or absent sets no limit.
+      type: object
+      required: [scope]
+      properties:
+        scope: {$ref: "#/components/schemas/PolicyScope"}
+        period: {$ref: "#/components/schemas/PolicyPeriod"}
+        max_runs: {type: integer}
+        max_concurrent: {type: integer}
+        spend_limit:
+          description: |
+            Micro-USD a period, enforced: a new run is refused once the scope
+            has reached it, and a run in flight is stopped when a call takes
+            the scope to it. Only money priced in US dollars counts.
+          type: integer
+          format: int64
+        max_lease: {type: integer, format: int64}
+        max_tokens:
+          description: |
+            Model tokens (prompt and completion) a period, enforced like
+            `spend_limit`. It counts every call, priced or not, so it bounds
+            what a spend limit cannot see.
+          type: integer
+          format: int64
+        max_storage:
+          description: Bytes.
+          type: integer
+          format: int64
+        max_clients: {type: integer}
+        max_clients_per_surface: {type: integer}
+        warn_at:
+          description: The percentage of a limit at which a warning is raised. Defaults to 80.
+          type: integer
+        action:
+          description: Defaults to `block`.
+          $ref: "#/components/schemas/PolicyAction"
+    Policy:
+      description: The limits for one scope, at one version.
+      type: object
+      required: [scope, period, action, version, updated_at]
+      properties:
+        scope: {$ref: "#/components/schemas/PolicyScope"}
+        period: {$ref: "#/components/schemas/PolicyPeriod"}
+        max_runs: {type: integer}
+        max_concurrent: {type: integer}
+        spend_limit: {type: integer, format: int64}
+        max_lease: {type: integer, format: int64}
+        max_tokens: {type: integer, format: int64}
+        max_storage: {type: integer, format: int64}
+        max_clients: {type: integer}
+        max_clients_per_surface: {type: integer}
+        warn_at: {type: integer}
+        action: {$ref: "#/components/schemas/PolicyAction"}
+        version: {type: integer}
+        updated_by: {type: string}
+        updated_at: {type: string, format: date-time}
+    PolicyChange:
+      type: object
+      required: [scope, by, at]
+      properties:
+        scope: {$ref: "#/components/schemas/PolicyScope"}
+        by: {type: string}
+        at: {type: string, format: date-time}
+        before: {$ref: "#/components/schemas/Policy"}
+        after: {$ref: "#/components/schemas/Policy"}
+    Measure:
+      description: One limit and what has been used against it. A limit of zero means the scope sets none.
+      type: object
+      required: [used, limit]
+      properties:
+        used: {type: integer, format: int64}
+        limit: {type: integer, format: int64}
+        projected:
+          description: Where `used` ends the period at the pace so far. Absent for a count that does not accumulate.
+          type: integer
+          format: int64
+    SpendMeasure:
+      description: |
+        Spend against its limit, in micro-USD, enforced. `used` counts only
+        what was priced in US dollars, so it is a lower bound whenever
+        `unpriced_calls` is not zero or `other_costs` is not empty.
+      type: object
+      required: [used, limit, metered, unpriced_calls]
+      properties:
+        used: {type: integer, format: int64}
+        limit: {type: integer, format: int64}
+        projected: {type: integer, format: int64}
+        metered:
+          description: True. The runtime prices model calls from saige's catalog.
+          type: boolean
+        unpriced_calls:
+          description: Calls in the period with no price. Their spend is unknown, not zero.
+          type: integer
+        other_costs:
+          description: Money in other currencies, one entry per currency, never converted and never held against the limit.
+          type: array
+          items: {$ref: "#/components/schemas/PolicyCost"}
+    PolicyCost:
+      description: An amount in one currency, in millionths of it.
+      type: object
+      required: [micros, currency]
+      properties:
+        micros: {type: integer, format: int64}
+        currency: {type: string}
+    ScopeUsage:
+      description: One policy and where its scope stands against it.
+      type: object
+      required: [scope, period, period_start, period_end, version, warn_at, action, runs, concurrent, spend, tokens, max_lease, state]
+      properties:
+        scope: {$ref: "#/components/schemas/PolicyScope"}
+        period: {$ref: "#/components/schemas/PolicyPeriod"}
+        period_start: {type: string, format: date-time}
+        period_end: {type: string, format: date-time}
+        version: {type: integer}
+        warn_at: {type: integer}
+        action: {$ref: "#/components/schemas/PolicyAction"}
+        runs: {$ref: "#/components/schemas/Measure"}
+        concurrent: {$ref: "#/components/schemas/Measure"}
+        spend: {$ref: "#/components/schemas/SpendMeasure"}
+        tokens: {$ref: "#/components/schemas/Measure"}
+        max_lease: {type: integer, format: int64}
+        state:
+          description: The worst of the enforced limits, spend and tokens included.
+          type: string
+          enum: [ok, warn, over]
+    UsageEntry:
+      description: One line of the usage ledger.
+      type: object
+      required: [kind, tenant, agent, at]
+      properties:
+        kind:
+          description: |
+            `halted` is a run in flight stopped at a limit. `spent` (one model
+            call) and `settled` (a run's own total at its end) are the ledger's
+            record of spend and are not listed as notices.
+          type: string
+          enum: [admitted, ended, warned, refused, spent, settled, halted]
+        tenant: {type: string}
+        project: {type: string}
+        agent: {type: string}
+        client: {type: string}
+        run_id: {type: string}
+        at:
+          description: When the entry was appended, by the server's clock. It decides the period the entry counts in.
+          type: string
+          format: date-time
+        event_at:
+          description: For a `spent` entry, when the runtime said the call happened. It counts nothing.
+          type: string
+          format: date-time
+        scope: {$ref: "#/components/schemas/PolicyScope"}
+        version: {type: integer}
+        limit: {$ref: "#/components/schemas/PolicyLimit"}
+        reason: {type: string}
+        key:
+          description: What makes a `spent` or `settled` entry count once.
+          type: string
+        spend: {$ref: "#/components/schemas/UsageSpend"}
+    UsageSpend:
+      description: What some model calls used. `micros` is US dollars only.
+      type: object
+      properties:
+        micros: {type: integer, format: int64}
+        model_calls: {type: integer}
+        tokens: {type: integer, format: int64}
+        unpriced_calls: {type: integer}
+        other_costs:
+          type: array
+          items: {$ref: "#/components/schemas/PolicyCost"}
+
+    ClientSurface:
+      type: string
+      enum: [slack, github]
+    ClientIdentity:
+      description: How a webhook says which client it is for.
+      type: object
+      properties:
+        app_id: {type: string}
+        team: {type: string}
+        installation: {type: string}
+        owners:
+          type: array
+          items: {type: string}
+    SecretRef:
+      description: Where one of a client's secrets is. The secret itself is never sent.
+      type: object
+      required: [set]
+      properties:
+        set: {type: boolean}
+        ref:
+          description: "`env:NAME` when the secret lives in the server's environment."
+          type: string
+    SecretInput:
+      description: A secret as a caller writes it, as a value or as an `env:COLLEGIUM_*` reference. Leave both out to keep the one held.
+      type: object
+      properties:
+        value: {type: string}
+        ref: {type: string}
+    SlackCommand:
+      type: object
+      required: [name, description]
+      properties:
+        name: {type: string}
+        description: {type: string}
+        argument_hint: {type: string}
+    SlackOptions:
+      type: object
+      properties:
+        sessions: {type: boolean}
+        commands:
+          type: array
+          items: {$ref: "#/components/schemas/SlackCommand"}
+        machine:
+          description: The subject of the credential a Slack app signs in to the API with. Only it may act for `people`.
+          type: string
+        people:
+          description: |
+            Slack user ids in the client's team, each mapped to the principal it
+            is in this workspace, by subject. An answer clicked in Slack by a
+            person it maps is that principal's answer; anyone else is refused.
+          type: object
+          additionalProperties: {type: string}
+    GitHubOptions:
+      type: object
+      properties:
+        auto_labels:
+          type: object
+          additionalProperties:
+            type: object
+            additionalProperties: {type: string}
+        checks: {type: boolean}
+        guides: {type: boolean}
+        mutations: {type: boolean}
+        read_repositories:
+          type: array
+          items: {type: string}
+    ClientInput:
+      description: A client as a caller writes it. The tenant, who manages it and its version are the server's to say.
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        surface: {$ref: "#/components/schemas/ClientSurface"}
+        identity: {$ref: "#/components/schemas/ClientIdentity"}
+        default_agent: {type: string}
+        agents:
+          description: The agents it may route to besides its default. `*` alone means any.
+          type: [array, "null"]
+          items: {type: string}
+        bots:
+          type: [object, "null"]
+          additionalProperties: {type: string}
+        slack:
+          oneOf:
+            - $ref: "#/components/schemas/SlackOptions"
+            - type: "null"
+        github:
+          oneOf:
+            - $ref: "#/components/schemas/GitHubOptions"
+            - type: "null"
+        enabled:
+          description: Defaults to true.
+          type: [boolean, "null"]
+        credentials:
+          type: object
+          properties:
+            token: {$ref: "#/components/schemas/SecretInput"}
+            signing_secret: {$ref: "#/components/schemas/SecretInput"}
+    ClientView:
+      description: A Slack app or GitHub installation the workspace answers through, and the limits on the runs it raises.
+      type: object
+      required: [id, name, surface, identity, credentials, enabled, version, created_at, updated_at]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        surface: {$ref: "#/components/schemas/ClientSurface"}
+        identity: {$ref: "#/components/schemas/ClientIdentity"}
+        credentials:
+          type: object
+          required: [token, signing_secret]
+          properties:
+            token: {$ref: "#/components/schemas/SecretRef"}
+            signing_secret: {$ref: "#/components/schemas/SecretRef"}
+        default_agent: {type: string}
+        agents:
+          type: array
+          items: {type: string}
+        bots:
+          type: object
+          additionalProperties: {type: string}
+        slack: {$ref: "#/components/schemas/SlackOptions"}
+        github: {$ref: "#/components/schemas/GitHubOptions"}
+        enabled: {type: boolean}
+        managed:
+          description: Set on a client the server's configuration owns, which the API cannot change.
+          type: string
+        version: {type: integer}
+        created_by: {type: string}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        limits:
+          description: The client's own policy, if it has one. Set it through `putPolicy` with a `client` scope.
+          $ref: "#/components/schemas/Policy"
+    ClientCaps:
+      type: object
+      required: [max, max_per_surface]
+      properties:
+        max: {type: integer}
+        max_per_surface: {type: integer}
+
+    EventKind:
+      description: |
+        What an event is. Kinds are dotted, so a filter can select a family
+        (`delta`) or one member (`delta.citation`). The set is open in the
+        runtime: a reader should pass over a kind it does not know. The
+        `control.*` kinds here are defined and not published today. The
+        `usage.*` kinds report what model calls used: one `usage.call` per
+        call as it completes, and a `usage.child` when an attached run's total
+        is rolled up into its caller. A request
+        addressed to a run, such as `control.stop`, is the runtime's traffic
+        and never appears on this API.
+      type: string
+      enum:
+        - delta.text
+        - delta.thinking
+        - delta.tool.call
+        - delta.tool.done
+        - delta.citation
+        - lifecycle.accepted
+        - lifecycle.started
+        - lifecycle.parked
+        - lifecycle.resumed
+        - lifecycle.completed
+        - lifecycle.failed
+        - lifecycle.child.parked
+        - lifecycle.stopped
+        - action.taken
+        - usage.call
+        - usage.child
+        - control.created
+        - control.revised
+        - control.deleted
+    TextPayload:
+      description: One fragment of the agent's answer, in order. Concatenate fragments.
+      type: object
+      required: [text]
+      properties:
+        text: {type: string}
+    ThinkingPayload:
+      description: One fragment of extended reasoning. Most surfaces do not show it.
+      type: object
+      required: [text]
+      properties:
+        text: {type: string}
+    ToolCallPayload:
+      description: The agent reaching for a tool.
+      type: object
+      required: [id, name, phase]
+      properties:
+        id:
+          description: Correlates the call with its `delta.tool.done`.
+          type: string
+        name: {type: string}
+        phase:
+          description: "`requested` while the model writes the call, `executing` once it runs."
+          type: string
+          enum: [requested, executing]
+    ToolDonePayload:
+      description: A tool execution finished.
+      type: object
+      required: [id]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        result: {type: string}
+        error:
+          description: Set when the tool failed. `result` is then the failure text the model was shown.
+          type: string
+    Provenance:
+      description: Where a cited passage came from.
+      type: object
+      properties:
+        document_uuid: {type: string}
+        document_title: {type: string}
+        source_uri: {type: string}
+        section_uuid: {type: string}
+        section_heading: {type: string}
+        section_index: {type: integer}
+    CitationPayload:
+      description: One retrieved passage the turn was grounded in.
+      type: object
+      required: [label, text, source, index]
+      properties:
+        label:
+          description: The inline marker, such as `[1]`.
+          type: string
+        text:
+          description: The exact source text.
+          type: string
+        source: {$ref: "#/components/schemas/Provenance"}
+        index: {type: integer}
+    LifecyclePayload:
+      description: |
+        The body of every lifecycle kind. A failed attempt is reported with
+        `terminal` false while the run may still be retried. The run's record
+        (`getRun`) is the authority on whether it is over.
+      type: object
+      properties:
+        attempt:
+          description: The execution attempt that produced the event, from 1.
+          type: integer
+        rev: {type: integer}
+        error:
+          description: The failure message, on `lifecycle.failed`.
+          type: string
+        terminal:
+          description: The run will not be retried. Meaningful on `lifecycle.failed`.
+          type: boolean
+        reason:
+          description: What a parked run is waiting for.
+          type: string
+        text:
+          description: The final answer, on `lifecycle.completed`.
+          type: string
+        usage:
+          description: What the run used, on `lifecycle.completed`.
+          $ref: "#/components/schemas/RunUsage"
+        question:
+          description: What the run is waiting on a person for, on `lifecycle.parked`.
+          $ref: "#/components/schemas/Question"
+        answer:
+          description: The answer the run resumed with, on `lifecycle.resumed` after a question.
+          $ref: "#/components/schemas/Answer"
+    QuestionTool:
+      type: object
+      required: [name, call_id]
+      properties:
+        name: {type: string}
+        call_id: {type: string}
+        arguments:
+          description: The arguments the model asked for, as a JSON object.
+          type: object
+        schema:
+          description: The tool's parameter schema.
+          type: object
+    Question:
+      description: |
+        What a run is waiting on a person for: to approve a tool call, to
+        choose one of `options`, or to reply. `asked_of` is a routing hint and
+        admits nobody. `default` is what applies when it expires.
+      type: object
+      required: [id, kind, prompt]
+      properties:
+        id: {type: string}
+        kind:
+          type: string
+          enum: [approval, choice, reply, delegation]
+        agent: {type: string}
+        prompt: {type: string}
+        options:
+          type: array
+          items: {type: string}
+        tool: {$ref: "#/components/schemas/QuestionTool"}
+        asked_of: {type: string}
+        expires_at: {type: string, format: date-time}
+        default: {$ref: "#/components/schemas/Answer"}
+        at: {type: string, format: date-time}
+        child_run_id: {type: string}
+    Answer:
+      description: An answer to a question, or its default when nobody answered in time (`expired`).
+      type: object
+      required: [question_id]
+      properties:
+        question_id: {type: string}
+        decision:
+          type: string
+          enum: [approve, deny]
+        arguments:
+          type: object
+        choice: {type: string}
+        text: {type: string}
+        note: {type: string}
+        by:
+          description: Who answered.
+          type: string
+        at: {type: string, format: date-time}
+        expired: {type: boolean}
+        run_id: {type: string}
+    ChildQuestion:
+      description: The body of `lifecycle.child.parked`, a question a run this one waits on asked.
+      type: object
+      required: [run_id, question]
+      properties:
+        run_id: {type: string}
+        agent: {type: string}
+        question: {$ref: "#/components/schemas/Question"}
+    StoppedPayload:
+      description: |
+        The body of `lifecycle.stopped`: the run was asked to stop and wrapped
+        its turn up. It is final. `text` is what the agent had said, which may
+        be empty.
+      type: object
+      properties:
+        attempt: {type: integer}
+        rev: {type: integer}
+        reason:
+          description: Why it was stopped, in the words of whoever asked.
+          type: string
+        by:
+          description: Who asked, such as a subject or `slack:<user id>`.
+          type: string
+        text:
+          description: The partial answer.
+          type: string
+        usage:
+          description: What the run used before it stopped, the call that was cut short included.
+          $ref: "#/components/schemas/RunUsage"
+    Cost:
+      description: |
+        An amount of money in integer millionths of a currency. One US dollar
+        is 1,000,000 with currency `USD`. Prices come from saige's catalog
+        only, and are never converted between currencies.
+      type: object
+      required: [micros, currency]
+      properties:
+        micros: {type: integer, format: int64}
+        currency:
+          description: An ISO 4217 code.
+          type: string
+        as_of:
+          description: The date the rates were recorded. On a sum, the oldest; empty when any was priced from a card with no date.
+          type: string
+    Usage:
+      description: |
+        What some model calls used, summed. `cost` is in the currency of the
+        first priced call and is a lower bound whenever `unpriced_calls` is not
+        zero; calls priced in another currency are in `other_costs`.
+      type: object
+      properties:
+        model_calls: {type: integer}
+        requests:
+          description: Billable provider requests. A call answered from saige's response cache made none.
+          type: integer
+        prompt_tokens:
+          description: All input, cached and written to cache included.
+          type: integer
+        cached_prompt_tokens: {type: integer}
+        cache_write_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        cost: {$ref: "#/components/schemas/Cost"}
+        other_costs:
+          type: array
+          items: {$ref: "#/components/schemas/Cost"}
+        unpriced_calls:
+          description: Calls whose tokens are counted and that have no price.
+          type: integer
+    ContextUsage:
+      description: How full the run's context was at its latest model call.
+      type: object
+      properties:
+        model: {type: string}
+        window:
+          description: The model's input token limit from saige's catalog. Absent when the catalog declares none.
+          type: integer
+        tokens:
+          description: The prompt that call sent, in tokens.
+          type: integer
+    RunUsage:
+      description: |
+        What a run used. `own` is its own agent's calls, `children` the attached
+        runs it rolled up (each once), and `total` the two added: the figure
+        held against a limit.
+      type: object
+      required: [own, total]
+      properties:
+        own: {$ref: "#/components/schemas/Usage"}
+        children: {$ref: "#/components/schemas/Usage"}
+        total: {$ref: "#/components/schemas/Usage"}
+        context: {$ref: "#/components/schemas/ContextUsage"}
+    UsageCallPayload:
+      description: One model call, reported as it completes. Count it once by `accounting_id`.
+      type: object
+      required: [accounting_id]
+      properties:
+        accounting_id: {type: string}
+        saige_accounting_id: {type: string}
+        agent: {type: string}
+        depth: {type: integer}
+        model: {type: string}
+        requests: {type: integer}
+        prompt_tokens: {type: integer}
+        cached_prompt_tokens: {type: integer}
+        cache_write_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        response_cache_hit: {type: boolean}
+        cost: {$ref: "#/components/schemas/Cost"}
+        context_window: {type: integer}
+    UsageChildPayload:
+      description: An attached run's whole usage, rolled up into its caller once it ended.
+      type: object
+      required: [accounting_id, run_id, usage]
+      properties:
+        accounting_id: {type: string}
+        run_id: {type: string}
+        agent: {type: string}
+        depth: {type: integer}
+        usage: {$ref: "#/components/schemas/Usage"}
+    ActionPayload:
+      description: |
+        A tool acted on something: a comment posted, a file published. When
+        `name` is `publish_artifact` and there is no `error`, `data` is the
+        `Artifact` that was published.
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+        target:
+          description: The address URI the action was aimed at.
+          type: string
+        summary: {type: string}
+        address:
+          description: The address URI of whatever was created or changed.
+          type: string
+        data:
+          description: The tool's structured result, passed through untouched.
+        error: {type: string}
+    EventBase:
+      description: What every event carries, whatever its kind.
+      type: object
+      required: [seq, topic, run_id, tenant, agent, rev, origin, at]
+      properties:
+        seq:
+          description: Orders events within one run. It increases and is not contiguous, so compare it, do not count on it. It is the resume cursor.
+          type: integer
+          format: int64
+        topic:
+          description: Where the event was published, always `agent:<name>:<run>`.
+          type: string
+        run_id: {type: string}
+        tenant: {type: string}
+        agent: {type: string}
+        rev: {type: integer}
+        origin: {type: string}
+        at: {type: string, format: date-time}
+    ManifestEventBase:
+      type: object
+      required: [seq, at]
+      properties:
+        seq: {type: integer, format: int64}
+        at: {type: string, format: date-time}
+    RunEvent:
+      description: |
+        One thing a run produced, as the event stream and `listRunEvents` send
+        it. `kind` says which variant it is. `payload` is the kind's body as
+        JSON, base64-encoded, because the server marshals a byte slice: decode
+        the base64, then parse the JSON. The decoded shape for each kind is the
+        schema named in `contentSchema`. A kind may carry no payload.
+      oneOf:
+        - $ref: "#/components/schemas/TextDeltaEvent"
+        - $ref: "#/components/schemas/ThinkingDeltaEvent"
+        - $ref: "#/components/schemas/ToolCallEvent"
+        - $ref: "#/components/schemas/ToolDoneEvent"
+        - $ref: "#/components/schemas/CitationEvent"
+        - $ref: "#/components/schemas/RunAcceptedEvent"
+        - $ref: "#/components/schemas/RunStartedEvent"
+        - $ref: "#/components/schemas/RunParkedEvent"
+        - $ref: "#/components/schemas/RunResumedEvent"
+        - $ref: "#/components/schemas/RunCompletedEvent"
+        - $ref: "#/components/schemas/RunFailedEvent"
+        - $ref: "#/components/schemas/ChildParkedEvent"
+        - $ref: "#/components/schemas/RunStoppedEvent"
+        - $ref: "#/components/schemas/ActionTakenEvent"
+        - $ref: "#/components/schemas/UsageCallEvent"
+        - $ref: "#/components/schemas/UsageChildEvent"
+        - $ref: "#/components/schemas/AgentCreatedEvent"
+        - $ref: "#/components/schemas/AgentRevisedEvent"
+        - $ref: "#/components/schemas/AgentDeletedEvent"
+      discriminator:
+        propertyName: kind
+        mapping:
+          delta.text: "#/components/schemas/TextDeltaEvent"
+          delta.thinking: "#/components/schemas/ThinkingDeltaEvent"
+          delta.tool.call: "#/components/schemas/ToolCallEvent"
+          delta.tool.done: "#/components/schemas/ToolDoneEvent"
+          delta.citation: "#/components/schemas/CitationEvent"
+          lifecycle.accepted: "#/components/schemas/RunAcceptedEvent"
+          lifecycle.started: "#/components/schemas/RunStartedEvent"
+          lifecycle.parked: "#/components/schemas/RunParkedEvent"
+          lifecycle.resumed: "#/components/schemas/RunResumedEvent"
+          lifecycle.completed: "#/components/schemas/RunCompletedEvent"
+          lifecycle.failed: "#/components/schemas/RunFailedEvent"
+          lifecycle.child.parked: "#/components/schemas/ChildParkedEvent"
+          lifecycle.stopped: "#/components/schemas/RunStoppedEvent"
+          action.taken: "#/components/schemas/ActionTakenEvent"
+          usage.call: "#/components/schemas/UsageCallEvent"
+          usage.child: "#/components/schemas/UsageChildEvent"
+          control.created: "#/components/schemas/AgentCreatedEvent"
+          control.revised: "#/components/schemas/AgentRevisedEvent"
+          control.deleted: "#/components/schemas/AgentDeletedEvent"
+    TextDeltaEvent:
+      description: One fragment of the answer.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.text}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/TextPayload"}
+    ThinkingDeltaEvent:
+      description: One fragment of reasoning.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.thinking}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/ThinkingPayload"}
+    ToolCallEvent:
+      description: The agent reached for a tool.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.tool.call}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/ToolCallPayload"}
+    ToolDoneEvent:
+      description: A tool finished.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.tool.done}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/ToolDonePayload"}
+    CitationEvent:
+      description: A passage the turn was grounded in.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.citation}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/CitationPayload"}
+    RunAcceptedEvent:
+      description: The run was accepted.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.accepted}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    RunStartedEvent:
+      description: An attempt started.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.started}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    RunParkedEvent:
+      description: The run is waiting on something.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.parked}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    ChildParkedEvent:
+      description: A run this one is waiting on is waiting on a person. Answer it on that run.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.child.parked}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/ChildQuestion"}
+    RunResumedEvent:
+      description: A parked run carried on.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.resumed}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    RunCompletedEvent:
+      description: The run finished, with its answer.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.completed}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    RunFailedEvent:
+      description: An attempt failed. Final only when `terminal` is true.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.failed}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/LifecyclePayload"}
+    RunStoppedEvent:
+      description: The run was stopped on request, with what it had said. Final.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.stopped}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/StoppedPayload"}
+    ActionTakenEvent:
+      description: A tool acted on something.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: action.taken}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/ActionPayload"}
+    UsageCallEvent:
+      description: One model call and what it used.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.call}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/UsageCallPayload"}
+    UsageChildEvent:
+      description: An attached run's total, rolled up into this run.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.child}
+            payload:
+              type: string
+              contentEncoding: base64
+              contentMediaType: application/json
+              contentSchema: {$ref: "#/components/schemas/UsageChildPayload"}
+    AgentCreatedEvent:
+      description: An agent was created. Not published today.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: control.created}
+            payload:
+              type: string
+              contentEncoding: base64
+    AgentRevisedEvent:
+      description: An agent was revised. Not published today.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: control.revised}
+            payload:
+              type: string
+              contentEncoding: base64
+    AgentDeletedEvent:
+      description: An agent was deleted. Not published today.
+      allOf:
+        - $ref: "#/components/schemas/EventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: control.deleted}
+            payload:
+              type: string
+              contentEncoding: base64
+    ManifestEvent:
+      description: |
+        One event in a run manifest, with its body already decoded. It is the
+        same union as `RunEvent`, without the envelope fields the manifest's
+        run already states. `body` is absent when the event carried none.
+      oneOf:
+        - $ref: "#/components/schemas/ManifestTextDeltaEvent"
+        - $ref: "#/components/schemas/ManifestThinkingDeltaEvent"
+        - $ref: "#/components/schemas/ManifestToolCallEvent"
+        - $ref: "#/components/schemas/ManifestToolDoneEvent"
+        - $ref: "#/components/schemas/ManifestCitationEvent"
+        - $ref: "#/components/schemas/ManifestRunAcceptedEvent"
+        - $ref: "#/components/schemas/ManifestRunStartedEvent"
+        - $ref: "#/components/schemas/ManifestRunParkedEvent"
+        - $ref: "#/components/schemas/ManifestRunResumedEvent"
+        - $ref: "#/components/schemas/ManifestRunCompletedEvent"
+        - $ref: "#/components/schemas/ManifestRunFailedEvent"
+        - $ref: "#/components/schemas/ManifestChildParkedEvent"
+        - $ref: "#/components/schemas/ManifestRunStoppedEvent"
+        - $ref: "#/components/schemas/ManifestActionTakenEvent"
+        - $ref: "#/components/schemas/ManifestUsageCallEvent"
+        - $ref: "#/components/schemas/ManifestUsageChildEvent"
+        - $ref: "#/components/schemas/ManifestAgentCreatedEvent"
+        - $ref: "#/components/schemas/ManifestAgentRevisedEvent"
+        - $ref: "#/components/schemas/ManifestAgentDeletedEvent"
+      discriminator:
+        propertyName: kind
+        mapping:
+          delta.text: "#/components/schemas/ManifestTextDeltaEvent"
+          delta.thinking: "#/components/schemas/ManifestThinkingDeltaEvent"
+          delta.tool.call: "#/components/schemas/ManifestToolCallEvent"
+          delta.tool.done: "#/components/schemas/ManifestToolDoneEvent"
+          delta.citation: "#/components/schemas/ManifestCitationEvent"
+          lifecycle.accepted: "#/components/schemas/ManifestRunAcceptedEvent"
+          lifecycle.started: "#/components/schemas/ManifestRunStartedEvent"
+          lifecycle.parked: "#/components/schemas/ManifestRunParkedEvent"
+          lifecycle.resumed: "#/components/schemas/ManifestRunResumedEvent"
+          lifecycle.completed: "#/components/schemas/ManifestRunCompletedEvent"
+          lifecycle.failed: "#/components/schemas/ManifestRunFailedEvent"
+          lifecycle.child.parked: "#/components/schemas/ManifestChildParkedEvent"
+          lifecycle.stopped: "#/components/schemas/ManifestRunStoppedEvent"
+          action.taken: "#/components/schemas/ManifestActionTakenEvent"
+          usage.call: "#/components/schemas/ManifestUsageCallEvent"
+          usage.child: "#/components/schemas/ManifestUsageChildEvent"
+          control.created: "#/components/schemas/ManifestAgentCreatedEvent"
+          control.revised: "#/components/schemas/ManifestAgentRevisedEvent"
+          control.deleted: "#/components/schemas/ManifestAgentDeletedEvent"
+    ManifestTextDeltaEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.text}
+            body: {$ref: "#/components/schemas/TextPayload"}
+    ManifestThinkingDeltaEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.thinking}
+            body: {$ref: "#/components/schemas/ThinkingPayload"}
+    ManifestToolCallEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.tool.call}
+            body: {$ref: "#/components/schemas/ToolCallPayload"}
+    ManifestToolDoneEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.tool.done}
+            body: {$ref: "#/components/schemas/ToolDonePayload"}
+    ManifestCitationEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: delta.citation}
+            body: {$ref: "#/components/schemas/CitationPayload"}
+    ManifestRunAcceptedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.accepted}
+            body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestRunStartedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.started}
+            body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestRunParkedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.parked}
+            body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestChildParkedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.child.parked}
+            body: {$ref: "#/components/schemas/ChildQuestion"}
+    ManifestRunResumedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.resumed}
+            body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestRunCompletedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.completed}
+            body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestRunFailedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.failed}
+            body: {$ref: "#/components/schemas/LifecyclePayload"}
+    ManifestRunStoppedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: lifecycle.stopped}
+            body: {$ref: "#/components/schemas/StoppedPayload"}
+    ManifestActionTakenEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: action.taken}
+            body: {$ref: "#/components/schemas/ActionPayload"}
+    ManifestUsageCallEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.call}
+            body: {$ref: "#/components/schemas/UsageCallPayload"}
+    ManifestUsageChildEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: usage.child}
+            body: {$ref: "#/components/schemas/UsageChildPayload"}
+    ManifestAgentCreatedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: control.created}
+            body: {}
+    ManifestAgentRevisedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: control.revised}
+            body: {}
+    ManifestAgentDeletedEvent:
+      allOf:
+        - $ref: "#/components/schemas/ManifestEventBase"
+        - type: object
+          required: [kind]
+          properties:
+            kind: {type: string, const: control.deleted}
+            body: {}
+    ManifestRun:
+      description: Everything recorded about one run.
+      type: object
+      required: [run, state, duration_ms, events, complete]
+      properties:
+        run: {$ref: "#/components/schemas/Run"}
+        state:
+          type: string
+          description: Where the run stands. `stopping` is a run asked to stop that has not ended yet.
+          enum: [queued, running, waiting, stopping, failed, stopped, done]
+        cause:
+          description: Why a failed run failed or a stopped run was stopped, in one line.
+          type: string
+        definition:
+          description: The agent revision the run was pinned to.
+          $ref: "#/components/schemas/Revision"
+        duration_ms: {type: integer, format: int64}
+        events:
+          type: array
+          items: {$ref: "#/components/schemas/ManifestEvent"}
+        complete:
+          description: False when the run's first events are no longer held.
+          type: boolean
+    Manifest:
+      description: One document that says everything the platform recorded about a run and every run under the same root.
+      type: object
+      required: [version, generated_at, root, runs, usage]
+      properties:
+        version: {type: integer, const: 1}
+        generated_at: {type: string, format: date-time}
+        root: {type: string}
+        runs:
+          type: array
+          items: {$ref: "#/components/schemas/ManifestRun"}
+        usage:
+          type: object
+          required: [metered, total]
+          properties:
+            metered:
+              description: True. The runtime reports token counts and cost.
+              type: boolean
+            total:
+              description: Every run's own calls in the tree, once each, attached and delegated runs alike.
+              $ref: "#/components/schemas/Usage"

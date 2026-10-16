@@ -1,0 +1,26 @@
+{
+  "name": "@collegium/adapter",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The one adapter between collegium's API and the vultus UI model, shared by the console and the Slack app.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./run": "./src/run.ts",
+    "./mail": "./src/mail.ts",
+    "./fold": "./src/fold.ts",
+    "./question": "./src/question.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test src/*.test.ts"
+  },
+  "dependencies": {
+    "@vultus/core": "link:../../../vultus/packages/core"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.4",
+    "tsx": "^4.23.15",
+    "typescript": "^6.0.0"
+  }
+}

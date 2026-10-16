@@ -1,3 +1,4 @@
+import { type AnswerRequest, answerPath } from "@collegium/adapter/question";
 import type { BusEvent, Run } from "./adapter.ts";
 
 export class ApiError extends Error {
@@ -25,6 +26,21 @@ export interface Me {
   first_admin?: boolean;
 }
 
+/** Why the caller may or may not do one thing. Only ever about the caller. */
+export interface AccessDecision {
+  permission: string;
+  allowed: boolean;
+  /** "scope" when a machine's token decided rather than the policy. */
+  outcome: "allowed" | "denied" | "no match" | "scope";
+  role?: string;
+  path?: string[];
+  rule?: string;
+  /** The grant that gave `role`, when the sign-in kept it. */
+  grant?: string;
+  held: { role: string; grant?: string; group?: string }[];
+  unknown?: string[];
+}
+
 export interface AgentSpec {
   name: string;
   description?: string;
@@ -34,6 +50,14 @@ export interface AgentSpec {
   tools?: string[];
   sources?: { name: string; uri: string }[];
   access?: { spawn?: string[]; workspace_areas?: string[] };
+  /** Tools whose every call waits for a person to approve it. */
+  approvals?: string[];
+  /** When set, the only people who may approve: subjects, or roles as `role:<name>`. */
+  approvers?: string[];
+  /** Lets the person who asked approve their own call. */
+  self_approval?: boolean;
+  /** When set, the only people who may answer a question the agent asks. */
+  answerers?: string[];
 }
 
 export interface Revision {
@@ -66,15 +90,20 @@ export interface Group {
   runs: number;
   completed: number;
   failed: number;
+  /** Runs stopped on request. Neither completed, failed nor in flight. */
+  stopped: number;
   active: number;
   p50_ms: number;
   p95_ms: number;
+  /** What the runs' own model calls used. Each run counts only its own calls. */
+  usage?: { model_calls: number; tokens: number; spend: number; unpriced_calls: number; other_currency_runs: number };
 }
 
 export interface Bucket {
   start: string;
   completed: number;
   failed: number;
+  stopped: number;
   active: number;
 }
 
@@ -228,9 +257,11 @@ export interface Policy {
   period: "day" | "month";
   max_runs?: number;
   max_concurrent?: number;
-  /** Micro-USD. Recorded and versioned, not enforced until runs report cost. */
+  /** Micro-USD a period, enforced. Only money priced in US dollars counts. */
   spend_limit?: number;
   max_lease?: number;
+  /** Model tokens a period, enforced, priced or not. */
+  max_tokens?: number;
   warn_at?: number;
   action: "block" | "approve";
   version: number;
@@ -294,7 +325,9 @@ export interface ScopeUsage {
   action: "block" | "approve";
   runs: Measure;
   concurrent: Measure;
-  spend: Measure & { metered: boolean };
+  /** Micro-USD priced in US dollars. A lower bound when calls had no price or another currency. */
+  spend: Measure & { metered: boolean; unpriced_calls: number; other_costs?: { micros: number; currency: string }[] };
+  tokens: Measure;
   max_lease: number;
   state: "ok" | "warn" | "over";
 }
@@ -413,6 +446,8 @@ async function call<T>(method: string, path: string, json?: unknown): Promise<T>
 
 export const api = {
   me: () => call<Me>("GET", "/api/me"),
+  explain: (permission: string) =>
+    call<AccessDecision>("GET", `/api/access/explain?${new URLSearchParams({ permission })}`),
   agents: () => call<{ agents: Revision[] }>("GET", "/api/agents").then((r) => r.agents),
   /** Every agent, and the names of those the platform provides, which cannot be edited. */
   agentList: () => call<{ agents: Revision[]; builtin?: string[] }>("GET", "/api/agents"),
@@ -451,6 +486,8 @@ export const api = {
   pendingMemory: () => call<{ proposals: Proposal[] }>("GET", "/api/memory/pending").then((r) => r.proposals),
   /** Stop a run and everything attached to it. Runs it delegated keep going. */
   stopRun: (id: string) => call<Run>("POST", `/api/runs/${encodeURIComponent(id)}/stop`),
+  /** Answer the question a run is waiting on. Returns the question's inbox message, settled. */
+  answer: (r: AnswerRequest) => call<unknown>("POST", answerPath(r), r.body),
   /** A run's events as they were published, for a run that is no longer streaming. */
   runEvents: (id: string) =>
     call<{ events: BusEvent[]; complete: boolean }>("GET", `/api/runs/${encodeURIComponent(id)}/events`),

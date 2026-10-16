@@ -88,7 +88,8 @@ const (
 	Completed Status = "completed"
 	Failed    Status = "failed"
 	// Stopped is a run that was ended from outside: by a person, or because
-	// the run it was attached to ended. It did not fail. Its cause says which.
+	// the run it was attached to ended. It did not fail. Its cause says which,
+	// and its answer is what it had said when it stopped, which may be nothing.
 	Stopped Status = "stopped"
 )
 
@@ -122,13 +123,18 @@ func lifecycleOf(parent string, mode call.Mode) Lifecycle {
 
 // Run is one run and its place in the tree.
 type Run struct {
-	ID     string `json:"id"`
+	ID string `json:"id"`
+	// TagID is the id of the tag the run was accepted with: the trigger's
+	// event id, or the one the API made from its caller and idempotency key.
+	// The run's id is derived from it and the tenant, and cannot be turned
+	// back into it, so a caller that named its own run reads it here.
+	TagID  string `json:"tag_id"`
 	Tenant string `json:"tenant"`
 	Agent  string `json:"agent"`
 	Rev    int    `json:"rev"`
 	Origin string `json:"origin"`
 	Text   string `json:"text"`
-	// Input records original references and the exact helper messages supplied.
+	// Input keeps the exact helper messages and original references.
 	Input *call.Prepared `json:"input,omitempty"`
 	Actor envelope.Actor `json:"actor,omitzero"`
 
@@ -159,20 +165,46 @@ type Run struct {
 
 	// Lease is the run's budget in micro-USD. Zero means unmetered.
 	Lease int64 `json:"lease"`
-	// Granted is how much of the lease the run has handed to its calls.
+	// Granted is the budget the run has handed to calls that have not
+	// settled yet, in micro-USD. A call settles when it ends: what it
+	// leased is returned and what it spent is added to Spent.
 	Granted int64 `json:"granted"`
+	// Spent is what the run has spent, in micro-USD priced in US dollars:
+	// its own model calls as they are reported, and the whole spend of each
+	// call it made once that call has ended. It is what the lease is held
+	// against. A call with no price, or priced in another currency, adds
+	// nothing here; Usage says how many there were.
+	Spent int64 `json:"spent"`
+	// Usage is what the run used, as the runtime counts it: its own model
+	// calls, the attached runs it rolled up, and how full its context was at
+	// its latest call. While the run works it is the calls reported so far.
+	// Once it has ended it is the runtime's record. Absent until the first
+	// model call.
+	Usage *payload.RunUsage `json:"usage,omitempty"`
 	// Calls is how many calls the run has made.
 	Calls int `json:"calls"`
 
 	Status Status `json:"status"`
-	// Answer is the final text of a completed run.
+	// Answer is the final text of a completed run. On a stopped run it is the
+	// partial answer: what the agent had said when it stopped, which people
+	// may already have read. It is never the whole answer, and Status says so.
 	Answer string `json:"answer,omitempty"`
 	Error  string `json:"error,omitempty"`
 	// Reason says what a parked run is waiting for, or that a run which has
 	// answered is waiting for the agents attached to it.
 	Reason string `json:"reason,omitempty"`
+	// Question is what a parked run is waiting on a person for. It is gone
+	// once the run resumes or ends.
+	Question *payload.Question `json:"question,omitempty"`
 	// Cause says why a stopped run was stopped.
 	Cause string `json:"cause,omitempty"`
+	// Stopping is true from the moment someone asks a run to stop until the
+	// runtime says how it ended. A run that is stopping can start no further
+	// calls. It usually ends stopped, and ends completed or failed when its
+	// turn finished first: the request lost the race, and the run says so.
+	Stopping bool `json:"stopping,omitempty"`
+	// StopRequestedAt is when the run was first asked to stop.
+	StopRequestedAt time.Time `json:"stop_requested_at,omitzero"`
 	// Finishing is true for a run that has its answer and is held open by
 	// attached runs that are still working.
 	Finishing bool `json:"finishing,omitempty"`
@@ -183,13 +215,51 @@ type Run struct {
 	// tag is what the run was accepted with. A call from this run is built
 	// from it.
 	tag envelope.Tag
+	// requesters are every name the person who asked for the run went by
+	// when it was accepted, pinned so a mapping removed later still counts.
+	requesters []string
+	// tally sums the usage reported while the run works. final is set once
+	// the runtime's own figure has replaced it.
+	tally *payload.Tally
+	final bool
+	// closed is set once the run's own spending is settled, after which
+	// Spend changes nothing. settledUp is set once its spend has been
+	// settled into its caller, so a call that ends later climbs past it.
+	closed, settledUp bool
+}
+
+// Requesters returns the names pinned for the person who asked for the run.
+func (r Run) Requesters() []string { return slices.Clone(r.requesters) }
+
+// PinRequesters records every name the person who asked for a run goes by,
+// once, when it is accepted.
+func (x *Index) PinRequesters(runID string, names []string) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if r, ok := x.runs[runID]; ok && r.requesters == nil {
+		r.requesters = slices.Clone(names)
+	}
 }
 
 // Tag returns the tag the run was accepted with.
 func (r Run) Tag() envelope.Tag { return r.tag }
 
-// State is what the run has used so far, for call.New.
-func (r Run) State() call.State { return call.State{Calls: r.Calls, Spent: r.Granted} }
+// State is what the run has used so far, for call.New: what it spent and what
+// it has leased to calls still working.
+func (r Run) State() call.State { return call.State{Calls: r.Calls, Spent: r.Spent + r.Granted} }
+
+// UsageRecorded reports whether Usage is the runtime's own record of the run,
+// rather than what was tallied from its events while it worked.
+func (r Run) UsageRecorded() bool { return r.final && r.Usage != nil }
+
+// Left is how much of its lease the run may still hand on or spend. Zero for
+// an unmetered run.
+func (r Run) Left() int64 {
+	if r.Lease <= 0 {
+		return 0
+	}
+	return max(r.Lease-r.Spent-r.Granted, 0)
+}
 
 // Index holds every run this process has accepted.
 type Index struct {
@@ -229,10 +299,12 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 		return nil
 	}
 	// The edge names tags. Runs are indexed by run id, which mandatum derives
-	// from the tag id, so the links are translated once, here.
-	parent := ""
+	// from the tenant and the tag id together, so the links are translated
+	// once, here. A call never leaves its caller's tenant, so the tag's own
+	// tenant is the one its root and its parent were accepted under.
+	root, parent := runtime.RunID(tag.Tenant, edge.Root), ""
 	if edge.Parent != "" {
-		parent = runtime.RunID(edge.Parent)
+		parent = runtime.RunID(tag.Tenant, edge.Parent)
 	}
 	// Only the cron trigger and the platform's own "run now" set this key. A
 	// tag from anywhere else does not get to claim a schedule.
@@ -257,13 +329,13 @@ func (x *Index) Record(runID string, tag envelope.Tag, rev int) error {
 			text = v
 		}
 	}
-	if root, ok := x.runs[runtime.RunID(edge.Root)]; ok && parent != "" {
-		thread, project, client = root.Thread, root.Project, root.Client
+	if top, ok := x.runs[root]; ok && parent != "" && top.Tenant == tag.Tenant {
+		thread, project, client = top.Thread, top.Project, top.Client
 	}
 	x.runs[runID] = &Run{
-		ID: runID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
+		ID: runID, TagID: tag.ID, Tenant: tag.Tenant, Agent: tag.Agent, Rev: rev, Origin: tag.Origin,
 		Text: text, Input: input, Actor: tag.Actor, Thread: thread, Prev: prev, Picked: picked, Project: project, Client: client,
-		Root: runtime.RunID(edge.Root), Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
+		Root: root, Parent: parent, Depth: edge.Depth, Mode: edge.Mode, Lifecycle: lifecycleOf(parent, edge.Mode),
 		Lease: edge.Lease, Schedule: schedule,
 		Status: Accepted, CreatedAt: tag.At, UpdatedAt: tag.At,
 		tag: tag,
@@ -303,11 +375,15 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 	r.UpdatedAt = e.At
 	switch e.Kind {
 	case envelope.KindStarted, envelope.KindResumed:
-		r.Status, r.Reason = Running, ""
+		r.Status, r.Reason, r.Question = Running, "", nil
 	case envelope.KindParked:
-		r.Status, r.Reason = Parked, body.Reason
+		r.Status, r.Reason, r.Question = Parked, body.Reason, body.Question
 	case envelope.KindCompleted:
 		r.Answer = body.Text
+		if body.Usage != nil {
+			u := *body.Usage
+			r.Usage, r.final = &u, true
+		}
 		if x.hold(r) {
 			return *r, false
 		}
@@ -319,8 +395,149 @@ func (x *Index) Observe(e envelope.Event) (Run, bool) {
 		if body.Terminal {
 			r.Status = Failed
 		}
+	case envelope.KindStopped:
+		// The runtime says the run wrapped up on request. What it had said
+		// is the answer people saw, and is kept. A stopped run is not held
+		// open for what is attached to it: those are stopped with it.
+		stopped, _ := payload.Decode[payload.Stopped](e)
+		r.Answer, r.Status, r.Finishing, r.Reason = stopped.Text, Stopped, false, ""
+		if stopped.Usage != nil {
+			u := *stopped.Usage
+			r.Usage, r.final = &u, true
+		}
+		r.Cause = causeOf(stopped.Reason, stopped.By)
+	}
+	if r.Status.Terminal() {
+		r.Stopping, r.Question = false, nil
 	}
 	return *r, r.Status.Terminal()
+}
+
+// ObserveUsage folds a usage.call or usage.child event into the usage of the
+// run that published it, while the runtime's own total is not in yet. Each
+// report is counted once by its AccountingID, so a redelivered event changes
+// nothing. It returns the run as it now stands, and false for any other kind,
+// a run this index does not hold, or another tenant's.
+func (x *Index) ObserveUsage(e envelope.Event) (Run, bool) {
+	if e.Kind != envelope.KindUsageCall && e.Kind != envelope.KindUsageChild {
+		return Run{}, false
+	}
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r, ok := x.runs[e.RunID]
+	if !ok || r.Tenant != e.Tenant {
+		return Run{}, false
+	}
+	if r.final {
+		// The runtime's record stands. The call is still the ledger's to
+		// judge, so the run is returned.
+		return *r, true
+	}
+	if r.tally == nil {
+		r.tally = &payload.Tally{}
+	}
+	switch e.Kind {
+	case envelope.KindUsageCall:
+		c, err := payload.Decode[payload.UsageCall](e)
+		if err != nil {
+			return Run{}, false
+		}
+		r.tally.Call(c)
+	case envelope.KindUsageChild:
+		c, err := payload.Decode[payload.UsageChild](e)
+		if err != nil {
+			return Run{}, false
+		}
+		r.tally.Child(c)
+	}
+	u := r.tally.Usage()
+	r.Usage = &u
+	return *r, true
+}
+
+// SetUsage closes a run's spending once it has ended: the runtime's own
+// figure, when there is one, replaces what was tallied from its events, and
+// the micro-USD its settlement added beyond the calls already spent joins
+// Spent, in one step. Nothing changes a closed run's usage or Spent after
+// that but the calls it made, as they settle with it. A run is closed once.
+func (x *Index) SetUsage(runID string, u *payload.RunUsage, micros int64) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r, ok := x.runs[runID]
+	if !ok || r.closed {
+		return
+	}
+	if u != nil && !r.final {
+		v := *u
+		r.Usage, r.final = &v, true
+	}
+	r.tally, r.closed = nil, true
+	r.Spent += micros
+}
+
+// Spend adds what a run's own model call cost, in micro-USD, to what it has
+// spent, and returns the run as it now stands. A run whose spending is closed
+// has settled, and perhaps settled into its caller, so a call reported after
+// that changes nothing here and Spend reports false: the usage ledger still
+// counts whatever the call adds beyond the run's settled total.
+func (x *Index) Spend(runID string, micros int64) (Run, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r, ok := x.runs[runID]
+	if !ok {
+		return Run{}, false
+	}
+	if r.closed {
+		return *r, false
+	}
+	r.Spent += micros
+	return *r, true
+}
+
+// SettleCall settles a call that has ended with the run that made it: the
+// budget it was leased is no longer held for it, and what it spent, with
+// everything it called in turn, is the caller's spending. It is called once
+// per call, when the call ends.
+//
+// A caller may have ended first, a delegated call's caller most of all, and
+// settled its own spend into its caller already. The spend then climbs on,
+// through every ancestor that has settled, to the nearest one that has not,
+// or to the root, so the tree's figure is whole wherever it is read.
+func (x *Index) SettleCall(child Run) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	c, ok := x.runs[child.ID]
+	if !ok || c.settledUp {
+		return
+	}
+	r, ok := x.runs[child.Parent]
+	if !ok || r.Tenant != child.Tenant {
+		return
+	}
+	c.settledUp = true
+	r.Granted = max(r.Granted-c.Lease, 0)
+	for {
+		r.Spent += c.Spent
+		if !r.settledUp {
+			return
+		}
+		next, ok := x.runs[r.Parent]
+		if !ok || next.Tenant != r.Tenant {
+			return
+		}
+		r = next
+	}
+}
+
+// causeOf says why a run stopped, from the request the runtime honoured.
+func causeOf(reason, by string) string {
+	switch {
+	case reason != "":
+		return reason
+	case by != "":
+		return "Stopped by " + by
+	}
+	return "Stopped"
 }
 
 // Active returns the ids of runs that have not ended.
@@ -358,7 +575,7 @@ func (x *Index) End(runID string, status Status, answer, failure string, at time
 	if status == Completed && x.hold(r) {
 		return Run{}, false
 	}
-	r.Status, r.UpdatedAt, r.Finishing, r.Reason = status, at, false, ""
+	r.Status, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping, r.Question = status, at, false, "", false, nil
 	return *r, true
 }
 
@@ -395,21 +612,43 @@ func (x *Index) Settle(runID string, at time.Time) (Run, bool) {
 	if !ok || !r.Finishing || r.Status.Terminal() || x.openAttached(runID) > 0 {
 		return Run{}, false
 	}
-	r.Status, r.UpdatedAt, r.Finishing, r.Reason = Completed, at, false, ""
+	r.Status, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping = Completed, at, false, "", false
 	return *r, true
 }
 
-// Stop ends a run from outside and records why. It returns the run and whether
-// this call is what ended it. A stopped run ignores whatever its own events
-// say afterwards: the work may finish, and the answer is not taken.
-func (x *Index) Stop(runID, cause string, at time.Time) (Run, bool) {
+// AskStop records that a run was asked to stop. From now on the run
+// is stopping: it can start no further calls, and the runtime decides how it
+// ends. It returns the run as it stands and false for a run that has ended or
+// that this index does not hold. Asking again keeps the first request, as the
+// runtime does.
+func (x *Index) AskStop(runID string, at time.Time) (Run, bool) {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	r, ok := x.runs[runID]
 	if !ok || r.Status.Terminal() {
 		return Run{}, false
 	}
-	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason = Stopped, cause, at, false, ""
+	if !r.Stopping {
+		r.Stopping, r.StopRequestedAt, r.UpdatedAt = true, at, at
+	}
+	return *r, true
+}
+
+// Stop ends a run as stopped from a source other than its own events: one the
+// ledger says ended stopped before its final event was observed. answer, when given, is
+// what the run had said, and cause is why it stopped. It returns the run and
+// whether this call is what ended it.
+func (x *Index) Stop(runID, answer, cause string, at time.Time) (Run, bool) {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	r, ok := x.runs[runID]
+	if !ok || r.Status.Terminal() {
+		return Run{}, false
+	}
+	if answer != "" {
+		r.Answer = answer
+	}
+	r.Status, r.Cause, r.UpdatedAt, r.Finishing, r.Reason, r.Stopping, r.Question = Stopped, causeOf(cause, ""), at, false, "", false, nil
 	return *r, true
 }
 
@@ -453,18 +692,6 @@ func (x *Index) Get(tenant, runID string) (Run, error) {
 		return Run{}, ErrNotFound
 	}
 	return *r, nil
-}
-
-// Owner returns the tenant a run id belongs to, whoever asks. It answers only
-// whether an id is taken, for refusing a second tenant the same id.
-func (x *Index) Owner(runID string) (string, bool) {
-	x.mu.RLock()
-	defer x.mu.RUnlock()
-	r, ok := x.runs[runID]
-	if !ok {
-		return "", false
-	}
-	return r.Tenant, true
 }
 
 // List returns a tenant's runs, newest first, at most limit of them.

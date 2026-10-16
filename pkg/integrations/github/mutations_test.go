@@ -16,7 +16,11 @@ import (
 	"github.com/urmzd/mandatum/pkg/connector"
 	"github.com/urmzd/mandatum/pkg/connectors/mention"
 	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/runtime"
 )
+
+// testTenant is the workspace the connector under test raises runs for.
+const testTenant = "acme"
 
 const fixArgs = `{"message":"fix: correct value","files":[{"path":"main.go","content":"package main\n"}]}`
 
@@ -33,7 +37,7 @@ func fixRequest(t *testing.T, canWrite bool, command string) (*github.Connector,
 		t.Fatal(err)
 	}
 	fake.SetWritePermission(ref, "human", canWrite)
-	c, tags := start(t, github.Config{API: fake, Mutations: true, MutationSecret: []byte("a stable signing secret for tests"), Agents: mention.NewNames("reviewer")})
+	c, tags := start(t, github.Config{API: fake, Mutations: true, MutationSecret: []byte("a stable signing secret for tests"), Tenant: testTenant, Agents: mention.NewNames("reviewer")})
 	raw, _ := json.Marshal(map[string]any{"action": "created", "repository": map[string]any{"name": "repo", "owner": map[string]string{"login": "acme"}}, "sender": map[string]string{"login": "human", "type": "User"}, "issue": map[string]any{"number": 42, "pull_request": map[string]string{"url": "https://api.github.com/repos/acme/repo/pulls/42"}}, "comment": map[string]any{"id": 91, "body": "@reviewer " + command}})
 	w := httptest.NewRecorder()
 	c.ServeHTTP(w, deliver(t, "issue_comment", "fix-request-1", string(raw)))
@@ -67,7 +71,7 @@ func TestExplicitFixCreatesOneAtomicCommitAndRecoversRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	// The same binding is used by the durable runtime. A model cannot provide it.
-	tools := agentrt.ConnectorToolsForRun(reg, tag.Source, tag.ID, nil)
+	tools := agentrt.ConnectorToolsForRun(reg, tag.Source, runtime.RunID(testTenant, tag.ID), nil)
 	tool, err := tools.Lookup("github_apply_changes")
 	if err != nil {
 		t.Fatal(err)
@@ -101,16 +105,20 @@ func TestMutationGrantCannotMoveBetweenRunsActorsRepositoriesOrHeads(t *testing.
 		run   string
 	}{
 		{"different run", func(a address.Address) address.Address { return a }, "another-run"},
+		// The grant is for the run the tag became in its own tenant. The bare
+		// delivery id, and the same delivery in another tenant, are other runs.
+		{"tag id", func(a address.Address) address.Address { return a }, "fix-request-1"},
+		{"other tenant", func(a address.Address) address.Address { return a }, runtime.RunID("globex", "fix-request-1")},
 		{"no run", func(a address.Address) address.Address { return a }, ""},
-		{"forged grant", func(a address.Address) address.Address { return a.WithParam("write_grant", strings.Repeat("00", 32)) }, "fix-request-1"},
-		{"actor", func(a address.Address) address.Address { return a.WithParam("write_actor", "admin") }, "fix-request-1"},
-		{"head", func(a address.Address) address.Address { return a.WithParam("head_sha", strings.Repeat("b", 40)) }, "fix-request-1"},
+		{"forged grant", func(a address.Address) address.Address { return a.WithParam("write_grant", strings.Repeat("00", 32)) }, runtime.RunID(testTenant, "fix-request-1")},
+		{"actor", func(a address.Address) address.Address { return a.WithParam("write_actor", "admin") }, runtime.RunID(testTenant, "fix-request-1")},
+		{"head", func(a address.Address) address.Address { return a.WithParam("head_sha", strings.Repeat("b", 40)) }, runtime.RunID(testTenant, "fix-request-1")},
 		{"repository", func(a address.Address) address.Address {
 			a.Path = append([]string(nil), a.Path...)
 			a.Path[0] = "other"
 			return a
-		}, "fix-request-1"},
-		{"operation", func(a address.Address) address.Address { return a.WithParam("write_operation", "run") }, "fix-request-1"},
+		}, runtime.RunID(testTenant, "fix-request-1")},
+		{"operation", func(a address.Address) address.Address { return a.WithParam("write_operation", "run") }, runtime.RunID(testTenant, "fix-request-1")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, fake, tag := fixRequest(t, true, "/fix correct the value")
@@ -136,7 +144,7 @@ func TestReadOnlyMentionsAndRevokedCollaboratorsCannotCommit(t *testing.T) {
 			if tc.revoke {
 				fake.SetWritePermission(github.Ref{Owner: "acme", Repo: "repo", Number: 42}, "human", false)
 			}
-			_, err := mutation(t, c).Invoke(connector.WithRunID(context.Background(), tag.ID), tag.Source, json.RawMessage(fixArgs))
+			_, err := mutation(t, c).Invoke(connector.WithRunID(context.Background(), runtime.RunID(testTenant, tag.ID)), tag.Source, json.RawMessage(fixArgs))
 			if err == nil || len(fake.Commits()) != 0 {
 				t.Fatalf("write allowed: %v", err)
 			}
@@ -153,7 +161,7 @@ func TestCommitValidationAndAtomicityPreserveTheOriginalFiles(t *testing.T) {
 		`{"message":"fix","branch":"other","files":[{"path":"main.go","content":"bad"}]}`,
 		`{"message":"fix","files":[{"path":"main.go","content":"bad"},{"path":"missing","delete":true}]}`,
 	} {
-		if _, err := mutation(t, c).Invoke(connector.WithRunID(context.Background(), tag.ID), tag.Source, json.RawMessage(raw)); err == nil {
+		if _, err := mutation(t, c).Invoke(connector.WithRunID(context.Background(), runtime.RunID(testTenant, tag.ID)), tag.Source, json.RawMessage(raw)); err == nil {
 			t.Fatalf("accepted %s", raw)
 		}
 	}
@@ -259,5 +267,14 @@ func TestCommitRefusesForksClosedPRsAndAtomicHeadConflicts(t *testing.T) {
 				t.Fatal("atomic conflict not exercised")
 			}
 		})
+	}
+}
+
+// A fix grant names the run its tag becomes, which depends on the tenant, so
+// a connector that may commit must know which tenant it raises runs for.
+func TestMutationsNeedTheTenant(t *testing.T) {
+	_, err := github.New(github.Config{API: github.NewFake(), Mutations: true, MutationSecret: []byte("a stable signing secret for tests")})
+	if err == nil {
+		t.Fatal("a connector that may commit was built without a tenant")
 	}
 }

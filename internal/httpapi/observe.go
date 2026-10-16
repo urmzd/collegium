@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 	"github.com/urmzd/mandatum/pkg/agentspec"
 	"github.com/urmzd/mandatum/pkg/envelope"
 
@@ -153,7 +154,8 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request, who auth.Princ
 	type entry struct {
 		Run runs.Run `json:"run"`
 		// State is where the run stands, as the platform knows it:
-		// queued, running, waiting, failed, stopped or done.
+		// queued, running, waiting, stopping, failed, stopped or done.
+		// Stopping is a run that was asked to stop and has not ended yet.
 		State string `json:"state"`
 		// Cause is why a failed run failed, in one line.
 		Cause string `json:"cause,omitempty"`
@@ -170,6 +172,9 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request, who auth.Princ
 	out := make([]entry, 0, len(tree))
 	for _, run := range tree {
 		e := entry{Run: run, State: states[run.Status], DurationMs: run.UpdatedAt.Sub(run.CreatedAt).Milliseconds(), Events: []event{}}
+		if run.Stopping {
+			e.State = "stopping"
+		}
 		if run.Status == runs.Failed {
 			e.Cause = journal.Cause(run.Error)
 		}
@@ -196,9 +201,23 @@ func (s *Server) manifest(w http.ResponseWriter, r *http.Request, who auth.Princ
 		"generated_at": time.Now().UTC(),
 		"root":         tree[0].Root,
 		"runs":         out,
-		// The runtime reports no token counts or cost, so none are given.
-		"usage": map[string]any{"metered": false},
+		// The whole tree's usage: each run's own calls, once, attached
+		// and delegated runs alike.
+		"usage": map[string]any{"metered": true, "total": treeUsage(tree)},
 	})
+}
+
+// treeUsage is what every run in a tree used of its own. Each run's own calls
+// are counted in it once, so the sum is the tree's, attached and delegated
+// runs alike, with nothing counted twice.
+func treeUsage(tree []runs.Run) payload.Usage {
+	var total payload.Usage
+	for _, r := range tree {
+		if r.Usage != nil {
+			total = total.Add(r.Usage.Own)
+		}
+	}
+	return total
 }
 
 func (s *Server) listAlerts(w http.ResponseWriter, _ *http.Request, who auth.Principal) {

@@ -16,7 +16,7 @@ one per agent are all the same record with different values.
 | `default_agent` | Answers a request that named no agent. |
 | `agents` | The agents the client may route to, besides its default. |
 | `bots` | A Slack bot user id, or a GitHub login, to the agent it stands for. |
-| `slack` | `sessions`, `commands`. |
+| `slack` | `sessions`, `commands`, and `machine` and `people` (see [People a Slack app answers for](#people-a-slack-app-answers-for)). |
 | `github` | `auto_labels`, `checks`, `guides`, `mutations`, `read_repositories`. |
 | `enabled` | A disabled client answers nothing and carries nothing. |
 
@@ -38,6 +38,37 @@ A client lends its actions (posting a message, reading a pull request) under the
 same rule. A run gets the actions of the client that raised it. On another
 surface it gets the oldest client in its workspace that may route to its agent,
 so a Slack run reads GitHub only through a GitHub client that lists its agent.
+
+## People a Slack app answers for
+
+A Slack app built on the API (`apps/slack`) signs in as a machine. To ask for
+a run or answer a question as the Slack person who clicked, it sends
+`act_as: {"client": "<id>", "user": "<Slack user id>"}`. That is honoured only
+when the client:
+
+| Field | Meaning |
+|-------|---------|
+| `slack.machine` | The subject of the credential the app signs in with. No other credential may act for the client's people. |
+| `slack.people` | Slack user ids in the client's team, each mapped to the principal it is in this workspace, by subject. At most 500. |
+
+Anyone the map does not name is refused with 403, and the app does not ask on
+their behalf. To answer, the person's own grant must include `runs:write`. A Slack click
+carries no groups, so someone who holds a role only through a group (`grant
+operator to group "..."`) holds nothing here and cannot answer from Slack:
+grant them by `subject` too, or they answer in the console. A disabled client maps nobody. The mapped principal's roles, for
+`role:<name>` approvers, are what the workspace's authorization policy grants
+their subject (`grant ... to subject "..."` or `anyone`), since a Slack click
+carries no sign-in. Who may answer is then the run's spec's to say, as for
+anyone. A run asked for this way is the person's, so they do not approve its
+calls. The same maps name whoever a Slack connector run was raised by, so they
+do not approve its calls either: the Slack user is looked up in every Slack
+client of the run's team, not only the one that received the message, and
+the names are pinned when the run starts.
+
+The trust model: the credential named as `machine` holds the vote of every
+person mapped here and can raise runs as them. The platform cannot check which
+Slack user really clicked; it trusts the app. Treat that credential like the
+mapped people's own sign-ins. See [security](security.md#rules-the-code-holds).
 
 ## Routing a request to a client
 
@@ -73,8 +104,9 @@ Two workspaces may each register the same identity. The request goes to
 whichever holds the secret that verifies it, and if both do, to the older.
 Refusing the second would tell one workspace what another has.
 
-A run id belongs to the workspace that first used it. An event id replayed
-through another workspace's client is refused, not joined to the first run.
+A run id is the runtime's, derived from the workspace and the event id
+together. The same event id through another workspace's client is a run of
+that workspace's own, with its own id, and never joins or touches the first.
 
 ## Secrets
 
@@ -154,6 +186,8 @@ limit. See the status table for what a policy can set.
 | Clients on one surface | `max_clients_per_surface` on the tenant's policy | 5 |
 | Runs a client raises in a period | `max_runs` on a policy with scope `{"kind":"client","name":"<id>"}` | None |
 | Runs a client has in flight | `max_concurrent` on the same policy | None |
+| What a client's runs spend in a period | `spend_limit` (micro-USD) on the same policy | None |
+| Tokens a client's runs use in a period | `max_tokens` on the same policy | None |
 
 A policy may set the client caps as high as 100. The count and the insert are
 one step, so racing creates cannot pass a cap. Lowering a cap below what exists
@@ -167,8 +201,28 @@ the client, the policy version and the limit, and raises a budget alert.
 Slack and GitHub are still answered 200 for a request whose run a limit
 refused: the request was genuine and retrying it would not help.
 
-Not built: a spend or storage limit per client. Spend is not enforced for any
-scope, and published files are not counted by client.
+Spend and tokens are enforced like any scope's: see
+[usage and spend](architecture.md#usage-and-spend). Not built: a storage limit
+per client. Published files are not counted by client.
+
+## Usage on a turn
+
+The console shows what a run used on its Activity page, the context gauge and
+Analytics, and not on the turn in the conversation. The Slack app shows none.
+The rule is that a surface shows usage on a turn only if every surface the
+shared adapter feeds can, and vultus has no usage summary for Slack:
+`@vultus/web` renders `Turn.usage` as a chip, `@vultus/components` renders
+nothing. So the adapter leaves `Turn.usage` unset and the two agree. The run's
+`usage` is on the API for any client that wants it.
+
+What vultus should have for this:
+
+- A `RunUsage` summary in `@vultus/components` (Slack context line and web)
+  taking integer micros, a currency and an unpriced count, so neither surface
+  formats money itself. `Turn.usage.costUsd` is a float of dollars today.
+- A context gauge (`ContextWindow` exists in `@vultus/core` session state,
+  with no component that renders it from a run).
+- A limit meter with a lower-bound state, for spend that left calls out.
 
 ## API
 

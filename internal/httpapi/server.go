@@ -73,6 +73,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /auth/logout", s.Authn.handleLogout)
 
 	mux.HandleFunc("GET /api/me", s.authed("", s.me))
+	// Any signed-in caller may ask, and only about themselves: it takes a
+	// permission and no subject.
+	mux.HandleFunc("GET /api/access/explain", s.authed("", s.explainAccess))
 	mux.HandleFunc("GET /api/agents", s.authed(auth.AgentsRead, s.listAgents))
 	mux.HandleFunc("POST /api/agents", s.authed(auth.AgentsWrite, s.createAgent))
 	mux.HandleFunc("PUT /api/agents/{name}", s.authed(auth.AgentsWrite, s.reviseAgent))
@@ -93,6 +96,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/runs/{id}/tree", s.authed(auth.RunsRead, s.runTree))
 	mux.HandleFunc("POST /api/runs/{id}/calls", s.authed(auth.RunsWrite, s.createCall))
 	mux.HandleFunc("POST /api/runs/{id}/stop", s.authed(auth.RunsWrite, s.stopRun))
+	mux.HandleFunc("POST /api/runs/{id}/questions/{question}/answer", s.authed(auth.RunsWrite, s.answerQuestion))
 	mux.HandleFunc("GET /api/schedules", s.authed(auth.SchedulesRead, s.listSchedules))
 	mux.HandleFunc("POST /api/schedules", s.authed(auth.SchedulesWrite, s.createSchedule))
 	mux.HandleFunc("DELETE /api/schedules/{name}", s.authed(auth.SchedulesWrite, s.deleteSchedule))
@@ -329,6 +333,9 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 		After string `json:"after"`
 		// Project files a new conversation under a project.
 		Project string `json:"project"`
+		// ActAs is the person a surface asks for: a Slack user its client
+		// maps. The run is theirs, so they do not approve its calls.
+		ActAs *platform.ActAs `json:"act_as"`
 	}
 	if !decode(w, r, &body) {
 		return
@@ -337,14 +344,22 @@ func (s *Server) createRun(w http.ResponseWriter, r *http.Request, who auth.Prin
 		fail(w, http.StatusBadRequest, "a run needs a request")
 		return
 	}
+	actor := envelope.Actor{ID: who.Subject, Display: who.Name, Bot: who.Kind == auth.Machine}
+	if body.ActAs != nil {
+		person, err := s.P.ActsFor(who, *body.ActAs)
+		if err != nil {
+			s.problem(w, err)
+			return
+		}
+		actor = envelope.Actor{ID: person, Display: person}
+	}
 	// A caller that retries sends the same key and joins the run it started.
-	id := "api-" + token()[:22]
+	id := "api-r-" + token()[:22]
 	if key := r.Header.Get("Idempotency-Key"); key != "" {
-		id = "api-" + who.Subject + "-" + key
+		id = APITagID(who.Subject, key)
 	}
 	run, err := s.P.Converse(r.Context(), who.Tenant, platform.Turn{
-		ID: id, Agent: body.Agent, Text: body.Text, After: body.After, Project: body.Project,
-		Actor: envelope.Actor{ID: who.Subject, Display: who.Name, Bot: who.Kind == auth.Machine},
+		ID: id, Agent: body.Agent, Text: body.Text, After: body.After, Project: body.Project, Actor: actor,
 	})
 	if err != nil {
 		s.problem(w, err)
@@ -469,12 +484,18 @@ func (s *Server) createCall(w http.ResponseWriter, r *http.Request, who auth.Pri
 	ok(w, http.StatusAccepted, run)
 }
 
-// stopRun stops a run and everything attached to it. Runs it delegated keep
-// going. Stopping a run that has ended changes nothing.
+// stopRun asks a run and everything attached to it to stop. Runs it delegated
+// keep going. It does not wait: a run that has not ended yet is answered 202
+// with stopping set, and its stream says how it ended. A run that has ended is
+// answered 200 as it is, so asking twice is safe.
 func (s *Server) stopRun(w http.ResponseWriter, r *http.Request, who auth.Principal) {
 	run, err := s.P.StopRun(r.Context(), who, r.PathValue("id"))
 	if err != nil {
 		s.problem(w, err)
+		return
+	}
+	if run.Stopping && !run.Status.Terminal() {
+		ok(w, http.StatusAccepted, run)
 		return
 	}
 	ok(w, http.StatusOK, run)
@@ -631,6 +652,10 @@ func (s *Server) problem(w http.ResponseWriter, err error) {
 		fail(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, memory.ErrSensitive):
 		fail(w, http.StatusBadRequest, "that note carries personal data, such as an email address or a card number, so it was not stored")
+	case errors.Is(err, platform.ErrStopUnavailable):
+		// The run was marked as asked, so it starts nothing more, but the
+		// work in flight was not interrupted.
+		fail(w, http.StatusServiceUnavailable, "this server cannot interrupt a run; it will start nothing more and ends when its current work does")
 	case errors.As(err, &tooBig):
 		fail(w, http.StatusRequestEntityTooLarge, "request is too large")
 	default:
@@ -687,4 +712,14 @@ func spa(dir string) http.Handler {
 		}
 		files.ServeHTTP(w, r)
 	})
+}
+
+// APITagID is the trigger id of a run a caller started with an idempotency
+// key: api-<length of subject>-<subject>-<key>. The subject's length in bytes
+// makes it unambiguous within a tenant, so subject "a" with key "b-c" and
+// subject "a-b" with key "c" name different runs. A run started without a key
+// is api-r-<random>, which no keyed id can be. The run's id is the runtime's,
+// derived from this and the tenant.
+func APITagID(subject, key string) string {
+	return "api-" + strconv.Itoa(len(subject)) + "-" + subject + "-" + key
 }

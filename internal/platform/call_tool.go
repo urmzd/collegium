@@ -87,7 +87,7 @@ func (p *Platform) callAgentTool(parent runtime.Request, report func(payload.Act
 			if wire.Mode == call.Subagent {
 				return p.waitForCall(ctx, parent, req, ToolCallAgent, report)
 			}
-			child, err := p.Call(ctx, parent.Tenant, parent.RunID, req)
+			child, err := p.call(ctx, parent.Tenant, parent.RunID, req, true)
 			if err != nil {
 				return "", err
 			}

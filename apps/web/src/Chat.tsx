@@ -1,3 +1,5 @@
+import { answerOfAction, answers } from "@collegium/adapter/question";
+import { defaultCopy } from "@vultus/components";
 import { ActionId, type UiAction } from "@vultus/core";
 import { CheckIcon, ChevronDownIcon, WebSurface } from "@vultus/render-web";
 import { AgentMessage, Thread, useQueue } from "@vultus/web";
@@ -238,6 +240,17 @@ export function Chat({
   const onAction = (a: UiAction) => {
     // An agent drawn inside a turn opens the drawer on its run.
     if (a.id === ActionId.openRun) return setActivity({ focus: a.payload.target });
+    // A question the run waits on is answered in place. The run's own events
+    // settle the card once the answer is recorded, whoever's it was.
+    if (answers(a)) {
+      const answer = answerOfAction(a);
+      if (!answer) return;
+      setProblem(null);
+      api.answer(answer).catch((e) =>
+        setProblem(e instanceof ApiError && e.status === 403 ? defaultCopy.noPermission : e instanceof ApiError ? e.message : defaultCopy.failure.internal()),
+      );
+      return;
+    }
     if (a.id !== ActionId.retry || !canRun) return;
     const run = path.find((r) => r.id === a.payload.turnId || r.id === a.payload.target) ?? tail;
     if (run) branch(run, run.agent);

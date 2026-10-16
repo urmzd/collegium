@@ -1,0 +1,17 @@
+# How @collegium/client is generated. Run `make client` from the repository
+# root, which runs `oag generate` here with the pinned oag version.
+#
+# The node-client pack is committed under .oag/packs/, copied unchanged from
+# oag v0.20.6. Without it oag fetches the pack from its main branch at
+# generation time, and the output would change under us.
+input: ../../api/openapi.yaml
+
+naming:
+  strategy: use_operation_id
+
+generators:
+  node-client:
+    output: src/generated
+    source_dir: ""
+    layout: modular
+    scaffold: false

@@ -7,6 +7,9 @@ import (
 
 	"github.com/urmzd/mandatum/pkg/agentrt/payload"
 	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/runtime"
+
+	"github.com/urmzd/collegium/pkg/call"
 )
 
 var t0 = time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC)
@@ -211,5 +214,127 @@ func TestThreadPaging(t *testing.T) {
 	}
 	if page, _, _ := x.ThreadPage("acme", ThreadQuery{Limit: 100000}); len(page) > MaxThreadPage {
 		t.Fatalf("the limit was not capped: %d", len(page))
+	}
+}
+
+// A run asked to stop is stopping, not stopped, until the runtime says how it
+// ended. lifecycle.stopped ends it with its partial answer and the reason the
+// runtime honoured. A completion that wins the race ends it completed, with
+// no cause and no stopping left on it.
+func TestAStopIsRequestedThenConfirmedByTheRuntime(t *testing.T) {
+	x := NewIndex()
+	record(t, x, "acme", "r1", "lead", "api", 0, nil)
+	record(t, x, "acme", "r2", "lead", "api", 0, nil)
+	for _, id := range []string{"r1", "r2"} {
+		r, ok := x.AskStop(id, t0.Add(time.Second))
+		if !ok || !r.Stopping || r.Status.Terminal() || r.Cause != "" {
+			t.Fatalf("asked = %+v, %v", r, ok)
+		}
+	}
+	// Asking again keeps the first request.
+	if r, _ := x.AskStop("r1", t0.Add(2*time.Second)); !r.StopRequestedAt.Equal(t0.Add(time.Second)) {
+		t.Fatalf("a second request moved the first: %+v", r)
+	}
+
+	b, _ := payload.Encode(payload.Stopped{Reason: "Stopped by ada", By: "ada", Text: "Half"})
+	r, ended := x.Observe(envelope.Event{RunID: "r1", Tenant: "acme", Kind: envelope.KindStopped, Payload: b, At: t0.Add(3 * time.Second)})
+	if !ended || r.Status != Stopped || r.Answer != "Half" || r.Cause != "Stopped by ada" || r.Stopping {
+		t.Fatalf("stopped = %+v, %v", r, ended)
+	}
+	r, ended = end(t, x, "acme", "r2", 3*time.Second, envelope.KindCompleted, payload.Lifecycle{Text: "Whole"})
+	if !ended || r.Status != Completed || r.Answer != "Whole" || r.Cause != "" || r.Stopping {
+		t.Fatalf("completed first = %+v, %v", r, ended)
+	}
+	if _, ok := x.AskStop("r2", t0.Add(4*time.Second)); ok {
+		t.Fatal("a run that ended was asked to stop")
+	}
+	if _, again := x.Observe(envelope.Event{RunID: "r1", Tenant: "acme", Kind: envelope.KindStopped, Payload: b, At: t0.Add(5 * time.Second)}); again {
+		t.Fatal("a redelivered lifecycle.stopped ended the run twice")
+	}
+}
+
+func usageCall(t *testing.T, tenant, runID, key string, micros int64) envelope.Event {
+	t.Helper()
+	b, err := payload.Encode(payload.UsageCall{AccountingID: key, PromptTokens: 10, Cost: &payload.Cost{Micros: micros, Currency: "USD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return envelope.Event{RunID: runID, Tenant: tenant, Kind: envelope.KindUsageCall, Payload: b, At: t0}
+}
+
+// A usage report is folded into a run only in the run's own tenant: another
+// tenant's event naming the same run id changes nothing and is not returned.
+func TestObserveUsageIsConfinedToTheRunsTenant(t *testing.T) {
+	x := NewIndex()
+	record(t, x, "acme", "r1", "lead", "api", 0, nil)
+	if _, ok := x.ObserveUsage(usageCall(t, "globex", "r1", "k1", 4500)); ok {
+		t.Fatal("another tenant's usage report was folded into the run")
+	}
+	if r, _ := x.Get("acme", "r1"); r.Usage != nil {
+		t.Fatalf("the run took another tenant's usage: %+v", r.Usage)
+	}
+	r, ok := x.ObserveUsage(usageCall(t, "acme", "r1", "k1", 4500))
+	if !ok || r.Usage == nil || r.Usage.Total.Cost.Micros != 4500 {
+		t.Fatalf("the run's own report: %+v %v", r.Usage, ok)
+	}
+}
+
+// Once a run's spending is closed, a late call changes neither its usage nor
+// its Spent: it has settled, and perhaps settled into its caller.
+func TestAClosedRunsSpentDoesNotMove(t *testing.T) {
+	x := NewIndex()
+	record(t, x, "acme", "r1", "lead", "api", 0, nil)
+	x.Spend("r1", 100)
+	x.SetUsage("r1", &payload.RunUsage{Total: payload.Usage{ModelCalls: 1}}, 50)
+	if _, ok := x.Spend("r1", 900); ok {
+		t.Fatal("a closed run took more spend")
+	}
+	x.SetUsage("r1", nil, 1000) // a second close
+	if r, _ := x.Get("acme", "r1"); r.Spent != 150 || r.Usage.Total.ModelCalls != 1 {
+		t.Fatalf("closed run = spent %d, usage %+v", r.Spent, r.Usage)
+	}
+}
+
+// A call that ends after its caller settled climbs past it to the nearest
+// ancestor still open, or the root, so the tree's spend is whole.
+func TestACallEndingAfterItsCallerSettlesClimbsToTheRoot(t *testing.T) {
+	x := NewIndex()
+	root := envelope.Tag{ID: "root", Tenant: "acme", Agent: "lead", Origin: "api", Text: "go", At: t0}
+	lim := call.Limits{MaxDepth: 3, MaxFanOut: 3}
+	mid, err := call.New(root, call.Request{Key: "k1", Agent: "mid", Text: "go", Mode: call.Delegate}, call.State{}, lim, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := call.New(mid, call.Request{Key: "k2", Agent: "leaf", Text: "go", Mode: call.Delegate}, call.State{}, lim, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := map[string]string{}
+	for _, tag := range []envelope.Tag{mid, leaf} {
+		id := runtime.RunID("acme", tag.ID)
+		ids[tag.Agent] = id
+		if err := x.Record(id, tag, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rootID := runtime.RunID("acme", "root")
+	if err := x.Record(rootID, root, 1); err != nil {
+		t.Fatal(err)
+	}
+	x.Spend(ids["mid"], 300)
+	x.Spend(ids["leaf"], 700)
+	// mid ends first and settles into the root; leaf ends after.
+	x.SetUsage(ids["mid"], nil, 0)
+	m, _ := x.Get("acme", ids["mid"])
+	x.SettleCall(m)
+	x.SetUsage(ids["leaf"], nil, 0)
+	l, _ := x.Get("acme", ids["leaf"])
+	x.SettleCall(l)
+	x.SettleCall(l) // a second report changes nothing
+	if got, _ := x.Get("acme", ids["mid"]); got.Spent != 1000 {
+		t.Fatalf("mid spent %d, want its own and the leaf's", got.Spent)
+	}
+	if got, _ := x.Get("acme", rootID); got.Spent != 1000 {
+		t.Fatalf("the root spent %d, want the whole tree's 1000", got.Spent)
 	}
 }

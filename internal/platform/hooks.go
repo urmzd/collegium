@@ -44,11 +44,14 @@ const memoryPrompt = "Below is one exchange between a person and the agent %q. "
 
 // ended is called exactly once for every run that ends.
 func (p *Platform) ended(ctx context.Context, run runs.Run) {
+	p.settleUsage(ctx, run)
 	// Its place under any concurrency limit is free again.
 	if run.Origin != runs.OriginSystem {
 		p.Usage.Append(usage.Entry{Kind: usage.Ended, Tenant: run.Tenant, RunID: run.ID, At: p.now()})
 	}
 	p.raise(run)
+	// A question nobody answered is not waiting any more.
+	p.settleQuestionsOf(run)
 	p.cascade(ctx, run)
 	switch {
 	case run.Origin == runs.OriginSystem:

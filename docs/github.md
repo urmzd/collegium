@@ -169,6 +169,8 @@ are read-only for this tool. Branch protections still apply.
 Fixes require an explicit `/fix` mention from a person with effective GitHub
 write permission. Permission is checked at acceptance and again before writing.
 The connector signs a grant bound to the run ID, actor, repository, PR and head.
+The run ID is the runtime's, derived from the client's workspace and the
+delivery ID, so a connector that may commit is built with its workspace.
 The runtime supplies the actual run identity separately from model arguments,
 so copying a source URI into another invocation does not authorize a write.
 Each client signs with its own webhook secret under a distinct protocol

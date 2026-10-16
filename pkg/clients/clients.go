@@ -31,6 +31,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Errors.
@@ -75,6 +76,8 @@ const (
 	maxRepos    = 64
 	maxCommands = 10
 	maxLabels   = 32
+	maxPeople   = 500
+	maxSubject  = 200
 )
 
 // Managed says who owns a client that the API cannot change.
@@ -175,6 +178,25 @@ type SlackOptions struct {
 	// Sessions reports run lifecycle as agent-session status.
 	Sessions bool      `json:"sessions,omitempty"`
 	Commands []Command `json:"commands,omitempty"`
+	// Machine is the subject of the credential a Slack app built on the API
+	// signs in with. Only that credential may act for People, and only for
+	// them: a person the map does not name is nobody to it.
+	Machine string `json:"machine,omitempty"`
+	// People maps a Slack user id in the client's team to the principal it
+	// is in this workspace, by subject. It is how an answer clicked in Slack
+	// becomes that person's answer.
+	People map[string]string `json:"people,omitempty"`
+}
+
+// ActsFor returns the principal a Slack person is, for the credential
+// subject that asks. It reports false unless the client is an enabled Slack
+// client, machine is the credential it names, and the person is mapped.
+func (c Client) ActsFor(machine, user string) (string, bool) {
+	if c.Surface != Slack || !c.Enabled || c.Slack == nil || c.Slack.Machine == "" || machine != c.Slack.Machine {
+		return "", false
+	}
+	who, ok := c.Slack.People[user]
+	return who, ok && who != ""
 }
 
 // GitHubOptions are the options of a GitHub client.
@@ -392,6 +414,23 @@ func (c Client) validateSlack() error {
 		}
 		seen[cmd.Name] = true
 	}
+	if len(c.Slack.People) > maxPeople {
+		return bad("a client maps at most %d people", maxPeople)
+	}
+	if len(c.Slack.People) > 0 && strings.TrimSpace(c.Slack.Machine) == "" {
+		return bad("people are mapped for a machine: name the credential that acts for them")
+	}
+	if len(c.Slack.Machine) > maxSubject || strings.ContainsFunc(c.Slack.Machine, unicode.IsControl) {
+		return bad("the machine is a credential's subject of at most %d characters", maxSubject)
+	}
+	for user, who := range c.Slack.People {
+		if !slackID.MatchString(user) {
+			return bad("%q is not a slack user id", user)
+		}
+		if strings.TrimSpace(who) == "" || len(who) > maxSubject || strings.ContainsFunc(who, unicode.IsControl) {
+			return bad("slack user %q maps to a subject of 1 to %d characters", user, maxSubject)
+		}
+	}
 	return nil
 }
 
@@ -469,6 +508,13 @@ func (c Client) clone() Client {
 	if c.Slack != nil {
 		s := *c.Slack
 		s.Commands = slices.Clone(s.Commands)
+		if s.People != nil {
+			people := make(map[string]string, len(s.People))
+			for k, v := range s.People {
+				people[k] = v
+			}
+			s.People = people
+		}
 		c.Slack = &s
 	}
 	if c.GitHub != nil {

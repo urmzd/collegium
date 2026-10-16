@@ -13,6 +13,7 @@ import (
 	transport "github.com/urmzd/mandatum/pkg/connectors/github"
 	"github.com/urmzd/mandatum/pkg/connectors/mention"
 	"github.com/urmzd/mandatum/pkg/envelope"
+	"github.com/urmzd/mandatum/pkg/runtime"
 	"io"
 	"strconv"
 	"strings"
@@ -44,8 +45,9 @@ func (c *Connector) grantMutation(ctx context.Context, tag *envelope.Tag) error 
 	if len(command) == 0 || (command[0] != "/fix" && command[0] != "/check") {
 		return nil
 	}
-	// GitHub delivery UUIDs are already valid run IDs. Refuse synthetic or
-	// malformed IDs so the grant and runtime identity cannot diverge.
+	// The grant names the run this tag becomes: the runtime's id for the
+	// tenant and the delivery id together, which is what the run's tools are
+	// bound to. Refuse synthetic or malformed delivery ids.
 	if !mention.Valid(tag.ID) || !transport.ValidSHA(tag.Source.Params["head_sha"]) {
 		return fmt.Errorf("github: fix request needs delivery ID and pinned head")
 	}
@@ -61,7 +63,7 @@ func (c *Connector) grantMutation(ctx context.Context, tag *envelope.Tag) error 
 		return nil
 	} // The agent can still explain the denied capability.
 	operation := strings.TrimPrefix(command[0], "/")
-	source := tag.Source.WithParam("write_actor", tag.Actor.ID).WithParam("write_run", tag.ID).WithParam("write_operation", operation)
+	source := tag.Source.WithParam("write_actor", tag.Actor.ID).WithParam("write_run", runtime.RunID(c.cfg.Tenant, tag.ID)).WithParam("write_operation", operation)
 	if operation == "check" {
 		if len(command) < 2 {
 			return nil

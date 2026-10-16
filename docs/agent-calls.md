@@ -111,8 +111,8 @@ endpoint also accepts the structured contract under `input`.
 ## Runtime dependency
 
 Collegium pins the runtime extension to mandatum commit
-`b2b98e1493016b97df737bb143988c2eb9299897`, published on
-`feat/helper-call-input`. The Go pseudo-version in `go.mod` resolves that exact
+`799b78eb12773400f08323034e9af2c754197124`, merged into
+`main` through PR #17. The Go pseudo-version in `go.mod` resolves that exact
 commit, so builds do not require a local worktree or an upstream release tag.
 
 For runtime development, an ignored `go.work` can link the matching worktree:

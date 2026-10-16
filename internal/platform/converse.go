@@ -12,6 +12,7 @@ import (
 
 	"github.com/urmzd/mandatum/pkg/envelope"
 	"github.com/urmzd/mandatum/pkg/registry"
+	"github.com/urmzd/mandatum/pkg/runtime"
 
 	"github.com/urmzd/collegium/pkg/memory"
 	"github.com/urmzd/collegium/pkg/pick"
@@ -263,6 +264,11 @@ func (p *Platform) Converse(ctx context.Context, tenant string, t Turn) (runs.Ru
 	})
 }
 
+// stopMarker ends a stopped reply in the transcript. It is the runtime's own
+// marker, so a conversation reads the same whichever of them replays it, and
+// like the runtime's it says nothing about who stopped the reply or why.
+const stopMarker = runtime.StopMarker
+
 // transcript renders a branch for the next agent, newest turns kept.
 func transcript(path []runs.Run, limit int) string {
 	var turns []string
@@ -273,6 +279,11 @@ func transcript(path []runs.Run, limit int) string {
 		switch {
 		case r.Status == runs.Failed:
 			reply = "(this reply failed)"
+		case r.Status == runs.Stopped && strings.TrimSpace(r.Answer) == "":
+			reply = stopMarker
+		case r.Status == runs.Stopped:
+			// What the person read, and that it is not the whole answer.
+			reply = strings.TrimRight(r.Answer, " \t\r\n") + "\n" + stopMarker
 		case !r.Status.Terminal():
 			reply = "(still working)"
 		}

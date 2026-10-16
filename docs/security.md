@@ -7,14 +7,17 @@ Report vulnerabilities as described in [SECURITY.md](../SECURITY.md).
 
 | Caller | How it authenticates | What it gets |
 |--------|----------------------|--------------|
-| A person in a browser | OpenID Connect authorization code flow with PKCE, run by the server. The browser holds an opaque session cookie and never a token. | Roles, from identity provider groups |
-| A person in a CLI | An access token as `Authorization: Bearer` | Roles, from the token's groups claim |
+| A person in a browser | OpenID Connect authorization code flow with PKCE, run by the server. The browser holds an opaque session cookie and never a token. | Roles, from the policy's grants |
+| A person in a CLI | An access token as `Authorization: Bearer` | Roles, from the policy's grants |
 | A machine | A client-credentials access token as `Authorization: Bearer` | Exactly the scopes on the token |
 
 Every caller becomes a `Principal`, and every route asks it one question:
 `Can(permission)`.
 
 ## Roles and scopes
+
+Roles and who holds them are set by an [authorization policy](authorization.md).
+The built-in one declares these three, and the group flags grant them:
 
 | Role | Permissions |
 |------|-------------|
@@ -44,12 +47,26 @@ no permission, grants nothing.
 ## Rules the code holds
 
 - **Default deny.** The zero `Principal` can do nothing. An unmapped group, an
-  unknown role and an unknown scope each grant nothing.
+  unknown role and an unknown scope each grant nothing. A deny in the policy
+  beats every allow.
+- **A bad policy stops the server.** One that does not parse or compile is an
+  error at start, never at decision time.
 - **Tenant is never taken from a request.** It comes from the deployment or a
   verified token claim. A body that carries a `tenant` field is rejected.
-- **Another tenant's objects do not exist.** Reads, deletes and calls across
-  tenants return 404, never 403, so a response cannot confirm that something
-  exists.
+- **Another tenant's objects do not exist.** Reads, deletes, calls and stops
+  across tenants return 404, never 403, so a response cannot confirm that
+  something exists.
+- **A run id carries its tenant.** The runtime derives it from the tenant and
+  the tag id together, so a trigger's id, chosen outside, cannot name or join
+  another tenant's run. A stop request is honoured only by a run of the tenant
+  it was made under, and the platform only makes one for a run the caller's
+  tenant holds.
+- **A run's trigger id is visible to its workspace.** `tag_id` on a run is the
+  id it was accepted with: a Slack or GitHub event or delivery id, a schedule
+  occurrence, or for the API `api-<length of subject>-<subject>-<key>`, which
+  includes the subject of whoever started it and the `Idempotency-Key` they
+  sent. Anyone with `runs:read` in the workspace can read it. Do not put
+  secrets in an idempotency key.
 - **An ID token is not an API credential.** Bearer tokens must be issued for
   the API audience. A token issued to the web client is refused.
 - **Sessions are server-side.** The cookie is a random 256-bit id, `HttpOnly`,
@@ -61,6 +78,24 @@ no permission, grants nothing.
 - **Redirects stay on this site.** `return_to` must be a local path.
 - **Cross-origin writes are refused** before they reach a handler, using Go's
   `http.CrossOriginProtection`.
+- **A surface answers only for people it was given.** A Slack app built on the
+  API answers a question, or asks for a run, for a Slack person (`act_as`) only
+  through a Slack client that names the app's own credential as its `machine`
+  and maps that person in `people`. Anyone unmapped is refused (403) and the
+  app does not ask. To answer, the mapped person's own grant (what the policy
+  grants their subject) must include `runs:write`, as well as the
+  credential's. The answer is recorded as the mapped principal, with the
+  credential as `Via`: a credential never approves a call in a run it raised
+  as itself, whoever it names. Mapping a person is `clients:write`.
+- **The machine holds its people's votes.** Whoever holds the credential a
+  Slack client names as `machine` can answer every question as any person the
+  client maps, within what each may answer, and raise runs as them. The Slack
+  app is trusted to say truthfully which Slack user clicked; the platform
+  cannot check it. A mapped person's roles are what the policy grants their
+  subject: a click carries no groups, so a role held only through a group
+  does not count, and such a person cannot answer from Slack. Keep that credential as you would those people's sign-ins,
+  map only people who use that Slack workspace, and remove a mapping when
+  someone leaves.
 - **Lineage cannot be forged.** Only the platform's call path mints a tag with
   origin `agent`. A trigger's tag claiming it is dropped.
 - **An agent calls only who its spec allows.** The caller's pinned revision
@@ -111,6 +146,14 @@ no permission, grants nothing.
 `-auth=dev` makes every request an admin so the console can be previewed
 without an identity provider. The server refuses to start in this mode on any
 address that is not loopback. Never put it behind a proxy.
+
+`-auth=mock` runs a development identity provider in process, so sign-in,
+roles and machine tokens can be tried without a real one. Anyone who reaches
+it can sign in as any persona, so it is loopback only: the server and the
+provider must both listen on loopback, every redirect must be loopback, and
+its issuer is a loopback `http` URL, which the verifier accepts for nothing
+else. It logs a warning at start and its page says what it is. See
+[authorization](authorization.md#sign-in-locally).
 
 ## Configure sign-in (Okta)
 
@@ -163,9 +206,31 @@ decided per message:
 | Alert, reached limit | `alerts:read` | `alerts:write` to acknowledge, `billing:write` to raise a limit |
 | Failed run | `runs:read` | `runs:write` |
 | Proposed memory | `agents:read` | `agents:write` |
+| A question a run waits on (approval, choice, reply) | `runs:read`, and addressed to them | `runs:write`, and the runtime agrees they may answer |
 
 A message a caller may not see answers 404, not 403, and is left out of their
-count. The right is checked before saying whether a part is still open. A
+count. A question is addressed to the people its run's pinned spec lets answer
+it (`approvers` or `answerers`, by subject or `role:<name>`), and never to the
+person who asked for an approval's run or its tree. Someone who can see the run
+but may not answer is refused with 403 on `answerQuestion`, and nothing is
+recorded. See [People in the loop](architecture.md#people-in-the-loop).
+
+Addressing routes a question; it does not keep it confidential. The question,
+its prompt and an approval's tool arguments are also on the run
+(`GET /api/runs/{id}`, `question`), on its event stream (`lifecycle.parked`,
+and `lifecycle.child.parked` on its caller's), and in its manifest, all
+readable by anyone in the workspace with `runs:read`. Do not have an agent put
+in a question what everyone who can read runs may not see.
+
+Who may not approve: the person whose request raised the run, and the person
+who started the tree it is in, by every name they go by: their subject, the
+trigger's actor id, and for a run a Slack connector raised, every principal
+any Slack client of the run's team maps that Slack user to. The team is the one
+the run was accepted from, and the names are pinned when it starts, so a
+mapping removed later still counts. The platform checks this itself before
+it asks the runtime, because mandatum's `AnswerRequest` takes no requester
+alias. A GitHub connector's actor is a login no client maps, so a person
+approving a call their own GitHub event raised is not detected. The right is checked before saying whether a part is still open. A
 change is pushed to the browser as an id only, and only to callers who may see
 that kind.
 
@@ -189,8 +254,8 @@ that kind.
 - No token revocation check beyond expiry, and no refresh. A session lasts 8
   hours.
 - No rate limiting.
-- No local accounts. Without an identity provider the only mode is dev auth on
-  loopback, where everyone is an admin.
+- No local accounts. Without an identity provider the only modes are dev auth
+  and the mock provider, both on loopback.
 - The audit trail is the server log, not a store.
 - A call cannot yet narrow the callee's access to the caller's grant.
-- Sign-in has been tested against an in-process issuer, not a live Okta org.
+- Sign-in has been tested against in-process issuers, not a live Okta org.

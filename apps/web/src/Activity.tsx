@@ -1,13 +1,17 @@
+import { answerOfAction } from "@collegium/adapter/question";
+import { defaultCopy } from "@vultus/components";
+import type { UiAction } from "@vultus/core";
 import { ChevronRightIcon, WebSurface, XIcon } from "@vultus/render-web";
 import { AgentMessage } from "@vultus/web";
 import { useEffect, useMemo, useState } from "react";
 import { type Run, turnOf } from "./adapter.ts";
-import { api, type Span } from "./api.ts";
+import { ApiError, api, type Span } from "./api.ts";
 import { CopyAs } from "./CopyAs.tsx";
 import { itemActions } from "./itemActions.tsx";
 import { LimitsPanel } from "./Limits.tsx";
 import { forRun, type Limits } from "./limits.ts";
 import { toolOf } from "./copyas.ts";
+import { RunUsageSummary } from "./RunUsage.tsx";
 import { useRunTurn } from "./Runs.tsx";
 import { AgentMark, AgentTint, button, cause, elapsed, Empty, isEnded, SkeletonRows, Status, Stroke, strokeOf, took } from "./ui.tsx";
 
@@ -134,6 +138,16 @@ function Row({ run, nth, tools, base, onOpen }: { run: Run; nth: number; tools: 
 function Conversation({ run }: { run: Run }) {
   const streamed = useRunTurn(run);
   const turn = useMemo(() => streamed ?? turnOf(run), [streamed, run]);
+  const [problem, setProblem] = useState<string | null>(null);
+  // A run called by another can wait on a person too, and is answered here.
+  const onAction = (a: UiAction) => {
+    const answer = answerOfAction(a);
+    if (!answer) return;
+    setProblem(null);
+    api.answer(answer).catch((e) =>
+      setProblem(e instanceof ApiError && e.status === 403 ? defaultCopy.noPermission : e instanceof ApiError ? e.message : defaultCopy.failure.internal()),
+    );
+  };
   return (
     <div data-testid="activity-conversation" className="flex flex-col gap-3">
       <div className="flex flex-col items-end gap-1">
@@ -150,10 +164,11 @@ function Conversation({ run }: { run: Run }) {
         ) : <p className="collegium-glass max-w-[90%] whitespace-pre-wrap rounded-aui-lg px-3.5 py-2 text-aui-sm text-aui-fg">{run.text || "No request text"}</p>}
       </div>
       <AgentTint name={run.agent}>
-        <WebSurface onAction={() => {}}>
+        <WebSurface onAction={onAction}>
           <AgentMessage turn={turn} itemActions={itemActions(run)} />
         </WebSurface>
       </AgentTint>
+      {problem && <p role="alert" className="text-aui-xs text-aui-bad">{problem}</p>}
     </div>
   );
 }
@@ -311,6 +326,8 @@ export function ActivityPanel({
           </Stroke>
 
           <Conversation key={run.id} run={run} />
+
+          <RunUsageSummary run={run} />
 
           {tools.length > 0 && (
             <section className="flex flex-col gap-1" data-testid="activity-tools">

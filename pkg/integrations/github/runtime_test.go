@@ -86,7 +86,7 @@ func TestGitHubCollaborationFlowsThroughDurableSandboxAndRouter(t *testing.T) {
 	}
 	seed(firstSHA)
 	api.SetWritePermission(ref, "maintainer", true)
-	gh, err := github.New(github.Config{API: api, Verifier: signature.NewGitHub(secret), Owners: []string{"acme"}, Bots: map[string]string{"github-agent[bot]": "github-agent"}, AutoLabels: map[string]map[string]string{"acme/service": {"agent:auto": "github-agent"}}, Checks: true, Guides: true, Mutations: true, MutationSecret: []byte(secret), Interval: -1})
+	gh, err := github.New(github.Config{API: api, Verifier: signature.NewGitHub(secret), Owners: []string{"acme"}, Bots: map[string]string{"github-agent[bot]": "github-agent"}, AutoLabels: map[string]map[string]string{"acme/service": {"agent:auto": "github-agent"}}, Checks: true, Guides: true, Mutations: true, MutationSecret: []byte(secret), Tenant: "acme", Interval: -1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func TestGitHubCollaborationFlowsThroughDurableSandboxAndRouter(t *testing.T) {
 	}
 	run := func(tag envelope.Tag) string {
 		t.Helper()
-		id := runtime.RunID(tag.ID)
+		id := runtime.RunID(tag.Tenant, tag.ID)
 		if err := routing.Register(id, tag.Routes()); err != nil {
 			t.Fatal(err)
 		}

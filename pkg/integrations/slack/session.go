@@ -29,15 +29,16 @@ const maxChannels = 4096
 // hundreds of deltas, and repeating a status is harmless, so reporting on every
 // lifecycle event needs no bookkeeping to stay correct under redelivery.
 //
-// A failed run reports active, not closed: the failure is in the message the
-// run owns, and the thread is still a conversation the human can continue.
+// A failed or stopped run reports active, not closed: the failure, or the
+// partial answer marked stopped, is in the message the run owns, and the thread
+// is still a conversation the human can continue.
 func statusFor(k envelope.Kind) (Status, bool) {
 	switch k {
 	case envelope.KindAccepted, envelope.KindStarted, envelope.KindResumed:
 		return StatusProcessing, true
 	case envelope.KindParked:
 		return StatusSuspended, true
-	case envelope.KindCompleted, envelope.KindFailed:
+	case envelope.KindCompleted, envelope.KindFailed, envelope.KindStopped:
 		return StatusActive, true
 	}
 	return "", false

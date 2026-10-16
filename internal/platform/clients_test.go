@@ -294,19 +294,35 @@ func TestTenantsWithSlackClientsCannotReachEachOther(t *testing.T) {
 		t.Fatal("a tenant with no client was given a slack tool")
 	}
 
+	// The same event id from the other tenant, while acme's run is still in
+	// flight, is a run of globex's own: another id, its own record and its
+	// own deliveries. It neither joins acme's run nor takes its routes.
+	if code := signedSlack(ingress, "secret-globex-app", mentionOf("A0GLOBEX", team, "Ev1", "C01", thread)); code != http.StatusOK {
+		t.Fatalf("globex mention answered %d", code)
+	}
+	var theirs runs.Run
+	eventually(t, "globex's reused event id is a run of its own that ends", func() bool {
+		got := p.Runs.List("globex", 50)
+		if len(got) == 1 {
+			theirs = got[0]
+		}
+		return len(got) == 1 && theirs.Status.Terminal()
+	})
+	if theirs.ID == run.ID || theirs.Tenant != "globex" || theirs.Client != "globex-app" || theirs.Agent != "helper" {
+		t.Fatalf("globex's run = %+v, acme's is %s", theirs, run.ID)
+	}
+	if mine, err := p.Runs.Get(tenant, run.ID); err != nil || mine.Status != runs.Running || mine.Client != "acme-app" || mine.Agent != "lead" {
+		t.Fatalf("acme's run after globex reused its event id: %+v, %v", mine, err)
+	}
+	if _, err := p.Runs.Get(tenant, theirs.ID); !errors.Is(err, runs.ErrNotFound) {
+		t.Fatalf("acme reached globex's run: %v", err)
+	}
+
 	// Deliveries: acme's answer goes out through acme's client alone.
 	c.release("lead")
 	eventually(t, "acme's run answered", func() bool { return said(acme, "Acme answer.") })
 	if said(globex, "Acme answer.") {
 		t.Fatal("acme's answer was delivered through globex's client")
-	}
-	// The same event id from the other tenant is not joined to acme's run.
-	if code := signedSlack(ingress, "secret-globex-app", mentionOf("A0GLOBEX", team, "Ev1", "C01", thread)); code != http.StatusOK {
-		t.Fatalf("globex mention answered %d", code)
-	}
-	time.Sleep(100 * time.Millisecond)
-	if got := p.Runs.List("globex", 50); len(got) != 0 {
-		t.Fatalf("a reused event id gave globex a run: %+v", got)
 	}
 
 	// The API is tenant-bound too: a client in another tenant does not exist.
@@ -638,7 +654,11 @@ func TestASlackStopReachesOnlyTheRunsOfItsOwnClient(t *testing.T) {
 	if code := signedSlack(ingress, "secret-ops-app", stop); code != http.StatusOK {
 		t.Fatalf("stop answered %d", code)
 	}
-	ops, _ := runOf(p, tenant, "ops")
+	var ops runs.Run
+	eventually(t, "the ops run ends stopped", func() bool {
+		ops, _ = runOf(p, tenant, "ops")
+		return ops.Status.Terminal()
+	})
 	if ops.Status != runs.Stopped || ops.Cause != "Stopped by slack:U0HUMAN2" {
 		t.Fatalf("ops run = %s (%q), want stopped from slack", ops.Status, ops.Cause)
 	}

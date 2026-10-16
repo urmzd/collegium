@@ -2,6 +2,9 @@ import { type FormEvent, useCallback, useEffect, useState } from "react";
 import { api, type Bucket, type Entry, type Group, type Revision, type Summary } from "./api.ts";
 import { Burn } from "./Billing.tsx";
 import { agentOptions, button, card, Chip, Empty, field, figures, Menu, Page, SkeletonRows, Stat, took } from "./ui.tsx";
+import { money } from "./usage.ts";
+
+const usd = (micros: number) => money({ micros, currency: "USD" });
 
 const windows = [
   { id: "15m", label: "15 minutes" },
@@ -18,7 +21,18 @@ const series = [
   { key: "completed", label: "Completed", fill: "var(--collegium-ink)" },
   { key: "active", label: "In flight", fill: "var(--aui-accent)" },
   { key: "failed", label: "Failed", fill: "var(--aui-bad)" },
+  { key: "stopped", label: "Stopped", fill: "var(--collegium-ink-faint)" },
 ] as const;
+
+/** What a spend figure leaves out, in words: calls with no price and money in other currencies are never counted as dollars. */
+export function spendNote(g: Group): string {
+  const u = g.usage;
+  const parts = [
+    u?.unpriced_calls ? `${u.unpriced_calls} ${u.unpriced_calls === 1 ? "call" : "calls"} with no price` : "",
+    u?.other_currency_runs ? `${u.other_currency_runs} ${u.other_currency_runs === 1 ? "run" : "runs"} in another currency` : "",
+  ].filter(Boolean);
+  return parts.length > 0 ? `At least this: ${parts.join(", ")} not counted` : "Priced in US dollars";
+}
 
 function rate(g: Group): string {
   const ended = g.completed + g.failed;
@@ -48,7 +62,7 @@ function RunsChart({ buckets, wide }: { buckets: Bucket[]; wide: boolean }) {
   const pad = { top: 8, right: 8, bottom: 22, left: 30 };
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
-  const max = ceiling(Math.max(...buckets.map((b) => b.completed + b.failed + b.active), 1));
+  const max = ceiling(Math.max(...buckets.map((b) => b.completed + b.failed + b.stopped + b.active), 1));
   const slot = plotW / Math.max(buckets.length, 1);
   const bar = Math.max(Math.min(slot - 2, 24), 1);
   const y = (v: number) => (v / max) * plotH;
@@ -172,6 +186,7 @@ function Breakdown({ title, groups, onPick }: { title: string; groups: Group[]; 
               <th className="pb-1 text-right font-medium">Success</th>
               <th className="pb-1 text-right font-medium">p50</th>
               <th className="pb-1 text-right font-medium">p95</th>
+              <th className="pb-1 text-right font-medium">Spend</th>
             </tr>
           </thead>
           <tbody>
@@ -204,6 +219,9 @@ function Breakdown({ title, groups, onPick }: { title: string; groups: Group[]; 
                 <td className="py-1.5 text-right tabular-nums">{rate(g)}</td>
                 <td className="py-1.5 text-right tabular-nums text-aui-muted">{g.p50_ms ? took(g.p50_ms) : "–"}</td>
                 <td className="py-1.5 text-right tabular-nums text-aui-muted">{g.p95_ms ? took(g.p95_ms) : "–"}</td>
+                <td className="py-1.5 text-right tabular-nums text-aui-muted" title={spendNote(g)}>
+                  {g.usage?.model_calls ? `${usd(g.usage.spend)}${g.usage.unpriced_calls || g.usage.other_currency_runs ? "+" : ""}` : "–"}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -390,9 +408,11 @@ export function Analytics({
         <>
           <div className={figures}>
             <Stat label="Runs" value={String(t.runs)} note={`${summary.delegated} called by another agent`} />
-            <Stat label="Success rate" value={rate(t)} note={`${t.failed} failed, ${t.active} in flight`} />
+            <Stat label="Success rate" value={rate(t)} note={`${t.failed} failed, ${t.stopped} stopped, ${t.active} in flight`} />
             <Stat label="Median duration" value={t.p50_ms ? took(t.p50_ms) : "–"} note="Of runs that ended" />
             <Stat label="95th percentile" value={t.p95_ms ? took(t.p95_ms) : "–"} note="Of runs that ended" />
+            <Stat label="Spend" value={usd(t.usage?.spend ?? 0)} note={spendNote(t)} />
+            <Stat label="Tokens" value={(t.usage?.tokens ?? 0).toLocaleString()} note={`Over ${(t.usage?.model_calls ?? 0).toLocaleString()} model calls`} />
             <Stat label="Open alerts" value={String(openAlerts)} note="Across all time" />
           </div>
 
@@ -416,17 +436,19 @@ export function Analytics({
                       <th className="pb-1 text-right font-medium">Completed</th>
                       <th className="pb-1 text-right font-medium">In flight</th>
                       <th className="pb-1 text-right font-medium">Failed</th>
+                      <th className="pb-1 text-right font-medium">Stopped</th>
                     </tr>
                   </thead>
                   <tbody>
                     {summary.buckets
-                      .filter((b) => b.completed + b.active + b.failed > 0)
+                      .filter((b) => b.completed + b.active + b.failed + b.stopped > 0)
                       .map((b) => (
                         <tr key={b.start} className="border-aui-border border-t">
                           <td className="py-1">{new Date(b.start).toLocaleString()}</td>
                           <td className="py-1 text-right">{b.completed}</td>
                           <td className="py-1 text-right">{b.active}</td>
                           <td className="py-1 text-right">{b.failed}</td>
+                          <td className="py-1 text-right">{b.stopped}</td>
                         </tr>
                       ))}
                   </tbody>

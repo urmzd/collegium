@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { adapter, type BusEvent, body } from "./adapter.ts";
+import { adapter, type BusEvent, body } from "./run.ts";
 
 function ev(kind: string, payload?: unknown, seq = 1): BusEvent {
   return {
@@ -42,6 +42,16 @@ test("an answer that never streamed arrives with completion", () => {
   const to = adapter();
   const out = [ev("lifecycle.accepted"), ev("lifecycle.completed", { text: "Done" })].flatMap(to);
   assert.deepEqual(out.slice(1), [{ type: "text.delta", text: "Done" }, { type: "turn.completed" }]);
+});
+
+test("a stopped run ends the turn as stopped, keeping its partial answer", () => {
+  const to = adapter();
+  const out = [ev("lifecycle.accepted"), ev("lifecycle.stopped", { text: "Half", reason: "Stopped by ada", by: "ada" })].flatMap(to);
+  assert.deepEqual(out.slice(1), [{ type: "text.delta", text: "Half" }, { type: "turn.stopped" }, { type: "stop.updated", stop: "confirmed" }]);
+  const streamed = adapter();
+  const again = [ev("delta.text", { text: "Half" }), ev("lifecycle.stopped", { text: "Half" })].flatMap(streamed);
+  assert.deepEqual(again.map((e) => e.type).slice(-2), ["turn.stopped", "stop.updated"]);
+  assert.equal(again.filter((e) => e.type === "text.delta").length, 1);
 });
 
 test("a retried attempt is not a failed turn", () => {
@@ -205,4 +215,21 @@ test("parallel helpers correlate by call ID even when they start out of order", 
   assert.equal(b?.type === "task.upserted" && b.task.subagent?.runId, "run-b");
   assert.equal(a?.type === "task.upserted" && a.task.id, "call-a");
   assert.equal(a?.type === "task.upserted" && a.task.subagent?.runId, "run-a");
+});
+
+test("a surface that is not the platform's own origin places file links itself", () => {
+  const published = ev("action.taken", { name: "publish_artifact", data: { id: "art-7", title: "report.md", kind: "document", mime: "text/markdown", size: 19, version: 1 } });
+  const [abs] = adapter({ href: (path) => `https://collegium.example.com${path}` })(published);
+  assert.equal(abs?.type === "attachment.upserted" && abs.attachment.type === "artifact" && abs.attachment.downloadUrl, "https://collegium.example.com/api/artifacts/art-7/content");
+  const [none] = adapter({ href: () => undefined })(published);
+  assert.equal(none?.type === "attachment.upserted" && none.attachment.type === "artifact" && none.attachment.url, undefined);
+  assert.equal(none?.type === "attachment.upserted" && none.attachment.type === "artifact" && none.attachment.phase, "ready");
+});
+
+test("a stopped event ends the turn as stopped, confirmed", () => {
+  const to = adapter();
+  assert.deepEqual(to(ev("lifecycle.stopped", { cause: "Stopped by dana" })), [
+    { type: "turn.stopped" },
+    { type: "stop.updated", stop: "confirmed" },
+  ]);
 });

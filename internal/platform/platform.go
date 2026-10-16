@@ -97,6 +97,20 @@ type Config struct {
 	Limits call.Limits
 	// Concurrency is how many runs execute at once. Zero means one.
 	Concurrency int
+	// StopGrace is how long a run asked to stop is given to wrap up before
+	// its turn is cancelled. Zero means the runtime's default, ten seconds.
+	StopGrace time.Duration
+	// Stops replaces how a run is asked to stop. Nil means the runtime.
+	// For tests only: it exists to test a deployment whose runtime cannot
+	// interrupt a run, and a server never sets it.
+	Stops func(context.Context, runtime.StopRequest) error
+	// Backoff replaces how long a failed attempt waits before it is tried
+	// again. Nil means duraturo's, which doubles from a quarter second. For
+	// tests only: it lets a test fail a run through all its attempts quickly.
+	Backoff func(attempt int) time.Duration
+	// QuestionTTL is how long a question a run parks on waits for an answer
+	// before its default applies. Zero means the runtime's, a day.
+	QuestionTTL time.Duration
 	// OfflineHooks lets housekeeping run on the offline provider. It exists
 	// for tests: an offline answer is a notice, not a title or a fact.
 	OfflineHooks bool
@@ -147,8 +161,13 @@ type Platform struct {
 	sinks   *connector.Registry
 	deliver *router.Router
 	rt      *runtime.Runtime
-	ledger  *ledger.Memory
-	queue   *dqueue.Memory
+	// stops is how a run is asked to stop: the runtime, unless a test
+	// stands in for it.
+	stops stopper
+	// asked reads whether the runtime holds a stop request for a run.
+	asked  func(ctx context.Context, tenant, runID string) (runtime.StopRecord, bool, error)
+	ledger *ledger.Memory
+	queue  *dqueue.Memory
 
 	settings settings
 
@@ -160,6 +179,15 @@ type Platform struct {
 	clientsMu sync.Mutex
 	// admitting holds runs between admission and their record, by run id.
 	admitting sync.Map
+	// halting holds runs being stopped at a limit, by run id, so a run is
+	// asked once however many of its calls cross it.
+	halting sync.Map
+
+	// wakers are the timers that wake parked runs at their questions'
+	// deadlines, stopped with the platform.
+	wakers     sync.Mutex
+	wakerSet   map[*time.Timer]struct{}
+	wakersDone bool
 
 	// admission serializes letting a run in. It is taken inside calls, never
 	// the other way round.
@@ -254,11 +282,26 @@ func New(cfg Config) (*Platform, error) {
 		p.broker,
 		exec,
 		runtime.WithLogger(log),
+		runtime.WithStopGrace(cfg.StopGrace),
+		// The ledger is where a stop is recorded, so a request made while a
+		// run waits in the queue or between attempts is honoured however long
+		// it waits. It is the same ledger the runs execute from.
+		runtime.WithStopLedger(p.ledger),
+		// A run parked on a person is woken through the queue as soon as
+		// it is answered or stopped, not at the worker's next poll.
+		runtime.WithWaker(p.queue),
+		// A spec's approvers and answerers may name this workspace's roles.
+		runtime.WithRoles(p.rolesOf),
+		runtime.WithQuestionTTL(cfg.QuestionTTL),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("platform: runtime: %w", err)
 	}
-	p.rt = rt
+	p.rt, p.stops = rt, rt
+	p.asked = rt.StopRequested
+	if cfg.Stops != nil {
+		p.stops = stopFunc(cfg.Stops)
+	}
 	return p, nil
 }
 
@@ -318,7 +361,10 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	if _, err := call.InputOf(tag); err != nil {
 		return runs.Run{}, err
 	}
-	runID := runtime.RunID(tag.ID)
+	// The run id is the runtime's, derived from the tenant and the tag id
+	// together. Two tenants offering the same tag id name two different runs,
+	// so a trigger's id, chosen outside, cannot join another tenant's run.
+	runID := runtime.RunID(tag.Tenant, tag.ID)
 
 	// Admission and acceptance are one step, so the count a policy is judged
 	// on always includes every run already let in.
@@ -328,12 +374,6 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	// run, so it is neither judged nor counted a second time.
 	if existing, err := p.Runs.Get(tag.Tenant, runID); err == nil {
 		return existing, nil
-	}
-	// A run id belongs to the tenant that first used it. Triggers take their
-	// ids from the outside, so another tenant offering the same one is
-	// refused rather than joined to a run that is not its own.
-	if owner, taken := p.Runs.Owner(runID); taken && owner != tag.Tenant {
-		return runs.Run{}, fmt.Errorf("%w: tag id %q cannot be used", envelope.ErrInvalid, tag.ID)
 	}
 	project, client := p.placeOf(tag, edge)
 	if err := p.admit(tag, edge, project, client); err != nil {
@@ -356,6 +396,9 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 	if err := p.Runs.Record(acc.RunID, tag, acc.Rev); err != nil {
 		return runs.Run{}, err
 	}
+	// Who asked, by every name they go by now: a mapping removed later does
+	// not let them approve their own calls.
+	p.Runs.PinRequesters(acc.RunID, p.resolveRequester(tag.Tenant, tag, client))
 	return p.Runs.Get(tag.Tenant, acc.RunID)
 }
 
@@ -366,6 +409,19 @@ func (p *Platform) Invoke(ctx context.Context, tag envelope.Tag) (runs.Run, erro
 // the target in its spawn allowlist, the tree's limits must allow the call, and
 // the caller's remaining budget must cover the lease.
 func (p *Platform) Call(ctx context.Context, tenant, runID string, req call.Request) (runs.Run, error) {
+	return p.call(ctx, tenant, runID, req, false)
+}
+
+// call is Call. With grant, a call from a run that holds a lease and asked for
+// none is granted one here, under the call lock: half of what the caller has
+// left, whether it waits on the call or not. Half, because what the caller
+// has left is read from the calls already counted, and the model call that
+// asked for this one may not be counted yet: the other half holds room for
+// it, and for anything else still in flight. Everything is trued up when the
+// call settles. That is how an agent's own calls (tagging, delegate_task)
+// lease budget, since a model never names an amount. A caller with nothing
+// left is refused.
+func (p *Platform) call(ctx context.Context, tenant, runID string, req call.Request, grant bool) (runs.Run, error) {
 	p.calls.Lock()
 	defer p.calls.Unlock()
 
@@ -389,19 +445,39 @@ func (p *Platform) Call(ctx context.Context, tenant, runID string, req call.Requ
 		return runs.Run{}, fmt.Errorf("%w: use input or text, not both", call.ErrInvalid)
 	}
 	if strings.TrimSpace(req.Key) != "" {
-		if existing, err := p.Runs.Get(tenant, runtime.RunID(call.TagID(parent.Tag().ID, req.Key))); err == nil {
-			if !sameCallInput(existing, req, *input) {
+		if existing, err := p.Runs.Get(tenant, runtime.RunID(tenant, call.TagID(parent.Tag().ID, req.Key))); err == nil {
+			compare := req
+			if grant && compare.Lease == 0 {
+				compare.Lease = existing.Lease
+			}
+			if !sameCallInput(existing, compare, *input) {
 				return runs.Run{}, fmt.Errorf("%w: call key already identifies a different call", call.ErrInvalid)
 			}
 			return existing, nil
 		}
 	}
 
+	if grant && req.Lease == 0 && parent.Lease > 0 {
+		left := parent.Left() / 2
+		if left <= 0 {
+			return runs.Run{}, fmt.Errorf("%w: %q has spent or handed on all of its budget of %s", call.ErrBudget, parent.Agent, money(parent.Lease))
+		}
+		req.Lease = left
+	}
 	tag, err := call.New(parent.Tag(), req, parent.State(), p.cfg.Limits, p.now())
 	if err != nil {
 		return runs.Run{}, err
 	}
-	if parent.Status.Terminal() {
+	// Policy is checked before liveness, so a refusal always names the rule
+	// that refused it. A run that was asked to stop is over as far as new
+	// work goes, from the moment it was asked.
+	if parent.Status.Terminal() || parent.Stopping {
+		if existing, err := p.Runs.Get(tenant, runtime.RunID(tenant, tag.ID)); err == nil {
+			return existing, nil
+		}
+		if parent.Stopping {
+			return runs.Run{}, fmt.Errorf("%w: run %q was asked to stop and cannot make calls", call.ErrInvalid, runID)
+		}
 		return runs.Run{}, fmt.Errorf("%w: run %q has ended and cannot make calls", call.ErrInvalid, runID)
 	}
 	prepared, err := p.prepareCall(ctx, tenant, *input)
@@ -440,27 +516,75 @@ const reconcileEvery = 2 * time.Second
 // the ledger with nothing further published.
 func (p *Platform) reconcile(ctx context.Context) {
 	for _, id := range p.Runs.Active() {
-		rec, err := p.ledger.GetRun(ctx, id)
-		if err != nil {
-			continue
+		p.settleFromLedger(ctx, id)
+	}
+}
+
+// settleFromLedger ends a run the ledger says is over, with the outcome the
+// runtime recorded, and reports whether the ledger says it is over. A run
+// whose final event has not been observed yet ends here, and the event, when
+// it arrives, changes nothing: it says the same thing.
+func (p *Platform) settleFromLedger(ctx context.Context, id string) bool {
+	rec, err := p.ledger.GetRun(ctx, id)
+	if err != nil {
+		return false
+	}
+	status := runs.Status("")
+	switch rec.Status {
+	case drun.StatusSucceeded:
+		status = runs.Completed
+	case drun.StatusFailed:
+		status = runs.Failed
+	default:
+		return false
+	}
+	at := p.now()
+	if !rec.CompletedAt.IsZero() {
+		at = rec.CompletedAt
+	}
+	answer := ""
+	if status == runs.Completed {
+		if out, err := p.rt.Result(ctx, id); err == nil {
+			answer = out.Text
+			// A stopped run succeeds in the ledger: it ended and did not
+			// fail. Its output says it was stopped, and what it had said.
+			if out.Stopped != nil {
+				if run, ended := p.Runs.Stop(id, out.Text, out.Stopped.Reason, at); ended {
+					p.log.Info("platform: run ended stopped in the ledger before its final event was seen", "run", id)
+					p.ended(ctx, run)
+				}
+				return true
+			}
 		}
-		status := runs.Status("")
-		switch rec.Status {
-		case drun.StatusSucceeded:
-			status = runs.Completed
-		case drun.StatusFailed:
-			status = runs.Failed
-		default:
-			continue
-		}
-		at := p.now()
-		if !rec.CompletedAt.IsZero() {
-			at = rec.CompletedAt
-		}
-		if run, ended := p.Runs.End(id, status, "", rec.Error, at); ended {
-			p.log.Info("platform: run ended in the ledger without a final event", "run", id, "status", status)
-			p.ended(ctx, run)
-		}
+	}
+	if run, ended := p.Runs.End(id, status, answer, rec.Error, at); ended {
+		p.log.Info("platform: run ended in the ledger before its final event was seen", "run", id, "status", status)
+		p.ended(ctx, run)
+	}
+	return true
+}
+
+// observe folds one event from the bus into the platform: the journal, the
+// run index, and what runs spend. The bus delivers at least once, so it is
+// safe to see an event twice: the index ends a run once, and the usage ledger
+// counts a call once.
+func (p *Platform) observe(ctx context.Context, e envelope.Event) {
+	if e.Topic.IsControl() {
+		// A request addressed to a run, such as a stop, not something a run
+		// did. The run's own events say what came of it.
+		return
+	}
+	p.Journal.Append(e)
+	if e.Kind.Family() == "usage" {
+		p.observeUsage(ctx, e)
+		return
+	}
+	p.admission.Lock()
+	run, ended := p.Runs.Observe(e)
+	p.admission.Unlock()
+	p.observeQuestion(ctx, e)
+	if ended {
+		p.ended(ctx, run)
 	}
 }
 
@@ -502,7 +626,9 @@ func (s *Stream) Recv(ctx context.Context) (envelope.Event, error) {
 		if err != nil {
 			return envelope.Event{}, err
 		}
-		if e.Tenant == s.tenant {
+		// Requests addressed to runs are the runtime's traffic, not events
+		// a reader of runs is owed.
+		if e.Tenant == s.tenant && !e.Topic.IsControl() {
 			return e, nil
 		}
 	}
@@ -515,6 +641,7 @@ func (s *Stream) Close() error { return s.inner.Close() }
 func (p *Platform) Run(ctx context.Context) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer p.stopWakers()
 
 	// Subscribe before anything can publish, so the journal and the index
 	// never miss the first event of the first run.
@@ -553,11 +680,15 @@ func (p *Platform) Run(ctx context.Context) error {
 		}
 	})
 	loop("worker", func() error {
-		return worker.New(p.ledger, p.queue,
+		opts := []worker.Option{
 			worker.WithRegistry(p.rt.Registry()),
 			worker.WithConcurrency(p.slots()),
 			worker.WithLogger(p.log),
-		).Run(ctx)
+		}
+		if p.cfg.Backoff != nil {
+			opts = append(opts, worker.WithBackoff(p.cfg.Backoff))
+		}
+		return worker.New(p.ledger, p.queue, opts...).Run(ctx)
 	})
 	loop("observer", func() error {
 		defer func() { _ = observed.Close() }()
@@ -581,13 +712,7 @@ func (p *Platform) Run(ctx context.Context) error {
 			case err != nil:
 				return err
 			}
-			p.admission.Lock()
-			p.Journal.Append(e)
-			run, ended := p.Runs.Observe(e)
-			p.admission.Unlock()
-			if ended {
-				p.ended(ctx, run)
-			}
+			p.observe(ctx, e)
 		}
 	})
 

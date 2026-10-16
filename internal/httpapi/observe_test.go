@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/urmzd/collegium/pkg/policy"
+	"github.com/urmzd/collegium/pkg/usage"
 )
 
 var everything = []string{
@@ -633,7 +636,7 @@ func TestBillingPolicies(t *testing.T) {
 			launch = s.(map[string]any)
 		}
 	}
-	if launch["state"] != "over" || launch["runs"].(map[string]any)["used"].(float64) != 2 || launch["spend"].(map[string]any)["metered"] != false {
+	if launch["state"] != "over" || launch["runs"].(map[string]any)["used"].(float64) != 2 || launch["spend"].(map[string]any)["metered"] != true {
 		t.Fatalf("usage = %v", launch)
 	}
 	_, notices := f.do(t, nil, "GET", "/api/usage/notices", acme, "")
@@ -738,5 +741,70 @@ func TestOnboardingFlags(t *testing.T) {
 	// here is a machine in the same workspace.
 	if _, other := f.do(t, nil, "GET", "/api/preferences", f.machine(t, "acme", everything...), ""); other["onboarded_at"] != nil {
 		t.Fatal("one caller finishing onboarding marked another")
+	}
+}
+
+// A workspace whose spend for the period has reached its limit refuses a new
+// run with 402, naming the limit, the policy and its version, and when the
+// count resets. Another workspace's spending never shows in this one's usage
+// or touches its limits, and a run's usage is on its record.
+func TestASpendRefusalNamesTheLimitPolicyAndReset(t *testing.T) {
+	f := newFixture(t)
+	acme, globex := f.machine(t, "acme", everything...), f.machine(t, "globex", everything...)
+	f.do(t, nil, "POST", "/api/agents", acme, helperSpec)
+	f.do(t, nil, "POST", "/api/agents", globex, helperSpec)
+	f.do(t, nil, "PUT", "/api/policies", acme, `{"scope":{"kind":"tenant"},"period":"month","spend_limit":5000,"max_tokens":100000}`)
+	f.do(t, nil, "PUT", "/api/policies", globex, `{"scope":{"kind":"tenant"},"period":"month","spend_limit":5000}`)
+
+	// globex spends past its limit; acme is untouched by it.
+	f.p.Usage.Append(usage.Entry{Kind: usage.Spent, Tenant: "globex", Agent: "helper", RunID: "r-g", Key: "r-g/a1/1",
+		At: time.Now(), Spend: &usage.Spend{Micros: 9000, ModelCalls: 1, Tokens: 500}})
+	res, run := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"go"}`)
+	if res.StatusCode != http.StatusAccepted {
+		t.Fatalf("acme was refused for globex's spending: %d %v", res.StatusCode, run)
+	}
+	_, acmeUsage := f.do(t, nil, "GET", "/api/usage", acme, "")
+	spend := acmeUsage["scopes"].([]any)[0].(map[string]any)["spend"].(map[string]any)
+	if spend["used"].(float64) != 0 || spend["metered"] != true {
+		t.Fatalf("acme's spend shows another workspace's: %v", spend)
+	}
+	if res, _ := f.do(t, nil, "POST", "/api/runs", globex, `{"agent":"helper","text":"go"}`); res.StatusCode != http.StatusPaymentRequired {
+		t.Fatalf("globex past its spend limit = %d", res.StatusCode)
+	}
+
+	// The run's usage is on its record once it has ended.
+	id := run["id"].(string)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		_, got := f.do(t, nil, "GET", "/api/runs/"+id, acme, "")
+		if u, ok := got["usage"].(map[string]any); ok && got["status"] == "completed" {
+			if u["total"].(map[string]any)["model_calls"].(float64) != 1 {
+				t.Fatalf("usage = %v", u)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the run's usage never arrived: %v", got)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if res, _ := f.do(t, nil, "GET", "/api/runs/"+id, globex, ""); res.StatusCode != http.StatusNotFound {
+		t.Fatalf("another workspace reading the run = %d", res.StatusCode)
+	}
+
+	// acme spends to its limit.
+	f.p.Usage.Append(usage.Entry{Kind: usage.Spent, Tenant: "acme", Agent: "helper", RunID: "r-a", Key: "r-a/a1/1",
+		At: time.Now(), Spend: &usage.Spend{Micros: 5000, ModelCalls: 1, Tokens: 500}})
+	res, refused := f.do(t, nil, "POST", "/api/runs", acme, `{"agent":"helper","text":"again"}`)
+	if res.StatusCode != http.StatusPaymentRequired || refused["limit"] != "spend" || refused["remaining"].(float64) != 0 {
+		t.Fatalf("refusal = %d %v", res.StatusCode, refused)
+	}
+	pol := refused["policy"].(map[string]any)
+	if pol["version"].(float64) != 1 || pol["period"] != "month" || pol["scope"].(map[string]any)["kind"] != "tenant" {
+		t.Fatalf("the refusal names the wrong policy: %v", pol)
+	}
+	resets, err := time.Parse(time.RFC3339, refused["resets_at"].(string))
+	if err != nil || !resets.Equal(policy.PeriodEnd(policy.Month, time.Now())) {
+		t.Fatalf("resets_at = %v (%v)", refused["resets_at"], err)
 	}
 }

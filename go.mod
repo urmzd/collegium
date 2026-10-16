@@ -7,8 +7,8 @@ require (
 	github.com/go-jose/go-jose/v4 v4.1.5
 	github.com/urmzd/duraturo v0.1.1
 	github.com/urmzd/legatus v0.2.0
-	github.com/urmzd/mandatum v0.6.1-0.20261016033959-b2b98e149301
-	github.com/urmzd/saige v0.34.0
+	github.com/urmzd/mandatum v0.11.1-0.20261016195836-799b78eb1277
+	github.com/urmzd/saige v0.36.0
 	golang.org/x/oauth2 v0.37.0
 )
 
@@ -21,6 +21,10 @@ require (
 	github.com/dslipak/pdf v0.0.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/invopop/jsonschema v0.14.0 // indirect
+	github.com/jackc/pgpassfile v1.0.0 // indirect
+	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
+	github.com/jackc/pgx/v5 v5.11.0 // indirect
+	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/pb33f/ordered-map/v2 v2.3.1 // indirect
 	github.com/redis/go-redis/v9 v9.21.0 // indirect
 	github.com/standard-webhooks/standard-webhooks/libraries v0.0.1 // indirect
@@ -29,10 +33,14 @@ require (
 	github.com/tidwall/pretty v1.2.1 // indirect
 	github.com/tidwall/sjson v1.2.5 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
-	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
 	golang.org/x/net v0.61.0 // indirect
 	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
 
-require github.com/urmzd/vultus/go v0.1.0
+require (
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
+	github.com/urmzd/vultus/go v0.1.0
+	go.yaml.in/yaml/v4 v4.0.0-rc.2
+)
