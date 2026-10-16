@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.0 (2026-10-16)
+
+### Features
+
+- add prompt-first Home and clear project navigation (#23) ([e12115e](https://github.com/urmzd/collegium/commit/e12115e25d215c7618f99f290143dd47be846093))
+
+### Misc
+
+- **deps**: upgrade saige to v0.37.0 (#22) ([907768c](https://github.com/urmzd/collegium/commit/907768c796ad86bea27083254a8ed4d4d15abb3f))
+
+[Full Changelog](https://github.com/urmzd/collegium/compare/v0.2.1...v0.3.0)
+
+
 ## 0.2.1 (2026-10-16)
 
 ### Bug Fixes
